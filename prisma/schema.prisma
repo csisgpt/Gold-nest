@@ -1,0 +1,313 @@
+// Prisma schema for gold/abshodeh trading backend
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  TRADER
+  CLIENT
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  PENDING_APPROVAL
+}
+
+enum InstrumentType {
+  FIAT
+  GOLD
+  COIN
+  OTHER
+}
+
+enum InstrumentUnit {
+  GRAM_750_EQ
+  PIECE
+  CURRENCY
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+enum TradeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED_BY_USER
+  CANCELLED_BY_ADMIN
+  SETTLED
+}
+
+enum SettlementMethod {
+  WALLET
+  EXTERNAL
+  CASH
+}
+
+enum TxRefType {
+  TRADE
+  DEPOSIT
+  WITHDRAW
+  ADJUSTMENT
+  GOLD_LOT
+  REMITTANCE
+}
+
+enum AccountTxType {
+  DEPOSIT
+  WITHDRAW
+  TRADE_DEBIT
+  TRADE_CREDIT
+  ADJUSTMENT
+  FEE
+}
+
+enum DepositStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum WithdrawStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum GoldLotStatus {
+  IN_VAULT
+  SOLD
+  WITHDRAWN
+  MELTED
+}
+
+enum AttachmentEntityType {
+  TRADE
+  DEPOSIT
+  WITHDRAW
+  GOLD_LOT
+  REMITTANCE
+}
+
+model User {
+  id         String         @id @default(cuid())
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  fullName   String
+  mobile     String         @unique
+  password   String
+
+  role       UserRole       @default(CLIENT)
+  status     UserStatus     @default(PENDING_APPROVAL)
+
+  accounts   Account[]
+  trades     Trade[]        @relation("UserTrades")
+  createdTx  AccountTx[]    @relation("TxCreatedBy")
+  deposits   DepositRequest[]
+  withdraws  WithdrawRequest[]
+  goldLots   GoldLot[]
+  files      File[]         @relation("FilesUploadedBy")
+}
+
+model Instrument {
+  id         String           @id @default(cuid())
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  code       String           @unique
+  name       String
+  type       InstrumentType
+  unit       InstrumentUnit
+
+  accounts   Account[]
+  trades     Trade[]
+  prices     InstrumentPrice[]
+}
+
+model InstrumentPrice {
+  id           String      @id @default(cuid())
+  createdAt    DateTime    @default(now())
+
+  instrument   Instrument  @relation(fields: [instrumentId], references: [id])
+  instrumentId String
+
+  buyPrice     Decimal     @db.Numeric(18, 4)
+  sellPrice    Decimal     @db.Numeric(18, 4)
+  source       String?
+}
+
+model Account {
+  id             String      @id @default(cuid())
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  user           User?       @relation(fields: [userId], references: [id])
+  userId         String?
+
+  instrument     Instrument  @relation(fields: [instrumentId], references: [id])
+  instrumentId   String
+
+  balance        Decimal     @db.Numeric(24, 6)
+  blockedBalance Decimal     @db.Numeric(24, 6) @default(0)
+  minBalance     Decimal     @db.Numeric(24, 6) @default(0)
+
+  transactions   AccountTx[]
+
+  @@unique([userId, instrumentId])
+}
+
+model AccountTx {
+  id           String         @id @default(cuid())
+  createdAt    DateTime       @default(now())
+
+  account      Account        @relation(fields: [accountId], references: [id])
+  accountId    String
+
+  delta        Decimal        @db.Numeric(24, 6)
+
+  type         AccountTxType
+  refType      TxRefType
+  refId        String?
+
+  createdBy    User?          @relation("TxCreatedBy", fields: [createdById], references: [id])
+  createdById  String?
+}
+
+model Trade {
+  id             String          @id @default(cuid())
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  client         User            @relation("UserTrades", fields: [clientId], references: [id])
+  clientId       String
+
+  instrument     Instrument      @relation(fields: [instrumentId], references: [id])
+  instrumentId   String
+
+  side           TradeSide
+  status         TradeStatus     @default(PENDING)
+  settlementMethod SettlementMethod
+
+  quantity       Decimal         @db.Numeric(24, 6)
+  pricePerUnit   Decimal         @db.Numeric(24, 6)
+  totalAmount    Decimal         @db.Numeric(24, 6)
+
+  clientNote     String?
+  adminNote      String?
+
+  approvedAt     DateTime?
+  approvedBy     User?           @relation(fields: [approvedById], references: [id])
+  approvedById   String?
+
+  rejectedAt     DateTime?
+  rejectReason   String?
+
+  attachments    Attachment[]    @relation("TradeAttachments")
+}
+
+model DepositRequest {
+  id           String         @id @default(cuid())
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  user         User           @relation(fields: [userId], references: [id])
+  userId       String
+
+  amount       Decimal        @db.Numeric(24, 2)
+  method       String
+  status       DepositStatus  @default(PENDING)
+
+  refNo        String?
+  note         String?
+  processedAt  DateTime?
+  processedBy  User?          @relation(fields: [processedById], references: [id])
+  processedById String?
+
+  accountTxId  String?
+  attachments  Attachment[]   @relation("DepositAttachments")
+}
+
+model WithdrawRequest {
+  id           String          @id @default(cuid())
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  user         User            @relation(fields: [userId], references: [id])
+  userId       String
+
+  amount       Decimal         @db.Numeric(24, 2)
+  status       WithdrawStatus  @default(PENDING)
+
+  bankName     String?
+  iban         String?
+  cardNumber   String?
+
+  note         String?
+  processedAt  DateTime?
+  processedBy  User?           @relation(fields: [processedById], references: [id])
+  processedById String?
+
+  accountTxId  String?
+  attachments  Attachment[]    @relation("WithdrawAttachments")
+}
+
+model GoldLot {
+  id            String        @id @default(cuid())
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id])
+  userId        String
+
+  grossWeight   Decimal       @db.Numeric(24, 6)
+  karat         Int
+  equivGram750  Decimal       @db.Numeric(24, 6)
+
+  status        GoldLotStatus @default(IN_VAULT)
+
+  note          String?
+
+  attachments   Attachment[]  @relation("GoldLotAttachments")
+}
+
+model File {
+  id           String     @id @default(cuid())
+  createdAt    DateTime   @default(now())
+
+  uploadedBy   User       @relation("FilesUploadedBy", fields: [uploadedById], references: [id])
+  uploadedById String
+
+  storageKey   String
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+
+  label        String?
+
+  attachments  Attachment[]
+}
+
+model Attachment {
+  id          String                @id @default(cuid())
+  createdAt   DateTime              @default(now())
+
+  file        File                  @relation(fields: [fileId], references: [id])
+  fileId      String
+
+  entityType  AttachmentEntityType
+  entityId    String
+
+  purpose     String?
+}
