@@ -25,7 +25,7 @@ export class FilesController {
   @Post()
   @UseInterceptors(FileInterceptor('file'))
   async upload(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: any,
     @Body() dto: UploadFileDto,
   ) {
     return this.filesService.storeFile(file, dto.uploadedById, dto.label);

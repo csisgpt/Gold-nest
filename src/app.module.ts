@@ -10,6 +10,7 @@ import { GoldModule } from './modules/gold/gold.module';
 import { FilesModule } from './modules/files/files.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { InstrumentsModule } from './modules/instruments/instruments.module';
+import { AppController } from './app.controller';
 
 @Module({
   imports: [
@@ -25,5 +26,6 @@ import { InstrumentsModule } from './modules/instruments/instruments.module';
     AdminModule,
     InstrumentsModule,
   ],
+  controllers: [AppController],
 })
 export class AppModule {}

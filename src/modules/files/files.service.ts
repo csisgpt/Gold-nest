@@ -5,6 +5,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 
+
 @Injectable()
 export class FilesService {
   private readonly uploadRoot: string;
@@ -21,7 +22,7 @@ export class FilesService {
   }
 
   async storeFile(
-    file: Express.Multer.File,
+    file: any,
     uploadedById: string,
     label?: string,
   ) {
@@ -63,12 +64,14 @@ export class FilesService {
     fileIds: string[] | undefined,
     entityType: AttachmentEntityType,
     entityId: string,
-    tx?: PrismaClient,
+    tx?: any,                             // 👈 اینجا هم شُل
   ) {
     if (!fileIds || fileIds.length === 0) return [];
     const client = tx ?? this.prisma;
+
     return client.attachment.createMany({
       data: fileIds.map((fileId) => ({ fileId, entityType, entityId })),
     });
   }
+
 }

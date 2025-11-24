@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url      = "postgresql://root:alpRMVLhIUfg66xuwTx7CMP0@matterhorn.liara.cloud:31308/postgres"
 }
 
 enum UserRole {
@@ -101,213 +101,218 @@ enum AttachmentEntityType {
 }
 
 model User {
-  id         String         @id @default(cuid())
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  fullName   String
-  mobile     String         @unique
-  password   String
+  fullName String
+  mobile   String @unique
+  password String
+  email    String @unique
 
-  role       UserRole       @default(CLIENT)
-  status     UserStatus     @default(PENDING_APPROVAL)
+  role   UserRole   @default(CLIENT)
+  status UserStatus @default(PENDING_APPROVAL)
 
-  accounts   Account[]
-  trades     Trade[]        @relation("UserTrades")
-  createdTx  AccountTx[]    @relation("TxCreatedBy")
-  deposits   DepositRequest[]
-  withdraws  WithdrawRequest[]
-  goldLots   GoldLot[]
-  files      File[]         @relation("FilesUploadedBy")
+  accounts  Account[]
+  trades    Trade[]     @relation("UserTrades")
+  createdTx AccountTx[] @relation("TxCreatedBy")
+
+  // سمت "صاحب درخواست"‌ها
+  deposits  DepositRequest[]  @relation("UserDeposits")
+  withdraws WithdrawRequest[] @relation("UserWithdraws")
+
+  // سمت "پردازش کننده"‌ها (ادمین‌ها)
+  processedDeposits  DepositRequest[]  @relation("DepositProcessedBy")
+  processedWithdraws WithdrawRequest[] @relation("WithdrawProcessedBy")
+
+  // سمت "تریدهای تاییدشده توسط این کاربر (ادمین)"
+  approvedTrades Trade[] @relation("ApprovedTrades")
+
+  goldLots GoldLot[]
+  files    File[]    @relation("FilesUploadedBy")
 }
 
 model Instrument {
-  id         String           @id @default(cuid())
-  createdAt  DateTime         @default(now())
-  updatedAt  DateTime         @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  code       String           @unique
-  name       String
-  type       InstrumentType
-  unit       InstrumentUnit
+  code String         @unique
+  name String
+  type InstrumentType
+  unit InstrumentUnit
 
-  accounts   Account[]
-  trades     Trade[]
-  prices     InstrumentPrice[]
+  accounts Account[]
+  trades   Trade[]
+  prices   InstrumentPrice[]
 }
 
 model InstrumentPrice {
-  id           String      @id @default(cuid())
-  createdAt    DateTime    @default(now())
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
 
-  instrument   Instrument  @relation(fields: [instrumentId], references: [id])
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
   instrumentId String
 
-  buyPrice     Decimal     @db.Numeric(18, 4)
-  sellPrice    Decimal     @db.Numeric(18, 4)
-  source       String?
+  buyPrice  Decimal @db.Decimal(18, 4)
+  sellPrice Decimal @db.Decimal(18, 4)
+  source    String?
 }
 
 model Account {
-  id             String      @id @default(cuid())
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user           User?       @relation(fields: [userId], references: [id])
-  userId         String?
+  user   User?   @relation(fields: [userId], references: [id])
+  userId String?
 
-  instrument     Instrument  @relation(fields: [instrumentId], references: [id])
-  instrumentId   String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+  instrumentId String
 
-  balance        Decimal     @db.Numeric(24, 6)
-  blockedBalance Decimal     @db.Numeric(24, 6) @default(0)
-  minBalance     Decimal     @db.Numeric(24, 6) @default(0)
+  balance        Decimal @db.Decimal(24, 6)
+  blockedBalance Decimal @default(0) @db.Decimal(24, 6)
+  minBalance     Decimal @default(0) @db.Decimal(24, 6)
 
-  transactions   AccountTx[]
+  transactions AccountTx[]
 
   @@unique([userId, instrumentId])
 }
 
 model AccountTx {
-  id           String         @id @default(cuid())
-  createdAt    DateTime       @default(now())
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
 
-  account      Account        @relation(fields: [accountId], references: [id])
-  accountId    String
+  account   Account @relation(fields: [accountId], references: [id])
+  accountId String
 
-  delta        Decimal        @db.Numeric(24, 6)
+  delta Decimal @db.Decimal(24, 6)
 
-  type         AccountTxType
-  refType      TxRefType
-  refId        String?
+  type    AccountTxType
+  refType TxRefType
+  refId   String?
 
-  createdBy    User?          @relation("TxCreatedBy", fields: [createdById], references: [id])
-  createdById  String?
+  createdBy   User?   @relation("TxCreatedBy", fields: [createdById], references: [id])
+  createdById String?
 }
 
 model Trade {
-  id             String          @id @default(cuid())
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  client         User            @relation("UserTrades", fields: [clientId], references: [id])
-  clientId       String
+  client   User   @relation("UserTrades", fields: [clientId], references: [id])
+  clientId String
 
-  instrument     Instrument      @relation(fields: [instrumentId], references: [id])
-  instrumentId   String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+  instrumentId String
 
-  side           TradeSide
-  status         TradeStatus     @default(PENDING)
+  side             TradeSide
+  status           TradeStatus      @default(PENDING)
   settlementMethod SettlementMethod
 
-  quantity       Decimal         @db.Numeric(24, 6)
-  pricePerUnit   Decimal         @db.Numeric(24, 6)
-  totalAmount    Decimal         @db.Numeric(24, 6)
+  quantity     Decimal @db.Decimal(24, 6)
+  pricePerUnit Decimal @db.Decimal(24, 6)
+  totalAmount  Decimal @db.Decimal(24, 6)
 
-  clientNote     String?
-  adminNote      String?
+  clientNote String?
+  adminNote  String?
 
-  approvedAt     DateTime?
-  approvedBy     User?           @relation(fields: [approvedById], references: [id])
-  approvedById   String?
+  approvedAt   DateTime?
+  approvedBy   User?     @relation("ApprovedTrades", fields: [approvedById], references: [id])
+  approvedById String?
 
-  rejectedAt     DateTime?
-  rejectReason   String?
-
-  attachments    Attachment[]    @relation("TradeAttachments")
+  rejectedAt   DateTime?
+  rejectReason String?
 }
 
 model DepositRequest {
-  id           String         @id @default(cuid())
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user         User           @relation(fields: [userId], references: [id])
-  userId       String
+  user   User   @relation("UserDeposits", fields: [userId], references: [id])
+  userId String
 
-  amount       Decimal        @db.Numeric(24, 2)
-  method       String
-  status       DepositStatus  @default(PENDING)
+  amount Decimal       @db.Decimal(24, 2)
+  method String
+  status DepositStatus @default(PENDING)
 
-  refNo        String?
-  note         String?
-  processedAt  DateTime?
-  processedBy  User?          @relation(fields: [processedById], references: [id])
+  refNo         String?
+  note          String?
+  processedAt   DateTime?
+  processedBy   User?     @relation("DepositProcessedBy", fields: [processedById], references: [id])
   processedById String?
 
-  accountTxId  String?
-  attachments  Attachment[]   @relation("DepositAttachments")
+  accountTxId String?
 }
 
 model WithdrawRequest {
-  id           String          @id @default(cuid())
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user         User            @relation(fields: [userId], references: [id])
-  userId       String
+  user   User   @relation("UserWithdraws", fields: [userId], references: [id])
+  userId String
 
-  amount       Decimal         @db.Numeric(24, 2)
-  status       WithdrawStatus  @default(PENDING)
+  amount Decimal        @db.Decimal(24, 2)
+  status WithdrawStatus @default(PENDING)
 
-  bankName     String?
-  iban         String?
-  cardNumber   String?
+  bankName   String?
+  iban       String?
+  cardNumber String?
 
-  note         String?
-  processedAt  DateTime?
-  processedBy  User?           @relation(fields: [processedById], references: [id])
+  note          String?
+  processedAt   DateTime?
+  processedBy   User?     @relation("WithdrawProcessedBy", fields: [processedById], references: [id])
   processedById String?
 
-  accountTxId  String?
-  attachments  Attachment[]    @relation("WithdrawAttachments")
+  accountTxId String?
 }
 
 model GoldLot {
-  id            String        @id @default(cuid())
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user          User          @relation(fields: [userId], references: [id])
-  userId        String
+  user   User   @relation(fields: [userId], references: [id])
+  userId String
 
-  grossWeight   Decimal       @db.Numeric(24, 6)
-  karat         Int
-  equivGram750  Decimal       @db.Numeric(24, 6)
+  grossWeight  Decimal @db.Decimal(24, 6)
+  karat        Int
+  equivGram750 Decimal @db.Decimal(24, 6)
 
-  status        GoldLotStatus @default(IN_VAULT)
+  status GoldLotStatus @default(IN_VAULT)
 
-  note          String?
-
-  attachments   Attachment[]  @relation("GoldLotAttachments")
+  note String?
 }
 
 model File {
-  id           String     @id @default(cuid())
-  createdAt    DateTime   @default(now())
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
 
-  uploadedBy   User       @relation("FilesUploadedBy", fields: [uploadedById], references: [id])
+  uploadedBy   User   @relation("FilesUploadedBy", fields: [uploadedById], references: [id])
   uploadedById String
 
-  storageKey   String
-  fileName     String
-  mimeType     String
-  sizeBytes    Int
+  storageKey String
+  fileName   String
+  mimeType   String
+  sizeBytes  Int
 
-  label        String?
+  label String?
 
-  attachments  Attachment[]
+  attachments Attachment[]
 }
 
 model Attachment {
-  id          String                @id @default(cuid())
-  createdAt   DateTime              @default(now())
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
 
-  file        File                  @relation(fields: [fileId], references: [id])
-  fileId      String
+  file   File   @relation(fields: [fileId], references: [id])
+  fileId String
 
-  entityType  AttachmentEntityType
-  entityId    String
+  entityType AttachmentEntityType
+  entityId   String
 
-  purpose     String?
+  purpose String?
 }
