@@ -1,8 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { UsersService } from '../users/users.service';
 import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 
 @Injectable()
 export class AuthService {
@@ -12,7 +14,7 @@ export class AuthService {
   ) {}
 
   async login(dto: LoginDto) {
-    const user = await this.usersService.findWithPasswordByIdentifier(dto.identifier);
+    const user = await this.usersService.findWithPasswordByMobile(dto.mobile);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }
@@ -22,7 +24,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const payload = { sub: user.id, role: user.role };
+    const payload = { sub: user.id, mobile: user.mobile, role: user.role };
     const accessToken = await this.jwtService.signAsync(payload);
     const { password: _removed, ...safeUser } = user;
 
@@ -31,5 +33,17 @@ export class AuthService {
 
   async getProfile(userId: string) {
     return this.usersService.findById(userId);
+  }
+
+  async register(dto: RegisterDto) {
+    const email = dto.email ?? `${dto.mobile}@auto.local`;
+
+    return this.usersService.create({
+      fullName: dto.fullName,
+      mobile: dto.mobile,
+      email,
+      password: dto.password,
+      role: UserRole.CLIENT,
+    });
   }
 }

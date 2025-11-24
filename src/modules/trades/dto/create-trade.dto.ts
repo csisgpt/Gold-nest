@@ -3,12 +3,14 @@ import { IsArray, IsEnum, IsNumberString, IsOptional, IsString } from 'class-val
 import { SettlementMethod, TradeSide } from '@prisma/client';
 
 export class CreateTradeDto {
+  /** @deprecated clientId is ignored; server will use current authenticated user instead. */
   @ApiProperty({
     example: 'client-123',
     description: 'Client identifier in the external system or UI.',
   })
+  @IsOptional()
   @IsString()
-  clientId!: string;
+  clientId?: string;
 
   @ApiProperty({
     example: 'GOLD_750_EQ',
