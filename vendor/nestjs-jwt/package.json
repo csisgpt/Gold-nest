@@ -1,0 +1,6 @@
+{
+  "name": "@nestjs/jwt",
+  "version": "10.2.0",
+  "main": "index.js",
+  "types": "index.d.ts"
+}

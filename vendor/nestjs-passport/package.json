@@ -1,0 +1,6 @@
+{
+  "name": "@nestjs/passport",
+  "version": "10.0.3",
+  "main": "index.js",
+  "types": "index.d.ts"
+}

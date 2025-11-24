@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { TradeStatus, UserRole } from '@prisma/client';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { ApproveTradeDto } from './dto/approve-trade.dto';
 import { RejectTradeDto } from './dto/reject-trade.dto';
@@ -21,6 +22,7 @@ export class TradesController {
   @ApiResponse({ status: 201, description: 'Trade created successfully.' })
   @ApiResponse({ status: 400, description: 'Validation or business rule error.' })
   @Post('trades')
+  @Throttle(30, 60)
   @UseGuards(JwtAuthGuard)
   create(@Body() dto: CreateTradeDto, @CurrentUser() user: JwtRequestUser) {
     return this.tradesService.createForUser(user.id, dto);
@@ -51,6 +53,7 @@ export class TradesController {
   @ApiOperation({ summary: 'Approve a trade' })
   @ApiResponse({ status: 200, description: 'Trade approved.' })
   @Post('admin/trades/:id/approve')
+  @Throttle(30, 60)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   approve(
@@ -64,6 +67,7 @@ export class TradesController {
   @ApiOperation({ summary: 'Reject a trade' })
   @ApiResponse({ status: 200, description: 'Trade rejected.' })
   @Post('admin/trades/:id/reject')
+  @Throttle(30, 60)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   reject(

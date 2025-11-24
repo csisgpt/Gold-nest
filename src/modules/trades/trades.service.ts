@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import {
   AccountTxType,
   AttachmentEntityType,
+  Instrument,
   SettlementMethod,
   TradeSide,
   TradeStatus,
@@ -32,7 +33,7 @@ export class TradesService {
   async createForUser(userId: string, dto: CreateTradeDto) {
     const instrument = await this.instrumentsService.findByCode(dto.instrumentCode);
     const quantity = new Decimal(dto.quantity);
-    const pricePerUnit = new Decimal(dto.pricePerUnit);
+    const pricePerUnit = await this.resolvePricePerUnit(dto, instrument);
     const totalAmount = quantity.mul(pricePerUnit);
 
     if (quantity.lte(0) || pricePerUnit.lte(0)) {
@@ -103,20 +104,24 @@ export class TradesService {
         throw new BadRequestException('Trade already processed');
       }
 
+      const { count: updatedCount } = await tx.trade.updateMany({
+        where: { id: trade.id, status: TradeStatus.PENDING },
+        data: {
+          status: TradeStatus.APPROVED,
+          approvedAt: new Date(),
+          approvedById: adminId,
+          adminNote: dto.adminNote,
+        },
+      });
+
+      if (updatedCount === 0) {
+        throw new BadRequestException('Trade already processed');
+      }
+
       const quantity = new Decimal(trade.quantity);
       const total = new Decimal(trade.totalAmount);
 
       if (trade.settlementMethod === SettlementMethod.WALLET) {
-        const irrAccount = await this.accountsService.getOrCreateAccount(
-          trade.clientId,
-          IRR_INSTRUMENT_CODE,
-          tx,
-        );
-        const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
-        if (trade.side === TradeSide.BUY && usable.lt(total)) {
-          throw new InsufficientCreditException('Insufficient IRR for settlement');
-        }
-
         const houseIrr = await this.accountsService.getOrCreateAccount(
           HOUSE_USER_ID,
           IRR_INSTRUMENT_CODE,
@@ -132,6 +137,18 @@ export class TradesService {
           trade.instrument.code,
           tx,
         );
+
+        const irrAccount = await this.accountsService.getOrCreateAccount(
+          trade.clientId,
+          IRR_INSTRUMENT_CODE,
+          tx,
+        );
+        if (trade.side === TradeSide.BUY) {
+          const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
+          if (usable.lt(total)) {
+            throw new InsufficientCreditException('Insufficient IRR for settlement');
+          }
+        }
 
         if (trade.side === TradeSide.BUY) {
           await this.accountsService.applyTransaction(
@@ -229,20 +246,24 @@ export class TradesService {
         // Future work: post corresponding receivables/payables or cash ledgers.
       }
 
-      const updated = await tx.trade.update({
-        where: { id },
-        data: {
-          status: TradeStatus.APPROVED,
-          approvedAt: new Date(),
-          approvedById: adminId,
-          adminNote: dto.adminNote,
-        },
-      });
+      const updatedTrade = await tx.trade.findUnique({ where: { id: trade.id } });
+      this.logger.log(
+        `Trade ${trade.id} status ${trade.status} -> ${updatedTrade?.status} by admin ${adminId}`,
+      );
 
-      this.logger.log(`Trade ${trade.id} status ${trade.status} -> ${updated.status} by admin ${adminId}`);
-
-      return updated;
+      return updatedTrade;
     });
+  }
+
+  /**
+   * Resolves the price per unit for a trade. Currently trusts client input but intended to
+   * be replaced by a server-driven price feed in future iterations.
+   */
+  private async resolvePricePerUnit(dto: CreateTradeDto, instrument: Instrument): Promise<Decimal> {
+    // For now, keep trusting dto.pricePerUnit, but centralize it here. In the future, this should
+    // read the price from an InstrumentPrice table or external price feed instead of trusting
+    // client input.
+    return new Decimal(dto.pricePerUnit);
   }
 
   async reject(id: string, dto: RejectTradeDto, adminId: string) {
