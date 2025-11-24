@@ -10,6 +10,7 @@ import { GoldModule } from './modules/gold/gold.module';
 import { FilesModule } from './modules/files/files.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { InstrumentsModule } from './modules/instruments/instruments.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -25,6 +26,7 @@ import { AppController } from './app.controller';
     FilesModule,
     AdminModule,
     InstrumentsModule,
+    AuthModule,
   ],
   controllers: [AppController],
 })

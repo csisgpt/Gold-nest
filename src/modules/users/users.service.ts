@@ -5,16 +5,31 @@ import {
   ConflictException,
   InternalServerErrorException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
+  private readonly safeUserSelect: Prisma.UserSelect = {
+    id: true,
+    createdAt: true,
+    updatedAt: true,
+    fullName: true,
+    mobile: true,
+    email: true,
+    role: true,
+    status: true,
+  };
+
   constructor(private readonly prisma: PrismaService) {}
 
   async findById(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: this.safeUserSelect,
+    });
     if (!user) {
       throw new NotFoundException('User not found');
     }
@@ -22,7 +37,10 @@ export class UsersService {
   }
 
   async findByMobile(mobile: string) {
-    const user = await this.prisma.user.findUnique({ where: { mobile } });
+    const user = await this.prisma.user.findUnique({
+      where: { mobile },
+      select: this.safeUserSelect,
+    });
     if (!user) {
       throw new NotFoundException('User not found');
     }
@@ -32,6 +50,15 @@ export class UsersService {
   async findAll() {
     return this.prisma.user.findMany({
       orderBy: { createdAt: 'desc' },
+      select: this.safeUserSelect,
+    });
+  }
+
+  async findWithPasswordByIdentifier(identifier: string) {
+    return this.prisma.user.findFirst({
+      where: {
+        OR: [{ mobile: identifier }, { email: identifier }],
+      },
     });
   }
 
