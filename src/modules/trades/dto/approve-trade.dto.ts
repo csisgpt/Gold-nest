@@ -11,6 +11,7 @@ export class ApproveTradeDto {
   @IsString()
   adminNote?: string;
 
+  /** @deprecated approvedById is ignored; server will use current authenticated admin instead. */
   @ApiProperty({
     required: false,
     example: 'admin-1',

@@ -8,10 +8,11 @@ import { TradesService } from './trades.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 
 @ApiTags('trades')
 @ApiBearerAuth('access-token')
-@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller()
 export class TradesController {
   constructor(private readonly tradesService: TradesService) {}
@@ -20,17 +21,28 @@ export class TradesController {
   @ApiResponse({ status: 201, description: 'Trade created successfully.' })
   @ApiResponse({ status: 400, description: 'Validation or business rule error.' })
   @Post('trades')
-  @Roles(UserRole.CLIENT, UserRole.TRADER, UserRole.ADMIN)
-  create(@Body() dto: CreateTradeDto) {
-    return this.tradesService.create(dto);
+  @UseGuards(JwtAuthGuard)
+  create(@Body() dto: CreateTradeDto, @CurrentUser() user: JwtRequestUser) {
+    return this.tradesService.createForUser(user.id, dto);
   }
 
+  /**
+   * @deprecated Use GET /trades/my instead. The :userId parameter is ignored in favor of the authenticated user.
+   */
   @Get('trades/my/:userId')
-  listMy(@Param('userId') userId: string) {
-    return this.tradesService.findMy(userId);
+  @UseGuards(JwtAuthGuard)
+  listMy(@Param('userId') _userId: string, @CurrentUser() user: JwtRequestUser) {
+    return this.tradesService.findMy(user.id);
+  }
+
+  @Get('trades/my')
+  @UseGuards(JwtAuthGuard)
+  listMyAuthenticated(@CurrentUser() user: JwtRequestUser) {
+    return this.tradesService.findMy(user.id);
   }
 
   @Get('admin/trades')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   listAdmin(@Query('status') status?: TradeStatus) {
     return this.tradesService.findByStatus(status);
@@ -39,16 +51,26 @@ export class TradesController {
   @ApiOperation({ summary: 'Approve a trade' })
   @ApiResponse({ status: 200, description: 'Trade approved.' })
   @Post('admin/trades/:id/approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
-  approve(@Param('id') id: string, @Body() dto: ApproveTradeDto) {
-    return this.tradesService.approve(id, dto);
+  approve(
+    @Param('id') id: string,
+    @Body() dto: ApproveTradeDto,
+    @CurrentUser() admin: JwtRequestUser,
+  ) {
+    return this.tradesService.approve(id, dto, admin.id);
   }
 
   @ApiOperation({ summary: 'Reject a trade' })
   @ApiResponse({ status: 200, description: 'Trade rejected.' })
   @Post('admin/trades/:id/reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
-  reject(@Param('id') id: string, @Body() dto: RejectTradeDto) {
-    return this.tradesService.reject(id, dto);
+  reject(
+    @Param('id') id: string,
+    @Body() dto: RejectTradeDto,
+    @CurrentUser() admin: JwtRequestUser,
+  ) {
+    return this.tradesService.reject(id, dto, admin.id);
   }
 }

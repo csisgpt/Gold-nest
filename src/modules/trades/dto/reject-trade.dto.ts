@@ -11,6 +11,7 @@ export class RejectTradeDto {
   @IsString()
   rejectReason?: string;
 
+  /** @deprecated rejectedById is ignored; server will use current authenticated admin instead. */
   @ApiProperty({
     required: false,
     example: 'admin-2',

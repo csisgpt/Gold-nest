@@ -62,6 +62,10 @@ export class UsersService {
     });
   }
 
+  async findWithPasswordByMobile(mobile: string) {
+    return this.prisma.user.findUnique({ where: { mobile } });
+  }
+
   async create(dto: CreateUserDto) {
     const { fullName, mobile, email, password, role } = dto;
 

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   AccountTxType,
   AttachmentEntityType,
@@ -20,6 +20,8 @@ import { InstrumentsService } from '../instruments/instruments.service';
 
 @Injectable()
 export class TradesService {
+  private readonly logger = new Logger(TradesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
@@ -27,16 +29,20 @@ export class TradesService {
     private readonly instrumentsService: InstrumentsService,
   ) {}
 
-  async create(dto: CreateTradeDto) {
+  async createForUser(userId: string, dto: CreateTradeDto) {
     const instrument = await this.instrumentsService.findByCode(dto.instrumentCode);
     const quantity = new Decimal(dto.quantity);
     const pricePerUnit = new Decimal(dto.pricePerUnit);
     const totalAmount = quantity.mul(pricePerUnit);
 
+    if (quantity.lte(0) || pricePerUnit.lte(0)) {
+      throw new BadRequestException('Quantity and pricePerUnit must be positive');
+    }
+
     if (dto.settlementMethod === SettlementMethod.WALLET && dto.side === TradeSide.BUY) {
       // Wallet funded buys require sufficient IRR capacity
       const irrAccount = await this.accountsService.getOrCreateAccount(
-        dto.clientId,
+        userId,
         IRR_INSTRUMENT_CODE,
       );
       const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
@@ -48,7 +54,7 @@ export class TradesService {
     const trade = await this.prisma.$transaction(async (tx) => {
       const record = await tx.trade.create({
         data: {
-          clientId: dto.clientId,
+          clientId: userId,
           instrumentId: instrument.id,
           side: dto.side,
           settlementMethod: dto.settlementMethod,
@@ -86,7 +92,7 @@ export class TradesService {
     });
   }
 
-  async approve(id: string, dto: ApproveTradeDto) {
+  async approve(id: string, dto: ApproveTradeDto, adminId: string) {
     return this.prisma.$transaction(async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id },
@@ -135,7 +141,7 @@ export class TradesService {
               type: AccountTxType.TRADE_DEBIT,
               refType: TxRefType.TRADE,
               refId: trade.id,
-              createdById: dto.approvedById,
+              createdById: adminId,
             },
             tx,
           );
@@ -146,7 +152,7 @@ export class TradesService {
               type: AccountTxType.TRADE_CREDIT,
               refType: TxRefType.TRADE,
               refId: trade.id,
-              createdById: dto.approvedById,
+              createdById: adminId,
             },
             tx,
           );
@@ -157,7 +163,7 @@ export class TradesService {
               type: AccountTxType.TRADE_CREDIT,
               refType: TxRefType.TRADE,
               refId: trade.id,
-              createdById: dto.approvedById,
+              createdById: adminId,
             },
             tx,
           );
@@ -168,7 +174,7 @@ export class TradesService {
               type: AccountTxType.TRADE_DEBIT,
               refType: TxRefType.TRADE,
               refId: trade.id,
-              createdById: dto.approvedById,
+              createdById: adminId,
             },
             tx,
           );
@@ -180,7 +186,7 @@ export class TradesService {
               type: AccountTxType.TRADE_CREDIT,
               refType: TxRefType.TRADE,
               refId: trade.id,
-              createdById: dto.approvedById,
+              createdById: adminId,
             },
             tx,
           );
@@ -191,7 +197,7 @@ export class TradesService {
               type: AccountTxType.TRADE_DEBIT,
               refType: TxRefType.TRADE,
               refId: trade.id,
-              createdById: dto.approvedById,
+              createdById: adminId,
             },
             tx,
           );
@@ -202,7 +208,7 @@ export class TradesService {
               type: AccountTxType.TRADE_DEBIT,
               refType: TxRefType.TRADE,
               refId: trade.id,
-              createdById: dto.approvedById,
+              createdById: adminId,
             },
             tx,
           );
@@ -213,7 +219,7 @@ export class TradesService {
               type: AccountTxType.TRADE_CREDIT,
               refType: TxRefType.TRADE,
               refId: trade.id,
-              createdById: dto.approvedById,
+              createdById: adminId,
             },
             tx,
           );
@@ -223,32 +229,42 @@ export class TradesService {
         // Future work: post corresponding receivables/payables or cash ledgers.
       }
 
-      return tx.trade.update({
+      const updated = await tx.trade.update({
         where: { id },
         data: {
           status: TradeStatus.APPROVED,
           approvedAt: new Date(),
-          approvedById: dto.approvedById,
+          approvedById: adminId,
           adminNote: dto.adminNote,
         },
       });
+
+      this.logger.log(`Trade ${trade.id} status ${trade.status} -> ${updated.status} by admin ${adminId}`);
+
+      return updated;
     });
   }
 
-  async reject(id: string, dto: RejectTradeDto) {
-    const trade = await this.prisma.trade.findUnique({ where: { id } });
-    if (!trade) throw new NotFoundException('Trade not found');
-    if (trade.status !== TradeStatus.PENDING) {
-      throw new BadRequestException('Trade already processed');
-    }
+  async reject(id: string, dto: RejectTradeDto, adminId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const trade = await tx.trade.findUnique({ where: { id } });
+      if (!trade) throw new NotFoundException('Trade not found');
+      if (trade.status !== TradeStatus.PENDING) {
+        throw new BadRequestException('Trade already processed');
+      }
 
-    return this.prisma.trade.update({
-      where: { id },
-      data: {
-        status: TradeStatus.REJECTED,
-        rejectedAt: new Date(),
-        rejectReason: dto.rejectReason,
-      },
+      const updated = await tx.trade.update({
+        where: { id },
+        data: {
+          status: TradeStatus.REJECTED,
+          rejectedAt: new Date(),
+          rejectReason: dto.rejectReason,
+        },
+      });
+
+      this.logger.log(`Trade ${trade.id} status ${trade.status} -> ${updated.status} by admin ${adminId}`);
+
+      return updated;
     });
   }
 }
