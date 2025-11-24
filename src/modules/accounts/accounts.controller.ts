@@ -1,9 +1,12 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PrismaService } from '../prisma/prisma.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
 
 @ApiTags('accounts')
 @ApiBearerAuth('access-token')
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('accounts')
 export class AccountsController {
   constructor(private readonly prisma: PrismaService) {}

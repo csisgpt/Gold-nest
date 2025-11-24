@@ -7,6 +7,8 @@ import { InsufficientCreditException } from '../../common/exceptions/insufficien
 // 👇 این type alias رو اضافه کن
 type PrismaClientOrTx = PrismaClient | Prisma.TransactionClient;
 
+// TODO: Introduce a Remittance entity/service that leverages TxRefType.REMITTANCE for internal transfers.
+
 export interface ApplyTransactionInput {
   accountId: string;
   delta: Decimal | string | number;

@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = "postgresql://root:alpRMVLhIUfg66xuwTx7CMP0@matterhorn.liara.cloud:31308/postgres"
+  url      = env("DATABASE_URL")
 }
 
 enum UserRole {
@@ -59,6 +59,7 @@ enum TxRefType {
   WITHDRAW
   ADJUSTMENT
   GOLD_LOT
+  // TODO: Introduce a Remittance entity/service to cover internal transfers.
   REMITTANCE
 }
 
@@ -97,6 +98,7 @@ enum AttachmentEntityType {
   DEPOSIT
   WITHDRAW
   GOLD_LOT
+  // TODO: Attachments for remittance flows will use this type once implemented.
   REMITTANCE
 }
 
@@ -194,6 +196,11 @@ model AccountTx {
 
   createdBy   User?   @relation("TxCreatedBy", fields: [createdById], references: [id])
   createdById String?
+
+  depositRequests  DepositRequest[]  @relation("DepositAccountTx")
+  withdrawRequests WithdrawRequest[] @relation("WithdrawAccountTx")
+
+  @@index([refType, refId])
 }
 
 model Trade {
@@ -244,6 +251,7 @@ model DepositRequest {
   processedBy   User?     @relation("DepositProcessedBy", fields: [processedById], references: [id])
   processedById String?
 
+  accountTx   AccountTx? @relation("DepositAccountTx", fields: [accountTxId], references: [id])
   accountTxId String?
 }
 
@@ -267,6 +275,7 @@ model WithdrawRequest {
   processedBy   User?     @relation("WithdrawProcessedBy", fields: [processedById], references: [id])
   processedById String?
 
+  accountTx   AccountTx? @relation("WithdrawAccountTx", fields: [accountTxId], references: [id])
   accountTxId String?
 }
 
