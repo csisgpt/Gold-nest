@@ -38,6 +38,12 @@ async function bootstrap() {
   });
 
   const configService = app.get(ConfigService);
+  const corsOrigin = configService.get<string>('CORS_ORIGIN') || 'http://localhost:3000';
+
+  app.enableCors({
+    origin: corsOrigin,
+    credentials: true,
+  });
   const port = configService.get<number>('PORT') || 3000;
   await app.listen(port);
 }

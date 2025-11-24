@@ -36,7 +36,8 @@ export class CreateTradeDto {
 
   @ApiProperty({
     example: '3200000',
-    description: 'Price per unit as a decimal string (in IRR).',
+    description:
+      'Price per unit as a decimal string (in IRR). Currently client-provided but intended to become server-driven.',
   })
   @IsNumberString()
   pricePerUnit!: string;
