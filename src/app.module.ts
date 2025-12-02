@@ -15,6 +15,7 @@ import { InstrumentsModule } from './modules/instruments/instruments.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { RemittancesModule } from './modules/remittances/remittances.module';
 import { AppController } from './app.controller';
+import { TahesabModule } from './modules/tahesab/tahesab.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { AppController } from './app.controller';
     InstrumentsModule,
     RemittancesModule,
     AuthModule,
+    TahesabModule,
     ThrottlerModule.forRoot({
       ttl: 60,
       limit: 60,
