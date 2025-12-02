@@ -7,6 +7,8 @@ import { DepositsService } from './deposits.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 
 @ApiTags('deposits')
 @ApiBearerAuth('access-token')
@@ -16,13 +18,21 @@ export class DepositsController {
   constructor(private readonly depositsService: DepositsService) {}
 
   @Post('deposits')
-  create(@Body() dto: CreateDepositDto) {
-    return this.depositsService.create(dto);
+  @UseGuards(JwtAuthGuard)
+  create(@Body() dto: CreateDepositDto, @CurrentUser() user: JwtRequestUser) {
+    return this.depositsService.createForUser(user.id, dto);
   }
 
   @Get('deposits/my/:userId')
-  listMy(@Param('userId') userId: string) {
-    return this.depositsService.findMy(userId);
+  @UseGuards(JwtAuthGuard)
+  listMy(@Param('userId') _userId: string, @CurrentUser() user: JwtRequestUser) {
+    return this.depositsService.findMy(user.id);
+  }
+
+  @Get('deposits/my')
+  @UseGuards(JwtAuthGuard)
+  listMyAuthenticated(@CurrentUser() user: JwtRequestUser) {
+    return this.depositsService.findMy(user.id);
   }
 
   @Get('admin/deposits')
@@ -33,13 +43,13 @@ export class DepositsController {
 
   @Post('admin/deposits/:id/approve')
   @Roles(UserRole.ADMIN)
-  approve(@Param('id') id: string, @Body() dto: DecisionDto) {
-    return this.depositsService.approve(id, dto);
+  approve(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
+    return this.depositsService.approve(id, dto, admin.id);
   }
 
   @Post('admin/deposits/:id/reject')
   @Roles(UserRole.ADMIN)
-  reject(@Param('id') id: string, @Body() dto: DecisionDto) {
-    return this.depositsService.reject(id, dto);
+  reject(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
+    return this.depositsService.reject(id, dto, admin.id);
   }
 }

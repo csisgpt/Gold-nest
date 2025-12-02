@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { AccountTxType, AttachmentEntityType, TxRefType, WithdrawStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
@@ -7,33 +7,37 @@ import { FilesService } from '../files/files.service';
 import { IRR_INSTRUMENT_CODE } from '../accounts/constants';
 import { DecisionDto } from '../deposits/dto/decision.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
+import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
 
 @Injectable()
 export class WithdrawalsService {
+  private readonly logger = new Logger(WithdrawalsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
     private readonly filesService: FilesService,
   ) {}
 
-  async create(dto: CreateWithdrawalDto) {
+  async createForUser(userId: string, dto: CreateWithdrawalDto) {
     // Check usable capacity before creating request to give fast feedback
+    const amountDecimal = new Decimal(dto.amount);
     const account = await this.accountsService.getOrCreateAccount(
-      dto.userId,
+      userId,
       IRR_INSTRUMENT_CODE,
     );
     const balance = new Decimal(account.balance);
     const minBalance = new Decimal(account.minBalance);
     const usable = balance.minus(minBalance);
-    if (usable.lt(dto.amount)) {
+    if (usable.lt(amountDecimal)) {
       throw new BadRequestException('Insufficient capacity for withdrawal');
     }
 
     return this.prisma.$transaction(async (tx) => {
       const withdraw = await tx.withdrawRequest.create({
         data: {
-          userId: dto.userId,
-          amount: new Decimal(dto.amount),
+          userId,
+          amount: amountDecimal,
           bankName: dto.bankName,
           iban: dto.iban,
           cardNumber: dto.cardNumber,
@@ -66,11 +70,25 @@ export class WithdrawalsService {
     });
   }
 
-  async approve(id: string, dto: DecisionDto) {
+  async approve(id: string, dto: DecisionDto, adminId: string) {
     return this.prisma.$transaction(async (tx) => {
       const withdraw = await tx.withdrawRequest.findUnique({ where: { id } });
       if (!withdraw) throw new NotFoundException('Withdraw not found');
       if (withdraw.status !== WithdrawStatus.PENDING) {
+        throw new BadRequestException('Withdrawal already processed');
+      }
+
+      const { count } = await tx.withdrawRequest.updateMany({
+        where: { id, status: WithdrawStatus.PENDING },
+        data: {
+          status: WithdrawStatus.APPROVED,
+          processedAt: new Date(),
+          processedById: adminId,
+          note: dto.note,
+        },
+      });
+
+      if (count === 0) {
         throw new BadRequestException('Withdrawal already processed');
       }
 
@@ -80,46 +98,58 @@ export class WithdrawalsService {
         tx,
       );
 
+      const total = new Decimal(withdraw.amount);
+      const usable = new Decimal(account.balance).minus(account.minBalance);
+      if (usable.lt(total)) {
+        throw new InsufficientCreditException('Insufficient IRR balance for withdrawal');
+      }
+
       const txResult = await this.accountsService.applyTransaction(
-        {
-          accountId: account.id,
-          delta: new Decimal(withdraw.amount).negated(),
-          type: AccountTxType.WITHDRAW,
-          refType: TxRefType.WITHDRAW,
-          refId: withdraw.id,
-          createdById: dto.processedById,
-        },
         tx,
+        account,
+        total.negated(),
+        AccountTxType.WITHDRAW,
+        TxRefType.WITHDRAW,
+        withdraw.id,
+        adminId,
       );
+
+      this.logger.log(`Withdrawal ${id} approved by ${adminId}`);
 
       return tx.withdrawRequest.update({
         where: { id },
         data: {
-          status: WithdrawStatus.APPROVED,
-          processedAt: new Date(),
-          processedById: dto.processedById,
           accountTxId: txResult.txRecord.id,
-          note: dto.note,
         },
       });
     });
   }
 
-  async reject(id: string, dto: DecisionDto) {
-    const withdraw = await this.prisma.withdrawRequest.findUnique({ where: { id } });
-    if (!withdraw) throw new NotFoundException('Withdraw not found');
-    if (withdraw.status !== WithdrawStatus.PENDING) {
-      throw new BadRequestException('Withdrawal already processed');
-    }
+  async reject(id: string, dto: DecisionDto, adminId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const withdraw = await tx.withdrawRequest.findUnique({ where: { id } });
+      if (!withdraw) throw new NotFoundException('Withdraw not found');
+      if (withdraw.status !== WithdrawStatus.PENDING) {
+        throw new BadRequestException('Withdrawal already processed');
+      }
 
-    return this.prisma.withdrawRequest.update({
-      where: { id },
-      data: {
-        status: WithdrawStatus.REJECTED,
-        processedAt: new Date(),
-        processedById: dto.processedById,
-        note: dto.note,
-      },
+      const { count } = await tx.withdrawRequest.updateMany({
+        where: { id, status: WithdrawStatus.PENDING },
+        data: {
+          status: WithdrawStatus.REJECTED,
+          processedAt: new Date(),
+          processedById: adminId,
+          note: dto.note,
+        },
+      });
+
+      if (count === 0) {
+        throw new BadRequestException('Withdrawal already processed');
+      }
+
+      this.logger.log(`Withdrawal ${id} rejected by ${adminId}`);
+
+      return tx.withdrawRequest.findUnique({ where: { id } });
     });
   }
 }

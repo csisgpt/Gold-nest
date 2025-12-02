@@ -7,7 +7,8 @@ export class DecisionDto {
   @IsString()
   note?: string;
 
-  @ApiProperty({ required: false, example: 'admin-42', description: 'Admin processing identifier.' })
+  /** @deprecated Admin identifier is taken from the authenticated user context. */
+  @ApiProperty({ required: false, example: 'admin-42', description: 'Admin processing identifier (deprecated).', deprecated: true })
   @IsOptional()
   @IsString()
   processedById?: string;

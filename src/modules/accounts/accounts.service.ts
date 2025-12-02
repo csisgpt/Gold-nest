@@ -1,8 +1,18 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Decimal } from '@prisma/client/runtime/library';
-import { PrismaClient, Prisma, AccountTxType, TxRefType } from '@prisma/client';
+import {
+  PrismaClient,
+  Prisma,
+  AccountTxType,
+  TxRefType,
+  InstrumentType,
+  TradeSide,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
+import { AccountStatementEntryDto } from './dto/account-statement-entry.dto';
+import { AccountStatementFiltersDto } from './dto/account-statement-filters.dto';
+import { IRR_INSTRUMENT_CODE } from './constants';
 
 // 👇 این type alias رو اضافه کن
 type PrismaClientOrTx = PrismaClient | Prisma.TransactionClient;
@@ -52,7 +62,32 @@ export class AccountsService {
     });
   }
 
-  async applyTransaction(input: ApplyTransactionInput, tx?: any) {
+  async applyTransaction(
+    inputOrTx: ApplyTransactionInput | PrismaClientOrTx,
+    accountOrInput?: any,
+    delta?: Decimal | string | number,
+    type?: AccountTxType,
+    refType?: TxRefType,
+    refId?: string,
+    createdById?: string,
+  ) {
+    const isLegacyInput = (candidate: any): candidate is ApplyTransactionInput =>
+      typeof candidate?.accountId === 'string';
+
+    const { input, tx } = isLegacyInput(inputOrTx)
+      ? { input: inputOrTx, tx: accountOrInput }
+      : {
+          input: {
+            accountId: accountOrInput?.id,
+            delta: delta!,
+            type: type!,
+            refType: refType!,
+            refId,
+            createdById,
+          } as ApplyTransactionInput,
+          tx: inputOrTx,
+        };
+
     const deltaDecimal = new Decimal(input.delta);
 
     const executor = async (trx: any) => {
@@ -99,6 +134,175 @@ export class AccountsService {
 
     // اگر نه، خودمون یه ترنزکشن می‌سازیم
     return this.prisma.$transaction((trx) => executor(trx));
+  }
+
+  async getStatementForUser(
+    userId: string,
+    filters: AccountStatementFiltersDto = {} as AccountStatementFiltersDto,
+  ): Promise<AccountStatementEntryDto[]> {
+    const accounts = await this.resolveAccountsForStatement(userId, filters);
+    if (accounts.length === 0) {
+      return [];
+    }
+
+    const where: Prisma.AccountTxWhereInput = {
+      accountId: { in: accounts.map((a) => a.id) },
+    };
+
+    if (filters.from || filters.to) {
+      where.createdAt = {};
+      if (filters.from) where.createdAt.gte = filters.from;
+      if (filters.to) where.createdAt.lte = filters.to;
+    }
+
+    const accountTxs = await this.prisma.accountTx.findMany({
+      where,
+      include: { account: { include: { instrument: true } } },
+      orderBy: [
+        { createdAt: 'asc' },
+        { id: 'asc' },
+      ],
+    });
+
+    const depositIds = new Set<string>();
+    const withdrawIds = new Set<string>();
+    const tradeIds = new Set<string>();
+    const remittanceIds = new Set<string>();
+
+    accountTxs.forEach((tx) => {
+      if (!tx.refId) return;
+      switch (tx.refType) {
+        case TxRefType.DEPOSIT:
+          depositIds.add(tx.refId);
+          break;
+        case TxRefType.WITHDRAW:
+          withdrawIds.add(tx.refId);
+          break;
+        case TxRefType.TRADE:
+          tradeIds.add(tx.refId);
+          break;
+        case TxRefType.REMITTANCE:
+          remittanceIds.add(tx.refId);
+          break;
+        default:
+          break;
+      }
+    });
+
+    const [deposits, withdraws, trades, remittances] = await Promise.all([
+      depositIds.size
+        ? this.prisma.depositRequest.findMany({ where: { id: { in: Array.from(depositIds) } } })
+        : [],
+      withdrawIds.size
+        ? this.prisma.withdrawRequest.findMany({ where: { id: { in: Array.from(withdrawIds) } } })
+        : [],
+      tradeIds.size
+        ? this.prisma.trade.findMany({
+            where: { id: { in: Array.from(tradeIds) } },
+            include: { instrument: true },
+          })
+        : [],
+      remittanceIds.size
+        ? this.prisma.remittance.findMany({ where: { id: { in: Array.from(remittanceIds) } } })
+        : [],
+    ]);
+
+    const depositMap = new Map(deposits.map((d) => [d.id, d]));
+    const withdrawMap = new Map(withdraws.map((w) => [w.id, w]));
+    const tradeMap = new Map(trades.map((t) => [t.id, t]));
+    const remittanceMap = new Map(remittances.map((r) => [r.id, r]));
+
+    const entries: AccountStatementEntryDto[] = accountTxs.map((tx) => {
+      const delta = new Decimal(tx.delta);
+      const instrument = tx.account.instrument;
+      let docType: string = tx.refType;
+      let docNo: string = tx.id;
+      let description: string | undefined;
+
+      if (tx.refId) {
+        if (tx.refType === TxRefType.DEPOSIT) {
+          const deposit = depositMap.get(tx.refId);
+          if (deposit) {
+            docType = 'DEPOSIT';
+            docNo = deposit.refNo ?? deposit.id;
+            description = deposit.note ?? undefined;
+          }
+        } else if (tx.refType === TxRefType.WITHDRAW) {
+          const withdraw = withdrawMap.get(tx.refId);
+          if (withdraw) {
+            docType = 'WITHDRAW';
+            docNo = withdraw.id;
+            description = withdraw.note ?? undefined;
+          }
+        } else if (tx.refType === TxRefType.TRADE) {
+          const trade = tradeMap.get(tx.refId);
+          if (trade) {
+            docType = trade.side === TradeSide.BUY ? 'TRADE_BUY' : 'TRADE_SELL';
+            docNo = trade.id;
+            description = trade.clientNote ?? trade.instrument.name;
+          }
+        } else if (tx.refType === TxRefType.REMITTANCE) {
+          const remittance = remittanceMap.get(tx.refId);
+          if (remittance) {
+            const isOutgoing = remittance.fromUserId === userId;
+            docType = isOutgoing ? 'REMITTANCE_OUT' : 'REMITTANCE_IN';
+            docNo = remittance.id;
+            description = remittance.note ?? undefined;
+          }
+        }
+      }
+
+      const entry: AccountStatementEntryDto = {
+        date: tx.createdAt,
+        docNo,
+        docType,
+        description,
+      };
+
+      if (instrument.code === IRR_INSTRUMENT_CODE) {
+        if (delta.gt(0)) entry.creditMoney = delta.toString();
+        else if (delta.lt(0)) entry.debitMoney = delta.abs().toString();
+      } else if (instrument.type === InstrumentType.GOLD) {
+        if (delta.gt(0)) entry.creditWeight = delta.toString();
+        else if (delta.lt(0)) entry.debitWeight = delta.abs().toString();
+      }
+
+      return entry;
+    });
+
+    return entries;
+  }
+
+  private async resolveAccountsForStatement(
+    userId: string,
+    filters: AccountStatementFiltersDto = {} as AccountStatementFiltersDto,
+  ) {
+    if (filters.instrumentCode) {
+      const instrument = await this.prisma.instrument.findUnique({
+        where: { code: filters.instrumentCode },
+      });
+      if (!instrument) {
+        throw new NotFoundException(`Instrument ${filters.instrumentCode} not found`);
+      }
+
+      const account = await this.prisma.account.findUnique({
+        where: { userId_instrumentId: { userId, instrumentId: instrument.id } },
+        include: { instrument: true },
+      });
+
+      return account ? [account] : [];
+    }
+
+    return this.prisma.account.findMany({
+      where: {
+        userId,
+        OR: [
+          { instrument: { code: IRR_INSTRUMENT_CODE } },
+          { instrument: { type: InstrumentType.GOLD } },
+        ],
+      },
+      include: { instrument: true },
+    });
   }
 
 }

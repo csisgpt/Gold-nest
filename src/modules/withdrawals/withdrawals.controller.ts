@@ -7,6 +7,8 @@ import { WithdrawalsService } from './withdrawals.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 
 @ApiTags('withdrawals')
 @ApiBearerAuth('access-token')
@@ -16,13 +18,21 @@ export class WithdrawalsController {
   constructor(private readonly withdrawalsService: WithdrawalsService) {}
 
   @Post('withdrawals')
-  create(@Body() dto: CreateWithdrawalDto) {
-    return this.withdrawalsService.create(dto);
+  @UseGuards(JwtAuthGuard)
+  create(@Body() dto: CreateWithdrawalDto, @CurrentUser() user: JwtRequestUser) {
+    return this.withdrawalsService.createForUser(user.id, dto);
   }
 
   @Get('withdrawals/my/:userId')
-  listMy(@Param('userId') userId: string) {
-    return this.withdrawalsService.findMy(userId);
+  @UseGuards(JwtAuthGuard)
+  listMy(@Param('userId') _userId: string, @CurrentUser() user: JwtRequestUser) {
+    return this.withdrawalsService.findMy(user.id);
+  }
+
+  @Get('withdrawals/my')
+  @UseGuards(JwtAuthGuard)
+  listMyAuthenticated(@CurrentUser() user: JwtRequestUser) {
+    return this.withdrawalsService.findMy(user.id);
   }
 
   @Get('admin/withdrawals')
@@ -33,13 +43,13 @@ export class WithdrawalsController {
 
   @Post('admin/withdrawals/:id/approve')
   @Roles(UserRole.ADMIN)
-  approve(@Param('id') id: string, @Body() dto: DecisionDto) {
-    return this.withdrawalsService.approve(id, dto);
+  approve(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
+    return this.withdrawalsService.approve(id, dto, admin.id);
   }
 
   @Post('admin/withdrawals/:id/reject')
   @Roles(UserRole.ADMIN)
-  reject(@Param('id') id: string, @Body() dto: DecisionDto) {
-    return this.withdrawalsService.reject(id, dto);
+  reject(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
+    return this.withdrawalsService.reject(id, dto, admin.id);
   }
 }
