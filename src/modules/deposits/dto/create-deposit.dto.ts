@@ -2,9 +2,11 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsArray, IsNumberString, IsOptional, IsString } from 'class-validator';
 
 export class CreateDepositDto {
-  @ApiProperty({ example: 'user-1', description: 'User placing the deposit.' })
+  /** @deprecated userId is derived from the authenticated user. */
+  @ApiProperty({ example: 'user-1', description: 'User placing the deposit (deprecated).', required: false })
+  @IsOptional()
   @IsString()
-  userId!: string;
+  userId?: string;
 
   @ApiProperty({ example: '1000000', description: 'Deposit amount in IRR as a decimal string.' })
   @IsNumberString()

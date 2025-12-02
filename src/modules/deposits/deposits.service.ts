@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { AccountTxType, AttachmentEntityType, DepositStatus, TxRefType } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
@@ -10,17 +10,19 @@ import { CreateDepositDto } from './dto/create-deposit.dto';
 
 @Injectable()
 export class DepositsService {
+  private readonly logger = new Logger(DepositsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
     private readonly filesService: FilesService,
   ) {}
 
-  async create(dto: CreateDepositDto) {
+  async createForUser(userId: string, dto: CreateDepositDto) {
     return this.prisma.$transaction(async (tx) => {
       const deposit = await tx.depositRequest.create({
         data: {
-          userId: dto.userId,
+          userId,
           amount: new Decimal(dto.amount),
           method: dto.method,
           refNo: dto.refNo,
@@ -53,11 +55,25 @@ export class DepositsService {
     });
   }
 
-  async approve(id: string, dto: DecisionDto) {
+  async approve(id: string, dto: DecisionDto, adminId: string) {
     return this.prisma.$transaction(async (tx) => {
       const deposit = await tx.depositRequest.findUnique({ where: { id } });
       if (!deposit) throw new NotFoundException('Deposit not found');
       if (deposit.status !== DepositStatus.PENDING) {
+        throw new BadRequestException('Deposit already processed');
+      }
+
+      const { count } = await tx.depositRequest.updateMany({
+        where: { id, status: DepositStatus.PENDING },
+        data: {
+          status: DepositStatus.APPROVED,
+          processedAt: new Date(),
+          processedById: adminId,
+          note: dto.note,
+        },
+      });
+
+      if (count === 0) {
         throw new BadRequestException('Deposit already processed');
       }
 
@@ -68,45 +84,51 @@ export class DepositsService {
       );
 
       const txResult = await this.accountsService.applyTransaction(
-        {
-          accountId: account.id,
-          delta: deposit.amount,
-          type: AccountTxType.DEPOSIT,
-          refType: TxRefType.DEPOSIT,
-          refId: deposit.id,
-          createdById: dto.processedById,
-        },
         tx,
+        account,
+        deposit.amount,
+        AccountTxType.DEPOSIT,
+        TxRefType.DEPOSIT,
+        deposit.id,
+        adminId,
       );
+
+      this.logger.log(`Deposit ${id} approved by ${adminId}`);
 
       return tx.depositRequest.update({
         where: { id },
         data: {
-          status: DepositStatus.APPROVED,
-          processedAt: new Date(),
-          processedById: dto.processedById,
           accountTxId: txResult.txRecord.id,
-          note: dto.note,
         },
       });
     });
   }
 
-  async reject(id: string, dto: DecisionDto) {
-    const deposit = await this.prisma.depositRequest.findUnique({ where: { id } });
-    if (!deposit) throw new NotFoundException('Deposit not found');
-    if (deposit.status !== DepositStatus.PENDING) {
-      throw new BadRequestException('Deposit already processed');
-    }
+  async reject(id: string, dto: DecisionDto, adminId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const deposit = await tx.depositRequest.findUnique({ where: { id } });
+      if (!deposit) throw new NotFoundException('Deposit not found');
+      if (deposit.status !== DepositStatus.PENDING) {
+        throw new BadRequestException('Deposit already processed');
+      }
 
-    return this.prisma.depositRequest.update({
-      where: { id },
-      data: {
-        status: DepositStatus.REJECTED,
-        processedAt: new Date(),
-        processedById: dto.processedById,
-        note: dto.note,
-      },
+      const { count } = await tx.depositRequest.updateMany({
+        where: { id, status: DepositStatus.PENDING },
+        data: {
+          status: DepositStatus.REJECTED,
+          processedAt: new Date(),
+          processedById: adminId,
+          note: dto.note,
+        },
+      });
+
+      if (count === 0) {
+        throw new BadRequestException('Deposit already processed');
+      }
+
+      this.logger.log(`Deposit ${id} rejected by ${adminId}`);
+
+      return tx.depositRequest.findUnique({ where: { id } });
     });
   }
 }

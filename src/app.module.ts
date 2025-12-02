@@ -13,6 +13,7 @@ import { FilesModule } from './modules/files/files.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { InstrumentsModule } from './modules/instruments/instruments.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { RemittancesModule } from './modules/remittances/remittances.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -28,6 +29,7 @@ import { AppController } from './app.controller';
     FilesModule,
     AdminModule,
     InstrumentsModule,
+    RemittancesModule,
     AuthModule,
     ThrottlerModule.forRoot({
       ttl: 60,

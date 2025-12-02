@@ -70,6 +70,7 @@ enum AccountTxType {
   TRADE_CREDIT
   ADJUSTMENT
   FEE
+  REMITTANCE
 }
 
 enum DepositStatus {
@@ -127,6 +128,9 @@ model User {
   processedDeposits  DepositRequest[]  @relation("DepositProcessedBy")
   processedWithdraws WithdrawRequest[] @relation("WithdrawProcessedBy")
 
+  remittancesSent     Remittance[] @relation("RemittanceFrom")
+  remittancesReceived Remittance[] @relation("RemittanceTo")
+
   // سمت "تریدهای تاییدشده توسط این کاربر (ادمین)"
   approvedTrades Trade[] @relation("ApprovedTrades")
 
@@ -147,6 +151,7 @@ model Instrument {
   accounts Account[]
   trades   Trade[]
   prices   InstrumentPrice[]
+  remittances Remittance[]
 }
 
 model InstrumentPrice {
@@ -199,6 +204,9 @@ model AccountTx {
 
   depositRequests  DepositRequest[]  @relation("DepositAccountTx")
   withdrawRequests WithdrawRequest[] @relation("WithdrawAccountTx")
+
+  remittanceFrom Remittance? @relation("RemittanceFromTx")
+  remittanceTo   Remittance? @relation("RemittanceToTx")
 
   @@index([refType, refId])
 }
@@ -277,6 +285,29 @@ model WithdrawRequest {
 
   accountTx   AccountTx? @relation("WithdrawAccountTx", fields: [accountTxId], references: [id])
   accountTxId String?
+}
+
+model Remittance {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  fromUser   User   @relation("RemittanceFrom", fields: [fromUserId], references: [id])
+  fromUserId String
+
+  toUser   User   @relation("RemittanceTo", fields: [toUserId], references: [id])
+  toUserId String
+
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+  instrumentId String
+
+  amount Decimal @db.Decimal(24, 6)
+  note   String?
+
+  fromAccountTx   AccountTx? @relation("RemittanceFromTx", fields: [fromAccountTxId], references: [id])
+  fromAccountTxId String?  @unique
+
+  toAccountTx   AccountTx? @relation("RemittanceToTx", fields: [toAccountTxId], references: [id])
+  toAccountTxId String?  @unique
 }
 
 model GoldLot {
