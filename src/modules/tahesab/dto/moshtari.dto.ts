@@ -1,47 +1,60 @@
 export class DoNewMoshtariRequestDto {
   name: string;
-  code?: string;
-  mobile?: string;
-  phone?: string;
-  address?: string;
-  nationalCode?: string;
-  city?: string;
-  postalCode?: string;
-  description?: string;
+  groupName: string;
+  tel: string;
+  address: string;
+  nationalCode: string;
+  birthDateShamsi?: string;
+  referrerName?: string;
+  referrerCode?: string | number;
+  /** Moshtari_Code; -1 usually means auto-code */
+  moshtariCode?: string | number;
+  /** Jens_Felez: 0 = gold, 1 = silver, etc. */
+  jensFelez?: number;
 }
 
 export class DoNewMoshtariResponseDto {
-  customerId?: number;
-  code?: string;
+  moshtariCode?: string | number;
+  gid?: string | number;
   [key: string]: unknown;
 }
 
 export class DoEditMoshtariRequestDto {
-  customerId?: number;
-  code?: string;
-  name?: string;
-  mobile?: string;
-  phone?: string;
-  address?: string;
+  moshtariCode: string | number;
+  name: string;
+  groupName: string;
+  tel: string;
+  address: string;
+  nationalCode: string;
+  birthDateShamsi?: string;
+  referrerName?: string;
+  referrerCode?: string | number;
   description?: string;
 }
 
 export class DoEditMoshtariResponseDto {
-  success?: boolean;
+  moshtariCode?: string | number;
+  gid?: string | number;
   [key: string]: unknown;
 }
 
 export class DoListMoshtariRequestDto {
-  countLast?: number;
-  customerCode?: string;
-  fromDateShamsi?: string;
-  toDateShamsi?: string;
-  searchTerm?: string;
+  fromCode?: string | number;
+  toCode?: string | number;
+  mobile?: string;
+}
+
+export class TahesabCustomerSummary {
+  code?: string | number;
+  name?: string;
+  groupName?: string;
+  tel?: string;
+  mobile?: string;
+  [key: string]: unknown;
 }
 
 export class DoListMoshtariResponseDto {
-  customers?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  customers: TahesabCustomerSummary[];
 }
 
 export class GetMoshtariByCodeRequestDto {

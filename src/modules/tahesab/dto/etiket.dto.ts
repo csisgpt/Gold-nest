@@ -1,7 +1,7 @@
 export class DoListEtiketRequestDto {
-  countLast?: number;
-  updatedAfter?: string;
-  includeImages?: boolean;
+  fromCode?: string | number;
+  toCode?: string | number;
+  withPhoto?: boolean;
 }
 
 export class DoListEtiketResponseDto {
@@ -10,16 +10,13 @@ export class DoListEtiketResponseDto {
 }
 
 export class DoListGetUpdatedEtiketRequestDto {
-  lastSyncDateTime?: string;
+  fromDateTime: string;
+  toDateTime: string;
 }
 
 export class DoListGetUpdatedEtiketResponseDto {
   etikets?: Array<Record<string, unknown>>;
   [key: string]: unknown;
-}
-
-export class GetEtiketTableInfoRequestDto {
-  tableName?: string;
 }
 
 export class GetEtiketTableInfoResponseDto {
@@ -28,7 +25,7 @@ export class GetEtiketTableInfoResponseDto {
 }
 
 export class GetInfoRequestDto {
-  barcode: string;
+  epcList: string[];
 }
 
 export class GetInfoResponseDto {
@@ -37,7 +34,7 @@ export class GetInfoResponseDto {
 }
 
 export class GetInfoWithImageRequestDto {
-  barcode: string;
+  epcList: string[];
 }
 
 export class GetInfoWithImageResponseDto {
@@ -45,9 +42,12 @@ export class GetInfoWithImageResponseDto {
   [key: string]: unknown;
 }
 
+export class GetEtiketInfoByCodeRequestDto {
+  codes: (string | number)[];
+}
+
 export class SetEtiketRFIDClearRequestDto {
-  barcode: string;
-  rfid?: string;
+  code: string | number;
 }
 
 export class SetEtiketRFIDClearResponseDto {

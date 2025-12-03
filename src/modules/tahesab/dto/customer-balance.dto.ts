@@ -1,19 +1,25 @@
 export class GetMandeHesabByGidRequestDto {
-  gid: number | string;
+  /** Tahesab customer GID */
+  gid: string | number;
 }
 
 export class GetMandeHesabByCodeRequestDto {
-  customerCode: string;
+  /** One or more Tahesab customer codes */
+  customerCodes: Array<string | number>;
 }
 
 export class GetMandeHesabByDateRequestDto {
   customerCode: string;
+  /** TarikhShamsi */
   dateShamsi: string;
 }
 
 export class GetMandeHesabResponseDto {
-  balance?: number | string;
-  credit?: number | string;
-  debt?: number | string;
+  mandeyeKolBePool?: number | string;
+  mandeyeKolBeTala?: number | string;
+  mandeyeMali?: number | string;
+  mandeyeVazni?: number | string;
+  bedehkar?: number | string;
+  bestankar?: number | string;
   [key: string]: unknown;
 }
