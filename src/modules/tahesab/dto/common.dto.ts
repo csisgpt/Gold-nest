@@ -2,25 +2,59 @@ export class PingResponseDto {
   status?: string;
   message?: string;
   version?: string;
-  [key: string]: unknown;
+}
+
+export class TahesabNamedItemDto {
+  code?: string | number;
+  name?: string;
+}
+
+export class TahesabBalanceRowDto {
+  mande?: number | string;
+  bedehkar?: number | string;
+  bestankar?: number | string;
 }
 
 export class GetBankBalanceRequestDto {
-  bankCode?: string;
-  fromDateShamsi?: string;
-  toDateShamsi?: string;
+  bankCode: string;
 }
 
 export class GetBankBalanceResponseDto {
-  balances?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  balances?: TahesabBalanceRowDto[];
 }
 
 export class GetCashboxBalanceRequestDto {
-  cashboxCode?: string;
+  cashboxCode: string;
 }
 
 export class GetCashboxBalanceResponseDto {
-  balances?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  balances?: TahesabBalanceRowDto[];
+}
+
+export class DoListNameSekehResponseDto {
+  items?: TahesabNamedItemDto[];
+}
+
+export class DoListHesabBankiResponseDto {
+  accounts?: TahesabNamedItemDto[];
+}
+
+export class DoListNameKarSakhteResponseDto {
+  items?: TahesabNamedItemDto[];
+}
+
+export class GetMojoodiBankRequestDto {
+  bankCode: string | number;
+}
+
+export class GetMojoodiBankResponseDto {
+  balances?: TahesabBalanceRowDto[];
+}
+
+export class GetMojoodiKarSakhteRequestDto {
+  jensFelez: number;
+}
+
+export class GetMojoodiKarSakhteResponseDto {
+  balances?: TahesabBalanceRowDto[];
 }

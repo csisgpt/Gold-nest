@@ -1,11 +1,16 @@
 import { HttpModule, HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
+import { AxiosResponse } from 'axios';
 import { of } from 'rxjs';
-import { TahesabHttpClient } from './tahesab-http.client';
-import { TahesabService } from './tahesab.service';
 import { DoListAsnadRequestDto } from './dto/list-documents.dto';
 import { GetMandeHesabByCodeRequestDto } from './dto/customer-balance.dto';
-import { ConfigService } from '@nestjs/config';
+import { TahesabHttpClient } from './tahesab-http.client';
+import { TahesabService } from './tahesab.service';
+import { DoNewMoshtariRequestDto } from './dto/moshtari.dto';
+import { GetMojoodiAbshodeRequestDto } from './dto/inventory.dto';
+import { DoListEtiketRequestDto } from './dto/etiket.dto';
+import { DoNewSanadGoldRequestDto } from './dto/sanad.dto';
 
 describe('TahesabService', () => {
   let service: TahesabService;
@@ -45,12 +50,44 @@ describe('TahesabService', () => {
 
   it('wraps method call in envelope', async () => {
     const response = { ok: true };
-    jest.spyOn(httpService, 'post').mockReturnValue(of({ data: response } as any));
+    const httpResponse = of({ data: response } as AxiosResponse<typeof response>);
+    jest.spyOn(httpService, 'post').mockReturnValue(httpResponse);
 
     const result = await service.callMethod('Ping', []);
 
     expect(httpService.post).toHaveBeenCalledWith('/', { Ping: [] }, expect.any(Object));
     expect(result).toEqual(response);
+  });
+
+  it('maps createCustomer dto into ordered array payload', async () => {
+    const dto: DoNewMoshtariRequestDto = {
+      name: 'John',
+      groupName: 'VIP',
+      tel: '021',
+      address: 'Addr',
+      nationalCode: '1234567890',
+      birthDateShamsi: '1400/01/01',
+      referrerName: 'Ref',
+      referrerCode: '9',
+      moshtariCode: 'MC',
+      jensFelez: 1,
+    };
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue({ moshtariCode: 'MC' });
+
+    await service.createCustomer(dto);
+
+    expect(spy).toHaveBeenCalledWith('DoNewMoshtari', [
+      dto.name,
+      dto.groupName,
+      dto.tel,
+      dto.address,
+      dto.nationalCode,
+      dto.birthDateShamsi,
+      dto.referrerName,
+      dto.referrerCode,
+      dto.moshtariCode,
+      dto.jensFelez,
+    ]);
   });
 
   it('maps listDocuments dto into ordered array payload', async () => {
@@ -60,11 +97,9 @@ describe('TahesabService', () => {
       fromDateShamsi: '1403/01/01',
       toDateShamsi: '1403/01/30',
       filterNoSanad: '123',
-      metalType: 'GOLD',
+      jensFelez: 0,
     };
-    const spy = jest
-      .spyOn(service as any, 'callMethod')
-      .mockResolvedValue({} as any);
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue({ documents: [] });
 
     await service.listDocuments(dto);
 
@@ -74,18 +109,84 @@ describe('TahesabService', () => {
       dto.fromDateShamsi,
       dto.toDateShamsi,
       dto.filterNoSanad,
-      dto.metalType,
+      dto.jensFelez,
     ]);
   });
 
   it('maps getBalanceByCustomerCode to expected method name and payload', async () => {
-    const dto: GetMandeHesabByCodeRequestDto = { customerCode: 'CUST-1' };
-    const spy = jest
-      .spyOn(service as any, 'callMethod')
-      .mockResolvedValue({ balance: 0 });
+    const dto: GetMandeHesabByCodeRequestDto = { customerCodes: ['CUST-1', 'CUST-2'] };
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue([]);
 
     await service.getBalanceByCustomerCode(dto);
 
-    expect(spy).toHaveBeenCalledWith('getmandehesabbycode', [dto.customerCode]);
+    expect(spy).toHaveBeenCalledWith('getmandehesabbycode', [dto.customerCodes]);
+  });
+
+  it('maps getAbshodeInventory parameters into documented array', async () => {
+    const dto: GetMojoodiAbshodeRequestDto = { ayar: 750, jensFelez: 0 };
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue([]);
+
+    await service.getAbshodeInventory(dto);
+
+    expect(spy).toHaveBeenCalledWith('GetMojoodiAbshodeMotefareghe', [
+      dto.ayar,
+      dto.jensFelez,
+    ]);
+  });
+
+  it('maps listEtikets parameters including withPhoto flag', async () => {
+    const dto: DoListEtiketRequestDto = { fromCode: '1', toCode: '5', withPhoto: true };
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue({ etikets: [] });
+
+    await service.listEtikets(dto);
+
+    expect(spy).toHaveBeenCalledWith('DoListEtiket', [dto.fromCode, dto.toCode, 1]);
+  });
+
+  it('maps createGoldVoucher parameters into ordered array', async () => {
+    const dto: DoNewSanadGoldRequestDto = {
+      sabteKolOrMovaghat: 1,
+      moshtariCode: '100',
+      factorNumber: 'F1',
+      radifNumber: 1,
+      shamsiYear: '1403',
+      shamsiMonth: '01',
+      shamsiDay: '02',
+      vazn: 10,
+      ayar: 750,
+      angNumber: 'ANG',
+      nameAz: 'TEST',
+      isVoroodOrKhorooj: 1,
+      isMotefaregheOrAbshode: 0,
+      sharh: 'desc',
+      factorCode: 'FC',
+      havalehBeMcode: '200',
+      multiRadif: 0,
+      jensFelez: 0,
+    };
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue({ OK: 'ok' });
+
+    await service.createGoldVoucher(dto);
+
+    expect(spy).toHaveBeenCalledWith('DoNewSanadVKHGOLD', [
+      dto.sabteKolOrMovaghat,
+      dto.moshtariCode,
+      dto.factorNumber,
+      dto.radifNumber,
+      dto.shamsiYear,
+      dto.shamsiMonth,
+      dto.shamsiDay,
+      dto.vazn,
+      dto.ayar,
+      dto.angNumber,
+      dto.nameAz,
+      dto.isVoroodOrKhorooj,
+      dto.isMotefaregheOrAbshode,
+      dto.sharh,
+      dto.factorCode,
+      dto.havalehBeMcode,
+      dto.multiRadif,
+      dto.jensFelez,
+    ]);
   });
 });

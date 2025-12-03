@@ -1,20 +1,30 @@
 export class GetMojoodiAbshodeRequestDto {
-  includeDetails?: boolean;
-  metalType?: string | null;
+  ayar: number;
+  jensFelez: number;
+}
+
+export class GetMojoodiAbshodeRow {
+  ayar?: number | string;
+  vazn?: number | string;
+  mandeyeMali?: number | string;
 }
 
 export class GetMojoodiAbshodeResponseDto {
-  items?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  items?: GetMojoodiAbshodeRow[];
 }
 
 export class DoTarazAbshodeSekehArzRequestDto {
-  fromDateShamsi: string;
-  toDateShamsi: string;
-  metalType?: string | null;
+  includeCoin: boolean;
+  jensFelez: number;
+}
+
+export class DoTarazAbshodeSekehArzRow {
+  ayar?: number | string;
+  vazn?: number | string;
+  bedehkar?: number | string;
+  bestankar?: number | string;
 }
 
 export class DoTarazAbshodeSekehArzResponseDto {
-  balances?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  balances?: DoTarazAbshodeSekehArzRow[];
 }

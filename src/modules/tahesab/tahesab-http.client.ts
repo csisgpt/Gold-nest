@@ -3,6 +3,7 @@ import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AxiosError, AxiosRequestConfig } from 'axios';
 import { firstValueFrom } from 'rxjs';
+import type { TahesabMethodMap } from './tahesab.methods';
 
 @Injectable()
 export class TahesabHttpClient {
@@ -27,17 +28,24 @@ export class TahesabHttpClient {
     };
   }
 
-  async post<TReq, TRes>(
-    body: TReq,
+  async call<K extends keyof TahesabMethodMap>(
+    methodName: K,
+    args: TahesabMethodMap[K]['args'],
     config?: AxiosRequestConfig,
-  ): Promise<TRes> {
+  ): Promise<TahesabMethodMap[K]['response']> {
     const headers = this.buildHeaders(
       (config?.headers as Record<string, string | undefined>) ?? {},
     );
 
+    const body = { [methodName]: args } as Record<string, TahesabMethodMap[K]['args']>;
+
     try {
       const response = await firstValueFrom(
-        this.http.post<TRes>('/', body, { ...config, headers }),
+        this.http.post<TahesabMethodMap[K]['response']>(
+          '/',
+          body,
+          { ...config, headers },
+        ),
       );
       return response.data;
     } catch (error) {

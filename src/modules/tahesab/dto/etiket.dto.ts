@@ -1,56 +1,50 @@
 export class DoListEtiketRequestDto {
-  countLast?: number;
-  updatedAfter?: string;
-  includeImages?: boolean;
+  fromCode?: string | number;
+  toCode?: string | number;
+  withPhoto?: boolean;
 }
 
 export class DoListEtiketResponseDto {
-  etikets?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  etikets?: Array<Record<string, string | number | boolean | null>>;
 }
 
 export class DoListGetUpdatedEtiketRequestDto {
-  lastSyncDateTime?: string;
+  fromDateTime: string;
+  toDateTime: string;
 }
 
 export class DoListGetUpdatedEtiketResponseDto {
-  etikets?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
-}
-
-export class GetEtiketTableInfoRequestDto {
-  tableName?: string;
+  etikets?: Array<Record<string, string | number | boolean | null>>;
 }
 
 export class GetEtiketTableInfoResponseDto {
-  columns?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  columns?: Array<Record<string, string | number | boolean | null>>;
 }
 
 export class GetInfoRequestDto {
-  barcode: string;
+  epcList: string[];
 }
 
 export class GetInfoResponseDto {
-  item?: Record<string, unknown>;
-  [key: string]: unknown;
+  item?: Record<string, string | number | boolean | null>;
 }
 
 export class GetInfoWithImageRequestDto {
-  barcode: string;
+  epcList: string[];
 }
 
 export class GetInfoWithImageResponseDto {
-  item?: Record<string, unknown>;
-  [key: string]: unknown;
+  item?: Record<string, string | number | boolean | null>;
+}
+
+export class GetEtiketInfoByCodeRequestDto {
+  codes: (string | number)[];
 }
 
 export class SetEtiketRFIDClearRequestDto {
-  barcode: string;
-  rfid?: string;
+  code: string | number;
 }
 
 export class SetEtiketRFIDClearResponseDto {
   success?: boolean;
-  [key: string]: unknown;
 }
