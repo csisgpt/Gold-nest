@@ -103,6 +103,26 @@ enum AttachmentEntityType {
   REMITTANCE
 }
 
+model TahesabOutbox {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  method      String
+  payload     Json
+  status      TahesabOutboxStatus @default(PENDING)
+  retryCount  Int      @default(0)
+  lastError   String?
+  nextRetryAt DateTime @default(now())
+  correlationId String?
+}
+
+enum TahesabOutboxStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
 model User {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TahesabHttpClient } from './tahesab-http.client';
+import type { TahesabMethodMap } from './tahesab.methods';
 import {
   DoDeleteSanadRequestDto,
   DoDeleteSanadResponseDto,
@@ -69,13 +70,12 @@ export class TahesabService {
 
   constructor(private readonly tahesabHttpClient: TahesabHttpClient) {}
 
-  async callMethod<TPayload, TResponse>(
-    method: string,
-    payload: TPayload,
-  ): Promise<TResponse> {
-    const body = { [method]: payload } as Record<string, TPayload>;
+  async callMethod<K extends keyof TahesabMethodMap>(
+    method: K,
+    payload: TahesabMethodMap[K]['args'],
+  ): Promise<TahesabMethodMap[K]['response']> {
     this.logger.debug(`Calling Tahesab method ${method}`);
-    return this.tahesabHttpClient.post<typeof body, TResponse>(body);
+    return this.tahesabHttpClient.call(method, payload);
   }
 
   // Customer / Moshtari

@@ -1,14 +1,27 @@
 import { HttpModule } from '@nestjs/axios';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { Agent } from 'https';
 import { TahesabController } from './tahesab.controller';
 import { TahesabHttpClient } from './tahesab-http.client';
 import { TahesabService } from './tahesab.service';
+import { TahesabInventoryService } from './tahesab-inventory.service';
+import { TahesabAccountsService } from './tahesab-accounts.service';
+import { TahesabNamesService } from './tahesab-names.service';
+import { TahesabDocumentsService } from './tahesab-documents.service';
+import { TahesabEtiketService } from './tahesab-etiket.service';
+import { TahesabRfidService } from './tahesab-rfid.service';
+import { TahesabDocsReportService } from './tahesab-docs-report.service';
+import { TahesabOutboxService } from './tahesab-outbox.service';
+import { TahesabOutboxProcessor } from './tahesab-outbox.processor';
+import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
   imports: [
     ConfigModule,
+    ScheduleModule.forRoot(),
+    PrismaModule,
     HttpModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -35,8 +48,30 @@ import { TahesabService } from './tahesab.service';
       },
     }),
   ],
-  providers: [TahesabHttpClient, TahesabService],
+  providers: [
+    TahesabHttpClient,
+    TahesabService,
+    TahesabInventoryService,
+    TahesabAccountsService,
+    TahesabNamesService,
+    TahesabDocumentsService,
+    TahesabEtiketService,
+    TahesabRfidService,
+    TahesabDocsReportService,
+    TahesabOutboxService,
+    TahesabOutboxProcessor,
+  ],
   controllers: [TahesabController],
-  exports: [TahesabService],
+  exports: [
+    TahesabService,
+    TahesabInventoryService,
+    TahesabAccountsService,
+    TahesabNamesService,
+    TahesabDocumentsService,
+    TahesabEtiketService,
+    TahesabRfidService,
+    TahesabDocsReportService,
+    TahesabOutboxService,
+  ],
 })
 export class TahesabModule {}
