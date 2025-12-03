@@ -37,6 +37,7 @@ export interface SimpleVoucherDto {
   factorCode?: string | number;
 }
 
+/** Tahesab voucher/document wrappers converting DTOs to positional arrays. */
 @Injectable()
 export class TahesabDocumentsService {
   constructor(private readonly client: TahesabHttpClient) {}

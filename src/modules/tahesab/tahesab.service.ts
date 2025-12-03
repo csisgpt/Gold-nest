@@ -64,6 +64,7 @@ import {
   PingResponseDto,
 } from './dto/common.dto';
 
+/** Facade for internal Tahesab services. Prefer using specific services in new code. */
 @Injectable()
 export class TahesabService {
   private readonly logger = new Logger(TahesabService.name);

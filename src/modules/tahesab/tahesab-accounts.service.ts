@@ -12,6 +12,7 @@ import {
   GetMandeHesabByGidRequestDto,
 } from './dto/customer-balance.dto';
 
+/** Wraps Tahesab customer and balance APIs with DTO inputs. */
 @Injectable()
 export class TahesabAccountsService {
   constructor(private readonly client: TahesabHttpClient) {}
