@@ -16,7 +16,6 @@ export class DoNewMoshtariRequestDto {
 export class DoNewMoshtariResponseDto {
   moshtariCode?: string | number;
   gid?: string | number;
-  [key: string]: unknown;
 }
 
 export class DoEditMoshtariRequestDto {
@@ -35,7 +34,6 @@ export class DoEditMoshtariRequestDto {
 export class DoEditMoshtariResponseDto {
   moshtariCode?: string | number;
   gid?: string | number;
-  [key: string]: unknown;
 }
 
 export class DoListMoshtariRequestDto {
@@ -50,7 +48,6 @@ export class TahesabCustomerSummary {
   groupName?: string;
   tel?: string;
   mobile?: string;
-  [key: string]: unknown;
 }
 
 export class DoListMoshtariResponseDto {
@@ -62,6 +59,5 @@ export class GetMoshtariByCodeRequestDto {
 }
 
 export class GetMoshtariByCodeResponseDto {
-  customer?: Record<string, unknown>;
-  [key: string]: unknown;
+  customer?: Record<string, string | number | boolean | null>;
 }

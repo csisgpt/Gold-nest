@@ -37,7 +37,7 @@ export class TahesabHttpClient {
       (config?.headers as Record<string, string | undefined>) ?? {},
     );
 
-    const body = { [methodName]: args } as Record<string, unknown>;
+    const body = { [methodName]: args } as Record<string, TahesabMethodMap[K]['args']>;
 
     try {
       const response = await firstValueFrom(

@@ -21,5 +21,4 @@ export class GetMandeHesabResponseDto {
   mandeyeVazni?: number | string;
   bedehkar?: number | string;
   bestankar?: number | string;
-  [key: string]: unknown;
 }

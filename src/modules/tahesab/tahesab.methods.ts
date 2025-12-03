@@ -1,6 +1,44 @@
-import type { DoEditMoshtariRequestDto, DoNewMoshtariRequestDto } from './dto/moshtari.dto';
-import type { DoNewSanadGoldRequestDto } from './dto/sanad.dto';
+import type {
+  DoEditMoshtariRequestDto,
+  DoEditMoshtariResponseDto,
+  DoListMoshtariResponseDto,
+  DoNewMoshtariRequestDto,
+  DoNewMoshtariResponseDto,
+  GetMoshtariByCodeResponseDto,
+} from './dto/moshtari.dto';
+import type {
+  DoNewSanadGoldRequestDto,
+  DoNewSanadInquiryResponseDto,
+  DoDeleteSanadResponseDto,
+} from './dto/sanad.dto';
 import type { GoldBuySellDto, SimpleVoucherDto } from './tahesab-documents.service';
+import type {
+  DoTarazAbshodeSekehArzRow,
+  GetMojoodiAbshodeRow,
+} from './dto/inventory.dto';
+import type { DoListAsnadResponseDto } from './dto/list-documents.dto';
+import type {
+  DoListEtiketResponseDto,
+  DoListGetUpdatedEtiketResponseDto,
+  GetEtiketInfoResponseDto,
+  GetEtiketInfoWithImageResponseDto,
+  GetEtiketPictureByFileNameResponseDto,
+  GetEtiketTableInfoResponseDto,
+  SetEtiketRFIDClearResponseDto,
+} from './dto/etiket.dto';
+import type {
+  DoListHesabBankiResponseDto,
+  DoListNameKarSakhteResponseDto,
+  DoListNameSekehResponseDto,
+  GetMojoodiBankResponseDto,
+  GetMojoodiKarSakhteResponseDto,
+  TahesabBalanceRowDto,
+  PingResponseDto,
+} from './dto/common.dto';
+import type {
+  GetMandeHesabResponseDto,
+  GetMandeHesabByDateRequestDto,
+} from './dto/customer-balance.dto';
 
 export enum SabteKolOrMovaghat {
   Movaghat = 0,
@@ -34,7 +72,6 @@ export enum JensFelez {
 export interface TahesabDocumentResult {
   OK: string;
   Sh_factor?: string;
-  [key: string]: any;
 }
 
 export interface BankBalance {
@@ -42,27 +79,17 @@ export interface BankBalance {
   Mande: number;
   GardeshVariz: number;
   GardeshBardasht: number;
-  [key: string]: any;
 }
 
 export interface AbshodeMojoodiRow {
   Ayar: string;
   VaznMojood: number;
-  [key: string]: any;
 }
 
-export interface TahesabListResponse<T = Record<string, any>> {
-  list: T[];
-  [key: string]: any;
-}
-
-/** Currently unused, reserved for future use. */
-export interface TahesabUnknownResponse {
-  [key: string]: any;
-}
+export type TahesabGenericRecord = Record<string, string | number | boolean | null>;
 
 export type TahesabMethodMap = {
-  Ping: { args: []; response: any };
+  Ping: { args: []; response: PingResponseDto };
 
   // Inventory / balances
   GetMojoodiBank: { args: [nameBank: string]; response: BankBalance[] };
@@ -70,10 +97,10 @@ export type TahesabMethodMap = {
     args: [ayar: number | string, jensFelez: JensFelez];
     response: AbshodeMojoodiRow[];
   };
-  GetMojoodiKarSakhte: { args: [jensFelez: JensFelez]; response: TahesabUnknownResponse };
+  GetMojoodiKarSakhte: { args: [jensFelez: JensFelez]; response: TahesabBalanceRowDto[] };
   DoTarazAbshodeSekehArz: {
     args: [baEhtesabSekeh: number, jensFelez: JensFelez];
-    response: TahesabUnknownResponse;
+    response: DoTarazAbshodeSekehArzRow[];
   };
 
   // Customer / account
@@ -90,7 +117,7 @@ export type TahesabMethodMap = {
       moshtariCode: string | number,
       jensFelez: number,
     ];
-    response: any;
+    response: DoNewMoshtariResponseDto;
   };
   DoEditMoshtari: {
     args: [
@@ -105,63 +132,136 @@ export type TahesabMethodMap = {
       referrerCode: string | number,
       description: string,
     ];
-    response: any;
+    response: DoEditMoshtariResponseDto;
   };
   DoListMoshtari: {
     args: [mobile: string] | [fromCode: string | number, toCode: string | number];
-    response: any;
+    response: DoListMoshtariResponseDto;
   };
-  GetMoshtariByCode: { args: [customerCode: string | number]; response: any };
-  GetMandeHesabByGID: { args: [gid: string | number]; response: any };
-  getmandehesabbycode: { args: [customerCodes: Array<string | number>]; response: any };
+  GetMoshtariByCode: { args: [customerCode: string | number]; response: GetMoshtariByCodeResponseDto };
+  GetMandeHesabByGID: { args: [gid: string | number]; response: GetMandeHesabResponseDto };
+  getmandehesabbycode: { args: [customerCodes: Array<string | number>]; response: GetMandeHesabResponseDto[] };
   GetMandeHesabByTarikh: {
     args: [customerCode: string | number, dateShamsi: string];
-    response: any;
+    response: GetMandeHesabResponseDto;
   };
 
   // Name lists
-  DoListNameSekeh: { args: []; response: TahesabListResponse };
-  DoListHesabBanki: { args: []; response: TahesabListResponse };
-  DoListNameKarSakhte: { args: []; response: TahesabListResponse };
-  GetBankMande: { args: [bankCode: string]; response: TahesabUnknownResponse };
-  GetSandoghMande: { args: [cashboxCode: string]; response: TahesabUnknownResponse };
+  DoListNameSekeh: { args: []; response: DoListNameSekehResponseDto };
+  DoListHesabBanki: { args: []; response: DoListHesabBankiResponseDto };
+  DoListNameKarSakhte: { args: []; response: DoListNameKarSakhteResponseDto };
+  GetBankMande: { args: [bankCode: string]; response: TahesabBalanceRowDto[] };
+  GetSandoghMande: { args: [cashboxCode: string]; response: TahesabBalanceRowDto[] };
 
   // Documents creation variations
-  DoNewSanadVKHGOLD: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadBuySaleGOLD: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadVKHSEKEH: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadBuySaleSEKEH: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadVKHVaghNaghd: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadVKHBank: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadTakhfif: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadTalabBedehi: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadBuySaleKar: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadVKHKar: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadBuySaleEtiket: { args: any[]; response: TahesabDocumentResult };
-  DoNewSanadVKHEtiket: { args: any[]; response: TahesabDocumentResult };
+  DoNewSanadVKHGOLD: {
+    args: [
+      sabteKolOrMovaghat: number,
+      moshtariCode: string | number,
+      factorNumber: string | number,
+      radifNumber: string | number,
+      shamsiYear: string,
+      shamsiMonth: string,
+      shamsiDay: string,
+      vazn: number | string,
+      ayar: number | string,
+      angNumber: string,
+      nameAz: string,
+      isVoroodOrKhorooj: number,
+      isMotefaregheOrAbshode: number,
+      sharh: string,
+      factorCode: string,
+      havalehBeMcode?: string | number,
+      multiRadif?: number,
+      jensFelez?: number,
+    ];
+    response: TahesabDocumentResult;
+  };
+  DoNewSanadBuySaleGOLD: {
+    args: [
+      sabteKolOrMovaghat: number,
+      moshtariCode: string | number,
+      factorNumber: string | number,
+      shamsiYear: string,
+      shamsiMonth: string,
+      shamsiDay: string,
+      mablagh: number | string,
+      ayar: number | string,
+      vazn: number | string,
+      angNumber: string,
+      nameAz: string,
+      buyOrSale: number,
+      sharh: string,
+      factorCode: string | number,
+      jensFelez: JensFelez,
+    ];
+    response: TahesabDocumentResult;
+  };
+  DoNewSanadVKHSEKEH: { args: TahesabMethodMap['DoNewSanadBuySaleGOLD']['args']; response: TahesabDocumentResult };
+  DoNewSanadBuySaleSEKEH: { args: TahesabMethodMap['DoNewSanadBuySaleGOLD']['args']; response: TahesabDocumentResult };
+  DoNewSanadVKHVaghNaghd: {
+    args: [
+      sabteKolOrMovaghat: number,
+      moshtariCode: string | number,
+      factorNumber: string | number,
+      shamsiYear: string,
+      shamsiMonth: string,
+      shamsiDay: string,
+      mablagh: number | string,
+      sharh: string,
+      factorCode: string | number,
+    ];
+    response: TahesabDocumentResult;
+  };
+  DoNewSanadVKHBank: { args: TahesabMethodMap['DoNewSanadVKHVaghNaghd']['args']; response: TahesabDocumentResult };
+  DoNewSanadTakhfif: { args: TahesabMethodMap['DoNewSanadVKHVaghNaghd']['args']; response: TahesabDocumentResult };
+  DoNewSanadTalabBedehi: { args: TahesabMethodMap['DoNewSanadVKHVaghNaghd']['args']; response: TahesabDocumentResult };
+  DoNewSanadBuySaleKar: { args: TahesabMethodMap['DoNewSanadBuySaleGOLD']['args']; response: TahesabDocumentResult };
+  DoNewSanadVKHKar: { args: TahesabMethodMap['DoNewSanadBuySaleGOLD']['args']; response: TahesabDocumentResult };
+  DoNewSanadBuySaleEtiket: { args: TahesabMethodMap['DoNewSanadBuySaleGOLD']['args']; response: TahesabDocumentResult };
+  DoNewSanadVKHEtiket: { args: TahesabMethodMap['DoNewSanadBuySaleGOLD']['args']; response: TahesabDocumentResult };
 
   // Etiket info & lists
-  GetEtiketPictureByFileName: { args: [fileName: string]; response: TahesabUnknownResponse };
-  getetiketinfobycode: { args: [(string | number)[]]; response: TahesabUnknownResponse };
-  getetiketinfobycodewithimage: { args: [(string | number)[]]; response: TahesabUnknownResponse };
+  GetEtiketPictureByFileName: { args: [fileName: string]; response: GetEtiketPictureByFileNameResponseDto };
+  getetiketinfobycode: { args: [(string | number)[]]; response: GetEtiketInfoResponseDto };
+  getetiketinfobycodewithimage: { args: [(string | number)[]]; response: GetEtiketInfoWithImageResponseDto };
   DoListEtiket: {
     args: [fromCode: string | number, toCode: string | number, withPhoto: number];
-    response: TahesabUnknownResponse;
+    response: DoListEtiketResponseDto;
   };
-  DoListGetUpdatedEtiket: { args: [fromDate: string, toDate: string]; response: TahesabUnknownResponse };
-  DoList_EtiketByCodeKar: { args: [codeKar: string]; response: TahesabUnknownResponse };
-  GetEtiketTableInfo: { args: []; response: TahesabUnknownResponse };
-  SetEtiketRFIDClear: { args: [code: string | number]; response: TahesabUnknownResponse };
+  DoListGetUpdatedEtiket: { args: [fromDate: string, toDate: string]; response: DoListGetUpdatedEtiketResponseDto };
+  DoList_EtiketByCodeKar: { args: [codeKar: string]; response: DoListEtiketResponseDto };
+  GetEtiketTableInfo: { args: []; response: GetEtiketTableInfoResponseDto };
+  SetEtiketRFIDClear: { args: [code: string | number]; response: SetEtiketRFIDClearResponseDto };
 
   // Documents listing & queries
-  DoListAsnad: { args: any[]; response: TahesabUnknownResponse };
-  DoNewSanadInquiry: { args: any[]; response: TahesabUnknownResponse };
-  DoDeleteSanad: { args: [factorCode: string]; response: TahesabUnknownResponse };
+  DoListAsnad: {
+    args: [
+      countLast: number,
+      customerCode: string,
+      fromDateShamsi: string,
+      toDateShamsi: string,
+      filterNoSanad: string,
+      jensFelez: number | null,
+    ];
+    response: DoListAsnadResponseDto;
+  };
+  DoNewSanadInquiry: {
+    args: [
+      moshtariCode: string | number,
+      factorNumber: string | number,
+      shamsiYear: string,
+      shamsiMonth: string,
+      shamsiDay: string,
+    ];
+    response: DoNewSanadInquiryResponseDto;
+  };
+  DoDeleteSanad: { args: [factorCode: string]; response: DoDeleteSanadResponseDto };
 
   // RFID
-  GetInfoWithImage: { args: [epcs: string[]]; response: any };
-  GetInfo: { args: [epcs: string[]]; response: any };
-  epcList: { args: [epcs: string[]]; response: any };
+  GetInfoWithImage: { args: [epcs: string[]]; response: GetEtiketInfoWithImageResponseDto };
+  GetInfo: { args: [epcs: string[]]; response: GetEtiketInfoResponseDto };
+  epcList: { args: [epcs: string[]]; response: TahesabGenericRecord[] };
 };
 
 export type TahesabOutboxAction =

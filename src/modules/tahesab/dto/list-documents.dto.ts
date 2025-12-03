@@ -17,7 +17,6 @@ export class TahesabDocumentRow {
   vazn?: number | string;
   ayar?: number | string;
   mablagh?: number | string;
-  [key: string]: unknown;
 }
 
 export class DoListAsnadResponseDto {

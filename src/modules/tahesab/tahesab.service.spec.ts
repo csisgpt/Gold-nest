@@ -1,6 +1,7 @@
 import { HttpModule, HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
+import { AxiosResponse } from 'axios';
 import { of } from 'rxjs';
 import { DoListAsnadRequestDto } from './dto/list-documents.dto';
 import { GetMandeHesabByCodeRequestDto } from './dto/customer-balance.dto';
@@ -49,7 +50,8 @@ describe('TahesabService', () => {
 
   it('wraps method call in envelope', async () => {
     const response = { ok: true };
-    jest.spyOn(httpService, 'post').mockReturnValue(of({ data: response } as any));
+    const httpResponse = of({ data: response } as AxiosResponse<typeof response>);
+    jest.spyOn(httpService, 'post').mockReturnValue(httpResponse);
 
     const result = await service.callMethod('Ping', []);
 
@@ -70,9 +72,7 @@ describe('TahesabService', () => {
       moshtariCode: 'MC',
       jensFelez: 1,
     };
-    const spy = jest
-      .spyOn(service as any, 'callMethod')
-      .mockResolvedValue({ moshtariCode: 'MC' });
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue({ moshtariCode: 'MC' });
 
     await service.createCustomer(dto);
 
@@ -99,9 +99,7 @@ describe('TahesabService', () => {
       filterNoSanad: '123',
       jensFelez: 0,
     };
-    const spy = jest
-      .spyOn(service as any, 'callMethod')
-      .mockResolvedValue({} as any);
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue({ documents: [] });
 
     await service.listDocuments(dto);
 
@@ -117,9 +115,7 @@ describe('TahesabService', () => {
 
   it('maps getBalanceByCustomerCode to expected method name and payload', async () => {
     const dto: GetMandeHesabByCodeRequestDto = { customerCodes: ['CUST-1', 'CUST-2'] };
-    const spy = jest
-      .spyOn(service as any, 'callMethod')
-      .mockResolvedValue({ balance: 0 });
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue([]);
 
     await service.getBalanceByCustomerCode(dto);
 
@@ -128,9 +124,7 @@ describe('TahesabService', () => {
 
   it('maps getAbshodeInventory parameters into documented array', async () => {
     const dto: GetMojoodiAbshodeRequestDto = { ayar: 750, jensFelez: 0 };
-    const spy = jest
-      .spyOn(service as any, 'callMethod')
-      .mockResolvedValue({});
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue([]);
 
     await service.getAbshodeInventory(dto);
 
@@ -142,9 +136,7 @@ describe('TahesabService', () => {
 
   it('maps listEtikets parameters including withPhoto flag', async () => {
     const dto: DoListEtiketRequestDto = { fromCode: '1', toCode: '5', withPhoto: true };
-    const spy = jest
-      .spyOn(service as any, 'callMethod')
-      .mockResolvedValue({});
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue({ etikets: [] });
 
     await service.listEtikets(dto);
 
@@ -172,9 +164,7 @@ describe('TahesabService', () => {
       multiRadif: 0,
       jensFelez: 0,
     };
-    const spy = jest
-      .spyOn(service as any, 'callMethod')
-      .mockResolvedValue({});
+    const spy = jest.spyOn(service, 'callMethod').mockResolvedValue({ OK: 'ok' });
 
     await service.createGoldVoucher(dto);
 

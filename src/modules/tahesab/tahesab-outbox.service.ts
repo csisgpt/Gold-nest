@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   TahesabOutboxAction,
@@ -24,60 +25,61 @@ export class TahesabOutboxService {
     dto: TahesabOutboxPayloadMap[A],
     options?: { correlationId?: string },
   ): Promise<void> {
-    const prisma = this.prisma as any;
-    await prisma.tahesabOutbox.create({
+    await this.prisma.tahesabOutbox.create({
       data: {
         method,
-        payload: dto as any,
+        payload: dto as Prisma.JsonValue,
         correlationId: options?.correlationId,
       },
     });
   }
 
-  private async dispatch(item: { method: TahesabOutboxAction; payload: any }) {
-    switch (item.method) {
+  private async dispatch(
+    action: TahesabOutboxAction,
+    payload: TahesabOutboxPayloadMap[TahesabOutboxAction],
+  ) {
+    switch (action) {
       case 'DoNewMoshtari':
         return this.accounts.createCustomer(
-          item.payload as TahesabOutboxPayloadMap['DoNewMoshtari'],
+          payload as TahesabOutboxPayloadMap['DoNewMoshtari'],
         );
       case 'DoEditMoshtari':
         return this.accounts.updateCustomer(
-          item.payload as TahesabOutboxPayloadMap['DoEditMoshtari'],
+          payload as TahesabOutboxPayloadMap['DoEditMoshtari'],
         );
       case 'DoNewSanadVKHGOLD':
         return this.documents.createGoldInOut(
-          item.payload as TahesabOutboxPayloadMap['DoNewSanadVKHGOLD'],
+          payload as TahesabOutboxPayloadMap['DoNewSanadVKHGOLD'],
         );
       case 'DoNewSanadBuySaleGOLD':
         return this.documents.createGoldBuySell(
-          item.payload as TahesabOutboxPayloadMap['DoNewSanadBuySaleGOLD'],
+          payload as TahesabOutboxPayloadMap['DoNewSanadBuySaleGOLD'],
         );
       case 'DoNewSanadVKHVaghNaghd':
         return this.documents.createCashInOut(
-          item.payload as TahesabOutboxPayloadMap['DoNewSanadVKHVaghNaghd'],
+          payload as TahesabOutboxPayloadMap['DoNewSanadVKHVaghNaghd'],
         );
       case 'DoNewSanadVKHBank':
         return this.documents.createBankInOut(
-          item.payload as TahesabOutboxPayloadMap['DoNewSanadVKHBank'],
+          payload as TahesabOutboxPayloadMap['DoNewSanadVKHBank'],
         );
       case 'DoNewSanadTakhfif':
         return this.documents.createDiscount(
-          item.payload as TahesabOutboxPayloadMap['DoNewSanadTakhfif'],
+          payload as TahesabOutboxPayloadMap['DoNewSanadTakhfif'],
         );
       case 'DoNewSanadTalabBedehi':
         return this.documents.createTalabBedehi(
-          item.payload as TahesabOutboxPayloadMap['DoNewSanadTalabBedehi'],
+          payload as TahesabOutboxPayloadMap['DoNewSanadTalabBedehi'],
         );
       default:
-        this.logger.warn(`No dispatcher configured for ${item.method}`);
+        this.logger.warn(`No dispatcher configured for ${action}`);
         return null;
     }
   }
 
   async processBatch(limit = 50): Promise<void> {
     const now = new Date();
-    const prisma = this.prisma as any;
-    const pending = await prisma.tahesabOutbox.findMany({
+    const pending = await this.prisma.tahesabOutbox.findMany({
       where: { status: 'PENDING', nextRetryAt: { lte: now } },
       orderBy: { createdAt: 'asc' },
       take: limit,
@@ -85,15 +87,17 @@ export class TahesabOutboxService {
 
     for (const item of pending) {
       try {
-        await this.dispatch(item as any);
-        await prisma.tahesabOutbox.update({
+        const action = item.method as TahesabOutboxAction;
+        const payload = item.payload as TahesabOutboxPayloadMap[TahesabOutboxAction];
+        await this.dispatch(action, payload);
+        await this.prisma.tahesabOutbox.update({
           where: { id: item.id },
           data: { status: 'SUCCESS', lastError: null },
         });
       } catch (error) {
         const retryCount = item.retryCount + 1;
         const delayMs = Math.min(600000, 1000 * Math.pow(2, retryCount));
-        await prisma.tahesabOutbox.update({
+        await this.prisma.tahesabOutbox.update({
           where: { id: item.id },
           data: {
             status: 'FAILED',

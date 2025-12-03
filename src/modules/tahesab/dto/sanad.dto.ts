@@ -40,7 +40,6 @@ export class DoNewSanadGoldRequestDto {
 export class DoNewSanadGoldResponseDto {
   factorCode?: string | number;
   sanadNo?: string | number;
-  [key: string]: unknown;
 }
 
 export class DoDeleteSanadRequestDto {
@@ -49,7 +48,6 @@ export class DoDeleteSanadRequestDto {
 
 export class DoDeleteSanadResponseDto {
   success?: boolean;
-  [key: string]: unknown;
 }
 
 export class DoNewSanadInquiryRequestDto {
@@ -62,6 +60,5 @@ export class DoNewSanadInquiryRequestDto {
 
 export class DoNewSanadInquiryResponseDto {
   exists?: boolean;
-  sanad?: Record<string, unknown>;
-  [key: string]: unknown;
+  sanad?: Record<string, string | number | boolean | null>;
 }

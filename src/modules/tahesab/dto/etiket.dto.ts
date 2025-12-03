@@ -5,8 +5,7 @@ export class DoListEtiketRequestDto {
 }
 
 export class DoListEtiketResponseDto {
-  etikets?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  etikets?: Array<Record<string, string | number | boolean | null>>;
 }
 
 export class DoListGetUpdatedEtiketRequestDto {
@@ -15,13 +14,11 @@ export class DoListGetUpdatedEtiketRequestDto {
 }
 
 export class DoListGetUpdatedEtiketResponseDto {
-  etikets?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  etikets?: Array<Record<string, string | number | boolean | null>>;
 }
 
 export class GetEtiketTableInfoResponseDto {
-  columns?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
+  columns?: Array<Record<string, string | number | boolean | null>>;
 }
 
 export class GetInfoRequestDto {
@@ -29,8 +26,7 @@ export class GetInfoRequestDto {
 }
 
 export class GetInfoResponseDto {
-  item?: Record<string, unknown>;
-  [key: string]: unknown;
+  item?: Record<string, string | number | boolean | null>;
 }
 
 export class GetInfoWithImageRequestDto {
@@ -38,8 +34,7 @@ export class GetInfoWithImageRequestDto {
 }
 
 export class GetInfoWithImageResponseDto {
-  item?: Record<string, unknown>;
-  [key: string]: unknown;
+  item?: Record<string, string | number | boolean | null>;
 }
 
 export class GetEtiketInfoByCodeRequestDto {
@@ -52,5 +47,4 @@ export class SetEtiketRFIDClearRequestDto {
 
 export class SetEtiketRFIDClearResponseDto {
   success?: boolean;
-  [key: string]: unknown;
 }
