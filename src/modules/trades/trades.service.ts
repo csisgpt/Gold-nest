@@ -18,6 +18,10 @@ import { ApproveTradeDto } from './dto/approve-trade.dto';
 import { RejectTradeDto } from './dto/reject-trade.dto';
 import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
 import { InstrumentsService } from '../instruments/instruments.service';
+import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
+import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
+import { BuyOrSale, SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
+import { GoldBuySellDto } from '../tahesab/tahesab-documents.service';
 
 @Injectable()
 export class TradesService {
@@ -28,6 +32,8 @@ export class TradesService {
     private readonly accountsService: AccountsService,
     private readonly filesService: FilesService,
     private readonly instrumentsService: InstrumentsService,
+    private readonly tahesabOutbox: TahesabOutboxService,
+    private readonly tahesabIntegration: TahesabIntegrationConfigService,
   ) {}
 
   async createForUser(userId: string, dto: CreateTradeDto) {
@@ -94,10 +100,10 @@ export class TradesService {
   }
 
   async approve(id: string, dto: ApproveTradeDto, adminId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const updatedTrade = await this.prisma.$transaction(async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id },
-        include: { instrument: true },
+        include: { instrument: true, client: true },
       });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status !== TradeStatus.PENDING) {
@@ -243,16 +249,73 @@ export class TradesService {
         }
       } else {
         // For external and cash settlement we only mark the trade approved for now.
-        // Future work: post corresponding receivables/payables or cash ledgers.
+        // Future work: post corresponding receivables/payables or cash ledgers and
+        // enqueue Tahesab vouchers for forward/T+1 settlements.
       }
 
-      const updatedTrade = await tx.trade.findUnique({ where: { id: trade.id } });
+      const updatedTrade = await tx.trade.findUnique({
+        where: { id: trade.id },
+        include: { instrument: true, client: true },
+      });
       this.logger.log(
         `Trade ${trade.id} status ${trade.status} -> ${updatedTrade?.status} by admin ${adminId}`,
       );
 
       return updatedTrade;
     });
+
+    await this.enqueueTahesabForWalletTrade(updatedTrade);
+
+    return updatedTrade;
+  }
+
+  private resolveAyar(instrumentCode: string): number {
+    return instrumentCode === GOLD_750_INSTRUMENT_CODE ? 750 : 750;
+  }
+
+  private async enqueueTahesabForWalletTrade(
+    trade:
+      | (Awaited<ReturnType<typeof this.prisma.trade.findUnique>> & {
+          instrument?: Instrument;
+          client?: { tahesabCustomerCode?: string | null } | null;
+        })
+      | null,
+  ): Promise<void> {
+    if (!trade) return;
+    if (trade.status !== TradeStatus.APPROVED) return;
+    if (trade.settlementMethod !== SettlementMethod.WALLET) return;
+    if (!this.tahesabIntegration.isEnabled()) return;
+
+    const moshtariCode = this.tahesabIntegration.getCustomerCode(trade.client ?? null);
+    if (!moshtariCode) return;
+
+    const { shamsiYear, shamsiMonth, shamsiDay } = this.tahesabIntegration.formatDateParts(
+      trade.approvedAt ?? trade.updatedAt ?? trade.createdAt,
+    );
+
+    const dto: GoldBuySellDto = {
+      sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
+      moshtariCode,
+      factorNumber: trade.id,
+      shamsiYear,
+      shamsiMonth,
+      shamsiDay,
+      mablagh: Number(trade.totalAmount),
+      ayar: this.resolveAyar(trade.instrument?.code ?? ''),
+      vazn: Number(trade.quantity),
+      angNumber: trade.instrument?.code ?? '',
+      nameAz: trade.instrument?.name ?? trade.instrument?.code ?? '',
+      buyOrSale: trade.side === TradeSide.BUY ? BuyOrSale.Buy : BuyOrSale.Sell,
+      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Trade ${trade.id}`,
+    };
+
+    await this.tahesabOutbox.enqueueOnce('DoNewSanadBuySaleGOLD', dto, {
+      correlationId: trade.id,
+    });
+
+    // Cash leg for WALLET settlements is already reflected in internal accounts.
+    // If Tahesab requires explicit cash entries, hook them up here using
+    // DoNewSanadVKHVaghNaghd and distinct correlation IDs.
   }
 
   /**

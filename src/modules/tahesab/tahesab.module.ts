@@ -16,6 +16,7 @@ import { TahesabDocsReportService } from './tahesab-docs-report.service';
 import { TahesabOutboxService } from './tahesab-outbox.service';
 import { TahesabOutboxProcessor } from './tahesab-outbox.processor';
 import { PrismaModule } from '../prisma/prisma.module';
+import { TahesabIntegrationConfigService } from './tahesab-integration.config';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     TahesabDocsReportService,
     TahesabOutboxService,
     TahesabOutboxProcessor,
+    TahesabIntegrationConfigService,
   ],
   controllers: [TahesabController],
   exports: [
@@ -72,6 +74,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     TahesabRfidService,
     TahesabDocsReportService,
     TahesabOutboxService,
+    TahesabIntegrationConfigService,
   ],
 })
 export class TahesabModule {}

@@ -7,6 +7,10 @@ import { FilesService } from '../files/files.service';
 import { IRR_INSTRUMENT_CODE } from '../accounts/constants';
 import { DecisionDto } from './dto/decision.dto';
 import { CreateDepositDto } from './dto/create-deposit.dto';
+import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
+import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
+import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
+import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 
 @Injectable()
 export class DepositsService {
@@ -16,6 +20,8 @@ export class DepositsService {
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
     private readonly filesService: FilesService,
+    private readonly tahesabOutbox: TahesabOutboxService,
+    private readonly tahesabIntegration: TahesabIntegrationConfigService,
   ) {}
 
   async createForUser(userId: string, dto: CreateDepositDto) {
@@ -56,8 +62,11 @@ export class DepositsService {
   }
 
   async approve(id: string, dto: DecisionDto, adminId: string) {
-    return this.prisma.$transaction(async (tx) => {
-      const deposit = await tx.depositRequest.findUnique({ where: { id } });
+    const updatedDeposit = await this.prisma.$transaction(async (tx) => {
+      const deposit = await tx.depositRequest.findUnique({
+        where: { id },
+        include: { user: true },
+      });
       if (!deposit) throw new NotFoundException('Deposit not found');
       if (deposit.status !== DepositStatus.PENDING) {
         throw new BadRequestException('Deposit already processed');
@@ -100,8 +109,13 @@ export class DepositsService {
         data: {
           accountTxId: txResult.txRecord.id,
         },
+        include: { user: true },
       });
     });
+
+    await this.enqueueTahesabCashInForDeposit(updatedDeposit);
+
+    return updatedDeposit;
   }
 
   async reject(id: string, dto: DecisionDto, adminId: string) {
@@ -129,6 +143,41 @@ export class DepositsService {
       this.logger.log(`Deposit ${id} rejected by ${adminId}`);
 
       return tx.depositRequest.findUnique({ where: { id } });
+    });
+  }
+
+  private async enqueueTahesabCashInForDeposit(
+    deposit: Awaited<ReturnType<typeof this.prisma.depositRequest.findUnique>> & {
+      user?: { tahesabCustomerCode?: string | null } | null;
+    },
+  ): Promise<void> {
+    if (!deposit || deposit.status !== DepositStatus.APPROVED) return;
+    if (!this.tahesabIntegration.isEnabled()) return;
+
+    const moshtariCode = this.tahesabIntegration.getCustomerCode(deposit.user ?? null);
+    if (!moshtariCode) return;
+
+    const cashAccountCode = this.tahesabIntegration.getDefaultCashAccountCode();
+    if (!cashAccountCode) return;
+
+    const { shamsiYear, shamsiMonth, shamsiDay } = this.tahesabIntegration.formatDateParts(
+      deposit.processedAt ?? deposit.updatedAt ?? deposit.createdAt,
+    );
+
+    const dto: SimpleVoucherDto = {
+      sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
+      moshtariCode,
+      factorNumber: deposit.id,
+      shamsiYear,
+      shamsiMonth,
+      shamsiDay,
+      mablagh: Number(deposit.amount),
+      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Deposit ${deposit.id}`,
+      factorCode: cashAccountCode,
+    };
+
+    await this.tahesabOutbox.enqueueOnce('DoNewSanadVKHVaghNaghd', dto, {
+      correlationId: deposit.id,
     });
   }
 }

@@ -18,8 +18,6 @@ export class TahesabOutboxService {
     private readonly accounts: TahesabAccountsService,
   ) {}
 
-  // TODO: integrate enqueue calls from domain events (deposit/withdraw/trade approval).
-
   async enqueue<A extends TahesabOutboxAction>(
     method: A,
     dto: TahesabOutboxPayloadMap[A],
@@ -32,6 +30,25 @@ export class TahesabOutboxService {
         correlationId: options?.correlationId,
       },
     });
+  }
+
+  async enqueueOnce<A extends TahesabOutboxAction>(
+    method: A,
+    dto: TahesabOutboxPayloadMap[A],
+    options: { correlationId: string },
+  ): Promise<void> {
+    const existing = await this.prisma.tahesabOutbox.findFirst({
+      where: { method, correlationId: options.correlationId },
+    });
+
+    if (existing) {
+      this.logger.debug(
+        `Tahesab outbox already contains ${method} with correlationId=${options.correlationId}`,
+      );
+      return;
+    }
+
+    await this.enqueue(method, dto, options);
   }
 
   private async dispatch(

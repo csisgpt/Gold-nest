@@ -8,6 +8,10 @@ import { IRR_INSTRUMENT_CODE } from '../accounts/constants';
 import { DecisionDto } from '../deposits/dto/decision.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
 import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
+import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
+import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
+import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
+import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 
 @Injectable()
 export class WithdrawalsService {
@@ -17,6 +21,8 @@ export class WithdrawalsService {
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
     private readonly filesService: FilesService,
+    private readonly tahesabOutbox: TahesabOutboxService,
+    private readonly tahesabIntegration: TahesabIntegrationConfigService,
   ) {}
 
   async createForUser(userId: string, dto: CreateWithdrawalDto) {
@@ -71,8 +77,11 @@ export class WithdrawalsService {
   }
 
   async approve(id: string, dto: DecisionDto, adminId: string) {
-    return this.prisma.$transaction(async (tx) => {
-      const withdraw = await tx.withdrawRequest.findUnique({ where: { id } });
+    const updatedWithdrawal = await this.prisma.$transaction(async (tx) => {
+      const withdraw = await tx.withdrawRequest.findUnique({
+        where: { id },
+        include: { user: true },
+      });
       if (!withdraw) throw new NotFoundException('Withdraw not found');
       if (withdraw.status !== WithdrawStatus.PENDING) {
         throw new BadRequestException('Withdrawal already processed');
@@ -121,8 +130,13 @@ export class WithdrawalsService {
         data: {
           accountTxId: txResult.txRecord.id,
         },
+        include: { user: true },
       });
     });
+
+    await this.enqueueTahesabCashOutForWithdrawal(updatedWithdrawal);
+
+    return updatedWithdrawal;
   }
 
   async reject(id: string, dto: DecisionDto, adminId: string) {
@@ -150,6 +164,41 @@ export class WithdrawalsService {
       this.logger.log(`Withdrawal ${id} rejected by ${adminId}`);
 
       return tx.withdrawRequest.findUnique({ where: { id } });
+    });
+  }
+
+  private async enqueueTahesabCashOutForWithdrawal(
+    withdrawal: Awaited<ReturnType<typeof this.prisma.withdrawRequest.findUnique>> & {
+      user?: { tahesabCustomerCode?: string | null } | null;
+    },
+  ): Promise<void> {
+    if (!withdrawal || withdrawal.status !== WithdrawStatus.APPROVED) return;
+    if (!this.tahesabIntegration.isEnabled()) return;
+
+    const moshtariCode = this.tahesabIntegration.getCustomerCode(withdrawal.user ?? null);
+    if (!moshtariCode) return;
+
+    const cashAccountCode = this.tahesabIntegration.getDefaultCashAccountCode();
+    if (!cashAccountCode) return;
+
+    const { shamsiYear, shamsiMonth, shamsiDay } = this.tahesabIntegration.formatDateParts(
+      withdrawal.processedAt ?? withdrawal.updatedAt ?? withdrawal.createdAt,
+    );
+
+    const dto: SimpleVoucherDto = {
+      sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
+      moshtariCode,
+      factorNumber: withdrawal.id,
+      shamsiYear,
+      shamsiMonth,
+      shamsiDay,
+      mablagh: Number(withdrawal.amount),
+      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Withdrawal ${withdrawal.id}`,
+      factorCode: cashAccountCode,
+    };
+
+    await this.tahesabOutbox.enqueueOnce('DoNewSanadVKHVaghNaghd', dto, {
+      correlationId: withdrawal.id,
     });
   }
 }
