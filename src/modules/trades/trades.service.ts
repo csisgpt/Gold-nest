@@ -6,6 +6,7 @@ import {
   SettlementMethod,
   TradeSide,
   TradeStatus,
+  TradeType,
   TxRefType,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
@@ -18,6 +19,17 @@ import { ApproveTradeDto } from './dto/approve-trade.dto';
 import { RejectTradeDto } from './dto/reject-trade.dto';
 import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
 import { InstrumentsService } from '../instruments/instruments.service';
+import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
+import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
+import { BuyOrSale, SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
+import { GoldBuySellDto } from '../tahesab/tahesab-documents.service';
+
+type TradeWithRelations =
+  | (Awaited<ReturnType<PrismaService['trade']['findUnique']>> & {
+      instrument?: Instrument;
+      client?: { tahesabCustomerCode?: string | null } | null;
+    })
+  | null;
 
 @Injectable()
 export class TradesService {
@@ -28,6 +40,8 @@ export class TradesService {
     private readonly accountsService: AccountsService,
     private readonly filesService: FilesService,
     private readonly instrumentsService: InstrumentsService,
+    private readonly tahesabOutbox: TahesabOutboxService,
+    private readonly tahesabIntegration: TahesabIntegrationConfigService,
   ) {}
 
   async createForUser(userId: string, dto: CreateTradeDto) {
@@ -35,6 +49,8 @@ export class TradesService {
     const quantity = new Decimal(dto.quantity);
     const pricePerUnit = await this.resolvePricePerUnit(dto, instrument);
     const totalAmount = quantity.mul(pricePerUnit);
+    // Default to SPOT to preserve existing behavior until clients explicitly pass forward types.
+    const tradeType = dto.type ?? TradeType.SPOT;
 
     if (quantity.lte(0) || pricePerUnit.lte(0)) {
       throw new BadRequestException('Quantity and pricePerUnit must be positive');
@@ -59,6 +75,7 @@ export class TradesService {
           instrumentId: instrument.id,
           side: dto.side,
           settlementMethod: dto.settlementMethod,
+          type: tradeType,
           quantity,
           pricePerUnit,
           totalAmount,
@@ -94,10 +111,10 @@ export class TradesService {
   }
 
   async approve(id: string, dto: ApproveTradeDto, adminId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    const updatedTrade = await this.prisma.$transaction(async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id },
-        include: { instrument: true },
+        include: { instrument: true, client: true },
       });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status !== TradeStatus.PENDING) {
@@ -242,17 +259,154 @@ export class TradesService {
           );
         }
       } else {
-        // For external and cash settlement we only mark the trade approved for now.
-        // Future work: post corresponding receivables/payables or cash ledgers.
+        // For external, cash, or physical settlement we only mark the trade approved for now.
+        // Tahesab enqueueing for physical settlement (and optional cash PnL legs) is handled
+        // after the transaction using the outbox to stay asynchronous.
+        // TODO: Post receivables/payables or cash ledgers for forward/T+1 settlements when
+        // those flows are formalized in the domain model.
       }
 
-      const updatedTrade = await tx.trade.findUnique({ where: { id: trade.id } });
+      const updatedTrade = await tx.trade.findUnique({
+        where: { id: trade.id },
+        include: { instrument: true, client: true },
+      });
       this.logger.log(
         `Trade ${trade.id} status ${trade.status} -> ${updatedTrade?.status} by admin ${adminId}`,
       );
 
       return updatedTrade;
     });
+
+    await this.enqueueTahesabForWalletTrade(updatedTrade);
+    await this.enqueueTahesabForForwardPhysicalSettlement(updatedTrade);
+
+    if (
+      updatedTrade &&
+      (updatedTrade.type === TradeType.TOMORROW || updatedTrade.type === TradeType.DAY_AFTER) &&
+      updatedTrade.settlementMethod === SettlementMethod.CASH
+    ) {
+      // TODO: enqueue forward cash settlement voucher (DoNewSanadVKHVaghNaghd/VKHBank) using
+      // SimpleVoucherDto once forward settlement amounts/PnL fields are formalized on the Trade
+      // entity. Reuse the new TradeType distinctions to avoid mixing SPOT and forward logic.
+    }
+
+    return updatedTrade;
+  }
+
+  private resolveAyar(instrumentCode: string): number {
+    return instrumentCode === GOLD_750_INSTRUMENT_CODE ? 750 : 750;
+  }
+
+  private async enqueueTahesabForWalletTrade(trade: TradeWithRelations): Promise<void> {
+    if (!trade) return;
+    if (trade.status !== TradeStatus.APPROVED) return;
+    if (trade.type !== TradeType.SPOT) return;
+    if (trade.settlementMethod !== SettlementMethod.WALLET) return;
+    if (!this.tahesabIntegration.isEnabled()) return;
+
+    const moshtariCode = this.tahesabIntegration.getCustomerCode(trade.client ?? null);
+    if (!moshtariCode) return;
+
+    const { shamsiYear, shamsiMonth, shamsiDay } = this.tahesabIntegration.formatDateParts(
+      trade.approvedAt ?? trade.updatedAt ?? trade.createdAt,
+    );
+
+    const dto: GoldBuySellDto = {
+      sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
+      moshtariCode,
+      factorNumber: trade.id,
+      shamsiYear,
+      shamsiMonth,
+      shamsiDay,
+      mablagh: Number(trade.totalAmount),
+      ayar: this.resolveAyar(trade.instrument?.code ?? ''),
+      vazn: Number(trade.quantity),
+      angNumber: trade.instrument?.code ?? '',
+      nameAz: trade.instrument?.name ?? trade.instrument?.code ?? '',
+      buyOrSale: trade.side === TradeSide.BUY ? BuyOrSale.Buy : BuyOrSale.Sell,
+      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Trade ${trade.id}`,
+    };
+
+    await this.tahesabOutbox.enqueueOnce('DoNewSanadBuySaleGOLD', dto, {
+      correlationId: trade.id,
+    });
+
+    // Cash leg for WALLET settlements is already reflected in internal accounts.
+    // If Tahesab requires explicit cash entries, hook them up here using
+    // DoNewSanadVKHVaghNaghd and distinct correlation IDs.
+
+    // TODO: integrate DoNewSanadTakhfif for commissions/discounts once
+    // commission amounts are tracked on the Trade entity.
+  }
+
+  /**
+   * Enqueues a Tahesab gold buy/sell document for forward trades settled via physical delivery.
+   * Uses DoNewSanadBuySaleGOLD through the outbox to remain idempotent and asynchronous.
+   */
+  private async enqueueTahesabForForwardPhysicalSettlement(trade: TradeWithRelations): Promise<void> {
+    if (!trade) return;
+    if (trade.status !== TradeStatus.APPROVED) return;
+    if (trade.type !== TradeType.TOMORROW && trade.type !== TradeType.DAY_AFTER) return;
+    if (
+      trade.settlementMethod !== SettlementMethod.PHYSICAL &&
+      trade.settlementMethod !== SettlementMethod.MIXED
+    ) {
+      return;
+    }
+    if (!this.tahesabIntegration.isEnabled()) return;
+
+    const moshtariCode = this.tahesabIntegration.getCustomerCode(trade.client ?? null);
+    if (!moshtariCode) return;
+
+    const { shamsiYear, shamsiMonth, shamsiDay } = this.tahesabIntegration.formatDateParts(
+      trade.approvedAt ?? trade.updatedAt ?? trade.createdAt,
+    );
+
+    const dto: GoldBuySellDto = {
+      sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
+      moshtariCode,
+      factorNumber: trade.id,
+      shamsiYear,
+      shamsiMonth,
+      shamsiDay,
+      mablagh: Number(trade.totalAmount),
+      ayar: this.resolveAyar(trade.instrument?.code ?? ''),
+      vazn: Number(trade.quantity),
+      angNumber: trade.instrument?.code ?? '',
+      nameAz: trade.instrument?.name ?? trade.instrument?.code ?? '',
+      buyOrSale: trade.side === TradeSide.BUY ? BuyOrSale.Buy : BuyOrSale.Sell,
+      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Forward physical trade ${trade.id}`,
+    };
+
+    await this.tahesabOutbox.enqueueOnce('DoNewSanadBuySaleGOLD', dto, {
+      correlationId: `forward:physical:${trade.id}`,
+    });
+
+    // TODO: clarify whether a cash PnL voucher is required alongside physical delivery
+    // settlements; reuse the forward cash settlement DTO mapping once the business rule
+    // is confirmed.
+  }
+
+  private async enqueueTahesabDeletionForTrade(tradeId: string): Promise<void> {
+    const existing = await this.prisma.tahesabOutbox.findFirst({
+      where: {
+        correlationId: tradeId,
+        method: 'DoNewSanadBuySaleGOLD',
+        status: 'SUCCESS',
+        tahesabFactorCode: { not: null },
+      },
+    });
+
+    if (!existing?.tahesabFactorCode) {
+      this.logger.debug(`No Tahesab factor code stored for trade ${tradeId}; skipping deletion enqueue.`);
+      return;
+    }
+
+    await this.tahesabOutbox.enqueueOnce(
+      'DoDeleteSanad',
+      { factorCode: existing.tahesabFactorCode },
+      { correlationId: `spot:cancel:${tradeId}` },
+    );
   }
 
   /**

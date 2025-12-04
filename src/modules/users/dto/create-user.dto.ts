@@ -52,4 +52,13 @@ export class CreateUserDto {
   @IsOptional()
   @IsEnum(UserRole, { message: 'Invalid user role.' })
   role?: UserRole;
+
+  @ApiProperty({
+    required: false,
+    example: 'CUST-001',
+    description: 'Optional Tahesab customer code to link accounting records.',
+  })
+  @IsOptional()
+  @IsString()
+  tahesabCustomerCode?: string;
 }

@@ -5,10 +5,17 @@ import {
   ConflictException,
   InternalServerErrorException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
+import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
+import {
+  DoEditMoshtariRequestDto,
+  DoNewMoshtariRequestDto,
+} from '../tahesab/dto/moshtari.dto';
 
 @Injectable()
 export class UsersService {
@@ -23,7 +30,11 @@ export class UsersService {
     status: true,
   };
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tahesabOutbox: TahesabOutboxService,
+    private readonly tahesabIntegration: TahesabIntegrationConfigService,
+  ) {}
 
   async findById(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -81,11 +92,13 @@ export class UsersService {
           password: hashedPassword,
           role: role ?? undefined, // اگر نفرستی، همون default دیتابیس می‌مونه (CLIENT)
           // status به صورت پیش‌فرض PENDING_APPROVAL هست طبق schema.prisma
+          tahesabCustomerCode: dto.tahesabCustomerCode ?? undefined,
         },
       });
 
       // برای امنیت، بهتره پسورد رو در ریسپانس نفرستیم
       const { password: _removed, ...safeUser } = user;
+      await this.enqueueTahesabOnCreate(user);
       return safeUser;
     } catch (error: any) {
       // هندل خطای unique روی mobile و email
@@ -105,5 +118,71 @@ export class UsersService {
       console.error('Error creating user:', error);
       throw new InternalServerErrorException('خطا در ایجاد کاربر');
     }
+  }
+
+  async updateUser(id: string, dto: UpdateUserDto) {
+    const user = await this.prisma.user.update({
+      where: { id },
+      data: {
+        email: dto.email ?? undefined,
+        fullName: dto.name ?? undefined,
+        password: dto.password ? await bcrypt.hash(dto.password, 10) : undefined,
+      },
+    });
+
+    const { password: _pw, ...safeUser } = user;
+    await this.enqueueTahesabOnEdit(user);
+    return safeUser;
+  }
+
+  private buildMoshtariCreateDto(
+    user: Pick<User, 'fullName' | 'mobile' | 'tahesabCustomerCode'>,
+  ): DoNewMoshtariRequestDto {
+    return {
+      name: (user.fullName as string) ?? '',
+      groupName: 'DEFAULT',
+      tel: (user.mobile as string) ?? '',
+      address: '',
+      nationalCode: '',
+      moshtariCode: user.tahesabCustomerCode ?? undefined,
+      jensFelez: 0,
+    };
+  }
+
+  private buildMoshtariEditDto(
+    user: Pick<User, 'id' | 'fullName' | 'mobile' | 'tahesabCustomerCode'>,
+  ): DoEditMoshtariRequestDto {
+    return {
+      moshtariCode: user.tahesabCustomerCode!,
+      name: (user.fullName as string) ?? '',
+      groupName: 'DEFAULT',
+      tel: (user.mobile as string) ?? '',
+      address: '',
+      nationalCode: '',
+      description: '',
+    };
+  }
+
+  private async enqueueTahesabOnCreate(user: User) {
+    if (!this.tahesabIntegration.isEnabled()) return;
+    if (!user.tahesabCustomerCode) {
+      // TODO: optionally auto-create Tahesab customers when no explicit code is provided.
+      return;
+    }
+
+    const dto = this.buildMoshtariCreateDto(user);
+    await this.tahesabOutbox.enqueueOnce('DoNewMoshtari', dto, {
+      correlationId: `customer:create:${user.id}`,
+    });
+  }
+
+  private async enqueueTahesabOnEdit(user: User) {
+    if (!this.tahesabIntegration.isEnabled()) return;
+    if (!user.tahesabCustomerCode) return;
+
+    const dto = this.buildMoshtariEditDto(user);
+    await this.tahesabOutbox.enqueueOnce('DoEditMoshtari', dto, {
+      correlationId: `customer:edit:${user.id}:${new Date().toISOString()}`,
+    });
   }
 }

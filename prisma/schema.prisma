@@ -51,6 +51,14 @@ enum SettlementMethod {
   WALLET
   EXTERNAL
   CASH
+  PHYSICAL
+  MIXED
+}
+
+enum TradeType {
+  SPOT
+  TOMORROW
+  DAY_AFTER
 }
 
 enum TxRefType {
@@ -115,6 +123,9 @@ model TahesabOutbox {
   lastError   String?
   nextRetryAt DateTime @default(now())
   correlationId String?
+  tahesabFactorCode String?
+
+  @@index([method, correlationId])
 }
 
 enum TahesabOutboxStatus {
@@ -132,6 +143,9 @@ model User {
   mobile   String @unique
   password String
   email    String @unique
+
+  // Optional external accounting linkage
+  tahesabCustomerCode String? @unique
 
   role   UserRole   @default(CLIENT)
   status UserStatus @default(PENDING_APPROVAL)
@@ -244,6 +258,7 @@ model Trade {
 
   side             TradeSide
   status           TradeStatus      @default(PENDING)
+  type             TradeType        @default(SPOT)
   settlementMethod SettlementMethod
 
   quantity     Decimal @db.Decimal(24, 6)

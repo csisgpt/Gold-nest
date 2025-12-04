@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   TahesabOutboxAction,
   TahesabOutboxPayloadMap,
+  TahesabDocumentResult,
 } from './tahesab.methods';
 import { TahesabDocumentsService } from './tahesab-documents.service';
 import { TahesabAccountsService } from './tahesab-accounts.service';
@@ -18,8 +19,6 @@ export class TahesabOutboxService {
     private readonly accounts: TahesabAccountsService,
   ) {}
 
-  // TODO: integrate enqueue calls from domain events (deposit/withdraw/trade approval).
-
   async enqueue<A extends TahesabOutboxAction>(
     method: A,
     dto: TahesabOutboxPayloadMap[A],
@@ -32,6 +31,31 @@ export class TahesabOutboxService {
         correlationId: options?.correlationId,
       },
     });
+  }
+
+  async enqueueOnce<A extends TahesabOutboxAction>(
+    method: A,
+    dto: TahesabOutboxPayloadMap[A],
+    options: { correlationId: string },
+  ): Promise<void> {
+    const existing = await this.prisma.tahesabOutbox.findFirst({
+      where: { method, correlationId: options.correlationId },
+    });
+
+    if (existing) {
+      this.logger.debug(
+        `Tahesab outbox already contains ${method} with correlationId=${options.correlationId}`,
+      );
+      return;
+    }
+
+    await this.enqueue(method, dto, options);
+  }
+
+  private extractFactorCode(result: unknown): string | null {
+    if (!result) return null;
+    const documentResult = result as TahesabDocumentResult & { factorCode?: string };
+    return documentResult.Sh_factor ?? documentResult.factorCode ?? null;
   }
 
   private async dispatch(
@@ -71,6 +95,10 @@ export class TahesabOutboxService {
         return this.documents.createTalabBedehi(
           payload as TahesabOutboxPayloadMap['DoNewSanadTalabBedehi'],
         );
+      case 'DoDeleteSanad':
+        return this.documents.deleteDocument(
+          payload as TahesabOutboxPayloadMap['DoDeleteSanad'],
+        );
       default:
         this.logger.warn(`No dispatcher configured for ${action}`);
         return null;
@@ -89,10 +117,11 @@ export class TahesabOutboxService {
       try {
         const action = item.method as TahesabOutboxAction;
         const payload = item.payload as TahesabOutboxPayloadMap[TahesabOutboxAction];
-        await this.dispatch(action, payload);
+        const result = await this.dispatch(action, payload);
+        const factorCode = this.extractFactorCode(result);
         await this.prisma.tahesabOutbox.update({
           where: { id: item.id },
-          data: { status: 'SUCCESS', lastError: null },
+          data: { status: 'SUCCESS', lastError: null, tahesabFactorCode: factorCode },
         });
       } catch (error) {
         const retryCount = item.retryCount + 1;
