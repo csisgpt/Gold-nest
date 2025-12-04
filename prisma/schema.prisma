@@ -55,6 +55,12 @@ enum SettlementMethod {
   MIXED
 }
 
+enum TradeType {
+  SPOT
+  TOMORROW
+  DAY_AFTER
+}
+
 enum TxRefType {
   TRADE
   DEPOSIT
@@ -252,6 +258,7 @@ model Trade {
 
   side             TradeSide
   status           TradeStatus      @default(PENDING)
+  type             TradeType        @default(SPOT)
   settlementMethod SettlementMethod
 
   quantity     Decimal @db.Decimal(24, 6)

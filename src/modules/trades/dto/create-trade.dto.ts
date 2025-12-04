@@ -1,6 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsArray, IsEnum, IsNumberString, IsOptional, IsString } from 'class-validator';
-import { SettlementMethod, TradeSide } from '@prisma/client';
+import { SettlementMethod, TradeSide, TradeType } from '@prisma/client';
 
 export class CreateTradeDto {
   /** @deprecated clientId is ignored; server will use current authenticated user instead. */
@@ -49,6 +49,17 @@ export class CreateTradeDto {
   })
   @IsEnum(SettlementMethod)
   settlementMethod!: SettlementMethod;
+
+  @ApiProperty({
+    required: false,
+    enum: TradeType,
+    example: TradeType.SPOT,
+    description:
+      'Trade type: SPOT (T+0), TOMORROW (T+1), or DAY_AFTER (T+2). Defaults to SPOT when omitted.',
+  })
+  @IsOptional()
+  @IsEnum(TradeType)
+  type?: TradeType;
 
   @ApiProperty({
     required: false,

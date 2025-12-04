@@ -6,6 +6,7 @@ import {
   SettlementMethod,
   TradeSide,
   TradeStatus,
+  TradeType,
   TxRefType,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
@@ -48,6 +49,8 @@ export class TradesService {
     const quantity = new Decimal(dto.quantity);
     const pricePerUnit = await this.resolvePricePerUnit(dto, instrument);
     const totalAmount = quantity.mul(pricePerUnit);
+    // Default to SPOT to preserve existing behavior until clients explicitly pass forward types.
+    const tradeType = dto.type ?? TradeType.SPOT;
 
     if (quantity.lte(0) || pricePerUnit.lte(0)) {
       throw new BadRequestException('Quantity and pricePerUnit must be positive');
@@ -72,6 +75,7 @@ export class TradesService {
           instrumentId: instrument.id,
           side: dto.side,
           settlementMethod: dto.settlementMethod,
+          type: tradeType,
           quantity,
           pricePerUnit,
           totalAmount,
@@ -276,6 +280,16 @@ export class TradesService {
     await this.enqueueTahesabForWalletTrade(updatedTrade);
     await this.enqueueTahesabForForwardPhysicalSettlement(updatedTrade);
 
+    if (
+      updatedTrade &&
+      (updatedTrade.type === TradeType.TOMORROW || updatedTrade.type === TradeType.DAY_AFTER) &&
+      updatedTrade.settlementMethod === SettlementMethod.CASH
+    ) {
+      // TODO: enqueue forward cash settlement voucher (DoNewSanadVKHVaghNaghd/VKHBank) using
+      // SimpleVoucherDto once forward settlement amounts/PnL fields are formalized on the Trade
+      // entity. Reuse the new TradeType distinctions to avoid mixing SPOT and forward logic.
+    }
+
     return updatedTrade;
   }
 
@@ -286,6 +300,7 @@ export class TradesService {
   private async enqueueTahesabForWalletTrade(trade: TradeWithRelations): Promise<void> {
     if (!trade) return;
     if (trade.status !== TradeStatus.APPROVED) return;
+    if (trade.type !== TradeType.SPOT) return;
     if (trade.settlementMethod !== SettlementMethod.WALLET) return;
     if (!this.tahesabIntegration.isEnabled()) return;
 
@@ -331,6 +346,7 @@ export class TradesService {
   private async enqueueTahesabForForwardPhysicalSettlement(trade: TradeWithRelations): Promise<void> {
     if (!trade) return;
     if (trade.status !== TradeStatus.APPROVED) return;
+    if (trade.type !== TradeType.TOMORROW && trade.type !== TradeType.DAY_AFTER) return;
     if (
       trade.settlementMethod !== SettlementMethod.PHYSICAL &&
       trade.settlementMethod !== SettlementMethod.MIXED
