@@ -29,6 +29,10 @@ export class TahesabIntegrationConfigService {
     );
   }
 
+  getDefaultBankAccountCode(): string | null {
+    return this.configService.get<string>('TAHESAB_DEFAULT_BANK_ACCOUNT_CODE') ?? null;
+  }
+
   getGoldAccountCode(): string | null {
     return this.configService.get<string>('TAHESAB_DEFAULT_GOLD_ACCOUNT_CODE') ?? null;
   }

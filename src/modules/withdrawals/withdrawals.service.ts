@@ -178,8 +178,16 @@ export class WithdrawalsService {
     const moshtariCode = this.tahesabIntegration.getCustomerCode(withdrawal.user ?? null);
     if (!moshtariCode) return;
 
-    const cashAccountCode = this.tahesabIntegration.getDefaultCashAccountCode();
-    if (!cashAccountCode) return;
+    const isBankWithdrawal = Boolean(
+      (withdrawal.iban ?? '').length ||
+        (withdrawal.cardNumber ?? '').length ||
+        (withdrawal.bankName ?? '').length,
+    );
+    const accountCode = isBankWithdrawal
+      ? this.tahesabIntegration.getDefaultBankAccountCode() ??
+        this.tahesabIntegration.getDefaultCashAccountCode()
+      : this.tahesabIntegration.getDefaultCashAccountCode();
+    if (!accountCode) return;
 
     const { shamsiYear, shamsiMonth, shamsiDay } = this.tahesabIntegration.formatDateParts(
       withdrawal.processedAt ?? withdrawal.updatedAt ?? withdrawal.createdAt,
@@ -194,11 +202,37 @@ export class WithdrawalsService {
       shamsiDay,
       mablagh: Number(withdrawal.amount),
       sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Withdrawal ${withdrawal.id}`,
-      factorCode: cashAccountCode,
+      factorCode: accountCode,
     };
 
-    await this.tahesabOutbox.enqueueOnce('DoNewSanadVKHVaghNaghd', dto, {
+    const action = isBankWithdrawal ? 'DoNewSanadVKHBank' : 'DoNewSanadVKHVaghNaghd';
+
+    await this.tahesabOutbox.enqueueOnce(action, dto, {
       correlationId: withdrawal.id,
     });
+  }
+
+  private async enqueueTahesabDeletionForWithdrawal(withdrawalId: string): Promise<void> {
+    const existing = await this.prisma.tahesabOutbox.findFirst({
+      where: {
+        correlationId: withdrawalId,
+        method: { in: ['DoNewSanadVKHVaghNaghd', 'DoNewSanadVKHBank'] },
+        status: 'SUCCESS',
+        tahesabFactorCode: { not: null },
+      },
+    });
+
+    if (!existing?.tahesabFactorCode) {
+      this.logger.debug(
+        `No Tahesab factor code stored for withdrawal ${withdrawalId}; skipping deletion enqueue.`,
+      );
+      return;
+    }
+
+    await this.tahesabOutbox.enqueueOnce(
+      'DoDeleteSanad',
+      { factorCode: existing.tahesabFactorCode },
+      { correlationId: `withdraw:cancel:${withdrawalId}` },
+    );
   }
 }

@@ -7,9 +7,10 @@ import type {
   GetMoshtariByCodeResponseDto,
 } from './dto/moshtari.dto';
 import type {
+  DoDeleteSanadRequestDto,
+  DoDeleteSanadResponseDto,
   DoNewSanadGoldRequestDto,
   DoNewSanadInquiryResponseDto,
-  DoDeleteSanadResponseDto,
 } from './dto/sanad.dto';
 import type { GoldBuySellDto, SimpleVoucherDto } from './tahesab-documents.service';
 import type {
@@ -272,7 +273,8 @@ export type TahesabOutboxAction =
   | 'DoNewSanadVKHVaghNaghd'
   | 'DoNewSanadVKHBank'
   | 'DoNewSanadTakhfif'
-  | 'DoNewSanadTalabBedehi';
+  | 'DoNewSanadTalabBedehi'
+  | 'DoDeleteSanad';
 
 // Outbox uses DTO payloads instead of raw positional arrays
 export interface TahesabOutboxPayloadMap {
@@ -284,4 +286,5 @@ export interface TahesabOutboxPayloadMap {
   DoNewSanadVKHBank: SimpleVoucherDto;
   DoNewSanadTakhfif: SimpleVoucherDto;
   DoNewSanadTalabBedehi: SimpleVoucherDto;
+  DoDeleteSanad: DoDeleteSanadRequestDto;
 }

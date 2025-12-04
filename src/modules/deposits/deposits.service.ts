@@ -157,8 +157,13 @@ export class DepositsService {
     const moshtariCode = this.tahesabIntegration.getCustomerCode(deposit.user ?? null);
     if (!moshtariCode) return;
 
-    const cashAccountCode = this.tahesabIntegration.getDefaultCashAccountCode();
-    if (!cashAccountCode) return;
+    const methodLabel = (deposit.method ?? '').toLowerCase();
+    const useBankVoucher = methodLabel.includes('bank') || methodLabel.includes('card');
+    const accountCode = useBankVoucher
+      ? this.tahesabIntegration.getDefaultBankAccountCode() ??
+        this.tahesabIntegration.getDefaultCashAccountCode()
+      : this.tahesabIntegration.getDefaultCashAccountCode();
+    if (!accountCode) return;
 
     const { shamsiYear, shamsiMonth, shamsiDay } = this.tahesabIntegration.formatDateParts(
       deposit.processedAt ?? deposit.updatedAt ?? deposit.createdAt,
@@ -173,11 +178,35 @@ export class DepositsService {
       shamsiDay,
       mablagh: Number(deposit.amount),
       sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Deposit ${deposit.id}`,
-      factorCode: cashAccountCode,
+      factorCode: accountCode,
     };
 
-    await this.tahesabOutbox.enqueueOnce('DoNewSanadVKHVaghNaghd', dto, {
+    const action = useBankVoucher ? 'DoNewSanadVKHBank' : 'DoNewSanadVKHVaghNaghd';
+
+    await this.tahesabOutbox.enqueueOnce(action, dto, {
       correlationId: deposit.id,
     });
+  }
+
+  private async enqueueTahesabDeletionForDeposit(depositId: string): Promise<void> {
+    const existing = await this.prisma.tahesabOutbox.findFirst({
+      where: {
+        correlationId: depositId,
+        method: { in: ['DoNewSanadVKHVaghNaghd', 'DoNewSanadVKHBank'] },
+        status: 'SUCCESS',
+        tahesabFactorCode: { not: null },
+      },
+    });
+
+    if (!existing?.tahesabFactorCode) {
+      this.logger.debug(`No Tahesab factor code stored for deposit ${depositId}; skipping deletion enqueue.`);
+      return;
+    }
+
+    await this.tahesabOutbox.enqueueOnce(
+      'DoDeleteSanad',
+      { factorCode: existing.tahesabFactorCode },
+      { correlationId: `deposit:cancel:${depositId}` },
+    );
   }
 }

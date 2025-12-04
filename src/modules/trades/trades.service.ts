@@ -251,6 +251,9 @@ export class TradesService {
         // For external and cash settlement we only mark the trade approved for now.
         // Future work: post corresponding receivables/payables or cash ledgers and
         // enqueue Tahesab vouchers for forward/T+1 settlements.
+        // TODO: when physical forward delivery flows are available, enqueue Tahesab gold
+        // documents with correlationIds like `forward:physical:${trade.id}` alongside any
+        // cash PnL vouchers.
       }
 
       const updatedTrade = await tx.trade.findUnique({
@@ -316,6 +319,31 @@ export class TradesService {
     // Cash leg for WALLET settlements is already reflected in internal accounts.
     // If Tahesab requires explicit cash entries, hook them up here using
     // DoNewSanadVKHVaghNaghd and distinct correlation IDs.
+
+    // TODO: integrate DoNewSanadTakhfif for commissions/discounts once
+    // commission amounts are tracked on the Trade entity.
+  }
+
+  private async enqueueTahesabDeletionForTrade(tradeId: string): Promise<void> {
+    const existing = await this.prisma.tahesabOutbox.findFirst({
+      where: {
+        correlationId: tradeId,
+        method: 'DoNewSanadBuySaleGOLD',
+        status: 'SUCCESS',
+        tahesabFactorCode: { not: null },
+      },
+    });
+
+    if (!existing?.tahesabFactorCode) {
+      this.logger.debug(`No Tahesab factor code stored for trade ${tradeId}; skipping deletion enqueue.`);
+      return;
+    }
+
+    await this.tahesabOutbox.enqueueOnce(
+      'DoDeleteSanad',
+      { factorCode: existing.tahesabFactorCode },
+      { correlationId: `spot:cancel:${tradeId}` },
+    );
   }
 
   /**

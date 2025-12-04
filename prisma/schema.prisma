@@ -115,6 +115,7 @@ model TahesabOutbox {
   lastError   String?
   nextRetryAt DateTime @default(now())
   correlationId String?
+  tahesabFactorCode String?
 
   @@index([method, correlationId])
 }

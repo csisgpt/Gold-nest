@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   TahesabOutboxAction,
   TahesabOutboxPayloadMap,
+  TahesabDocumentResult,
 } from './tahesab.methods';
 import { TahesabDocumentsService } from './tahesab-documents.service';
 import { TahesabAccountsService } from './tahesab-accounts.service';
@@ -51,6 +52,12 @@ export class TahesabOutboxService {
     await this.enqueue(method, dto, options);
   }
 
+  private extractFactorCode(result: unknown): string | null {
+    if (!result) return null;
+    const documentResult = result as TahesabDocumentResult & { factorCode?: string };
+    return documentResult.Sh_factor ?? documentResult.factorCode ?? null;
+  }
+
   private async dispatch(
     action: TahesabOutboxAction,
     payload: TahesabOutboxPayloadMap[TahesabOutboxAction],
@@ -88,6 +95,10 @@ export class TahesabOutboxService {
         return this.documents.createTalabBedehi(
           payload as TahesabOutboxPayloadMap['DoNewSanadTalabBedehi'],
         );
+      case 'DoDeleteSanad':
+        return this.documents.deleteDocument(
+          payload as TahesabOutboxPayloadMap['DoDeleteSanad'],
+        );
       default:
         this.logger.warn(`No dispatcher configured for ${action}`);
         return null;
@@ -106,10 +117,11 @@ export class TahesabOutboxService {
       try {
         const action = item.method as TahesabOutboxAction;
         const payload = item.payload as TahesabOutboxPayloadMap[TahesabOutboxAction];
-        await this.dispatch(action, payload);
+        const result = await this.dispatch(action, payload);
+        const factorCode = this.extractFactorCode(result);
         await this.prisma.tahesabOutbox.update({
           where: { id: item.id },
-          data: { status: 'SUCCESS', lastError: null },
+          data: { status: 'SUCCESS', lastError: null, tahesabFactorCode: factorCode },
         });
       } catch (error) {
         const retryCount = item.retryCount + 1;
