@@ -61,6 +61,22 @@ enum TradeType {
   DAY_AFTER
 }
 
+enum CustodyAssetType {
+  GOLD
+}
+
+enum PhysicalCustodyMovementType {
+  DEPOSIT
+  WITHDRAWAL
+}
+
+enum PhysicalCustodyMovementStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 enum TxRefType {
   TRADE
   DEPOSIT
@@ -86,6 +102,7 @@ enum DepositStatus {
   APPROVED
   REJECTED
   CANCELLED
+  REVERSED
 }
 
 enum WithdrawStatus {
@@ -93,6 +110,7 @@ enum WithdrawStatus {
   APPROVED
   REJECTED
   CANCELLED
+  REVERSED
 }
 
 enum GoldLotStatus {
@@ -265,6 +283,11 @@ model Trade {
   pricePerUnit Decimal @db.Decimal(24, 6)
   totalAmount  Decimal @db.Decimal(24, 6)
 
+  entryPrice       Decimal? @db.Decimal(24, 8)
+  settlementPrice  Decimal? @db.Decimal(24, 8)
+  settlementAmount Decimal? @db.Decimal(24, 2)
+  realizedPnl      Decimal? @db.Decimal(24, 2)
+
   clientNote String?
   adminNote  String?
 
@@ -274,6 +297,45 @@ model Trade {
 
   rejectedAt   DateTime?
   rejectReason String?
+}
+
+model PhysicalCustodyPosition {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  assetType CustodyAssetType @default(GOLD)
+
+  weightGram Decimal @db.Decimal(24, 4)
+  ayar       Int
+
+  @@index([userId, assetType])
+  @@unique([userId, assetType])
+}
+
+model PhysicalCustodyMovement {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  assetType CustodyAssetType @default(GOLD)
+
+  movementType PhysicalCustodyMovementType
+  status       PhysicalCustodyMovementStatus @default(PENDING)
+
+  weightGram Decimal @db.Decimal(24, 4)
+  ayar       Int
+
+  tahesabFactorCode String?
+  note              String?
+
+  @@index([userId, assetType, status])
 }
 
 model DepositRequest {

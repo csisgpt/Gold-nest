@@ -188,6 +188,54 @@ export class DepositsService {
     });
   }
 
+  async cancelDeposit(depositId: string, reason?: string) {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const deposit = await tx.depositRequest.findUnique({ where: { id: depositId }, include: { user: true } });
+      if (!deposit) throw new NotFoundException('Deposit not found');
+
+      if (deposit.status === DepositStatus.CANCELLED || deposit.status === DepositStatus.REVERSED) {
+        return deposit;
+      }
+
+      if (deposit.status === DepositStatus.PENDING || deposit.status === DepositStatus.REJECTED) {
+        return tx.depositRequest.update({
+          where: { id: deposit.id },
+          data: { status: DepositStatus.CANCELLED, note: reason ?? deposit.note },
+          include: { user: true },
+        });
+      }
+
+      if (deposit.status === DepositStatus.APPROVED) {
+        const accountTx = deposit.accountTxId
+          ? await tx.accountTx.findUnique({ where: { id: deposit.accountTxId }, include: { account: true } })
+          : null;
+
+        if (accountTx?.account) {
+          await this.accountsService.applyTransaction(
+            tx,
+            accountTx.account,
+            new Decimal(deposit.amount).negated(),
+            AccountTxType.ADJUSTMENT,
+            TxRefType.DEPOSIT,
+            deposit.id,
+            undefined,
+          );
+        }
+
+        return tx.depositRequest.update({
+          where: { id: deposit.id },
+          data: { status: DepositStatus.REVERSED, note: reason ?? deposit.note },
+          include: { user: true },
+        });
+      }
+
+      return deposit;
+    });
+
+    await this.enqueueTahesabDeletionForDeposit(updated.id);
+    return updated;
+  }
+
   private async enqueueTahesabDeletionForDeposit(depositId: string): Promise<void> {
     const existing = await this.prisma.tahesabOutbox.findFirst({
       where: {

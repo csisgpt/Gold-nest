@@ -22,7 +22,8 @@ import { InstrumentsService } from '../instruments/instruments.service';
 import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
 import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
 import { BuyOrSale, SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
-import { GoldBuySellDto } from '../tahesab/tahesab-documents.service';
+import { GoldBuySellDto, SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
+import { SettleForwardCashDto } from './dto/settle-forward-cash.dto';
 
 type TradeWithRelations =
   | (Awaited<ReturnType<PrismaService['trade']['findUnique']>> & {
@@ -407,6 +408,105 @@ export class TradesService {
       { factorCode: existing.tahesabFactorCode },
       { correlationId: `spot:cancel:${tradeId}` },
     );
+  }
+
+  async settleForwardTradeInCash(tradeId: string, dto: SettleForwardCashDto, adminId?: string) {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const trade = await tx.trade.findUnique({ where: { id: tradeId }, include: { client: true, instrument: true } });
+      if (!trade) throw new NotFoundException('Trade not found');
+      if (trade.type !== TradeType.TOMORROW && trade.type !== TradeType.DAY_AFTER) {
+        throw new BadRequestException('Only forward trades can be settled in cash');
+      }
+      if (trade.settlementMethod !== SettlementMethod.CASH && trade.settlementMethod !== SettlementMethod.MIXED) {
+        throw new BadRequestException('Settlement method must be CASH or MIXED');
+      }
+      if (trade.status === TradeStatus.CANCELLED_BY_ADMIN || trade.status === TradeStatus.CANCELLED_BY_USER) {
+        throw new BadRequestException('Cannot settle a cancelled trade');
+      }
+
+      const updatedTrade = await tx.trade.update({
+        where: { id: trade.id },
+        data: {
+          settlementPrice: new Decimal(dto.settlementPrice),
+          settlementAmount: new Decimal(dto.settlementAmount),
+          realizedPnl: dto.realizedPnl !== undefined ? new Decimal(dto.realizedPnl) : undefined,
+          status: TradeStatus.SETTLED,
+          approvedById: trade.approvedById ?? adminId,
+        },
+        include: { client: true, instrument: true },
+      });
+
+      // TODO: formalize PnL posting rules; for now we avoid mutating wallet balances here to stay safe.
+
+      return updatedTrade;
+    });
+
+    await this.enqueueTahesabForForwardCashSettlement(updated);
+    return updated;
+  }
+
+  async cancelTrade(tradeId: string, reason?: string) {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const trade = await tx.trade.findUnique({ where: { id: tradeId }, include: { client: true, instrument: true } });
+      if (!trade) throw new NotFoundException('Trade not found');
+      if (trade.status === TradeStatus.CANCELLED_BY_ADMIN || trade.status === TradeStatus.CANCELLED_BY_USER) {
+        return trade;
+      }
+      if (trade.status === TradeStatus.SETTLED) {
+        // TODO: full rollback of settled trades requires explicit rules.
+        throw new BadRequestException('Settled trades require dedicated rollback');
+      }
+
+      const cancelStatus = TradeStatus.CANCELLED_BY_ADMIN;
+
+      const updatedTrade = await tx.trade.update({
+        where: { id: trade.id },
+        data: { status: cancelStatus, adminNote: reason ?? trade.adminNote },
+        include: { client: true, instrument: true },
+      });
+
+      return updatedTrade;
+    });
+
+    await this.enqueueTahesabDeletionForTrade(tradeId);
+    return updated;
+  }
+
+  private async enqueueTahesabForForwardCashSettlement(trade: TradeWithRelations): Promise<void> {
+    if (!trade) return;
+    if (trade.type !== TradeType.TOMORROW && trade.type !== TradeType.DAY_AFTER) return;
+    if (trade.settlementMethod !== SettlementMethod.CASH && trade.settlementMethod !== SettlementMethod.MIXED) return;
+    if (!trade.settlementAmount || new Decimal(trade.settlementAmount).eq(0)) return;
+    if (!this.tahesabIntegration.isEnabled()) return;
+
+    const moshtariCode = this.tahesabIntegration.getCustomerCode(trade.client ?? null);
+    if (!moshtariCode) return;
+
+    const { shamsiYear, shamsiMonth, shamsiDay } = this.tahesabIntegration.formatDateParts(
+      trade.approvedAt ?? trade.updatedAt ?? trade.createdAt,
+    );
+
+    const amount = new Decimal(trade.settlementAmount);
+    const dto: SimpleVoucherDto = {
+      sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
+      moshtariCode,
+      factorNumber: trade.id,
+      shamsiYear,
+      shamsiMonth,
+      shamsiDay,
+      mablagh: amount.abs().toNumber(),
+      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Forward cash settlement ${trade.id}`,
+      factorCode: this.tahesabIntegration.getDefaultCashAccountCode() ?? '',
+    };
+
+    if (!dto.factorCode) {
+      this.logger.warn('No default cash account configured for forward cash settlement');
+      return;
+    }
+
+    await this.tahesabOutbox.enqueueOnce('DoNewSanadVKHVaghNaghd', dto, {
+      correlationId: `forward:cash:${trade.id}`,
+    });
   }
 
   /**
