@@ -45,7 +45,7 @@ export class CreateTradeDto {
   @ApiProperty({
     enum: SettlementMethod,
     example: SettlementMethod.WALLET,
-    description: 'Settlement method: WALLET, EXTERNAL, or CASH.',
+    description: 'Settlement method: WALLET, EXTERNAL, CASH, PHYSICAL, or MIXED.',
   })
   @IsEnum(SettlementMethod)
   settlementMethod!: SettlementMethod;

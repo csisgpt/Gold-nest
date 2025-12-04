@@ -51,6 +51,8 @@ enum SettlementMethod {
   WALLET
   EXTERNAL
   CASH
+  PHYSICAL
+  MIXED
 }
 
 enum TxRefType {
