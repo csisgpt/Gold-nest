@@ -212,6 +212,54 @@ export class WithdrawalsService {
     });
   }
 
+  async cancelWithdrawal(withdrawalId: string, reason?: string) {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const withdrawal = await tx.withdrawRequest.findUnique({ where: { id: withdrawalId }, include: { user: true } });
+      if (!withdrawal) throw new NotFoundException('Withdraw not found');
+
+      if (withdrawal.status === WithdrawStatus.CANCELLED || withdrawal.status === WithdrawStatus.REVERSED) {
+        return withdrawal;
+      }
+
+      if (withdrawal.status === WithdrawStatus.PENDING || withdrawal.status === WithdrawStatus.REJECTED) {
+        return tx.withdrawRequest.update({
+          where: { id: withdrawal.id },
+          data: { status: WithdrawStatus.CANCELLED, note: reason ?? withdrawal.note },
+          include: { user: true },
+        });
+      }
+
+      if (withdrawal.status === WithdrawStatus.APPROVED) {
+        const accountTx = withdrawal.accountTxId
+          ? await tx.accountTx.findUnique({ where: { id: withdrawal.accountTxId }, include: { account: true } })
+          : null;
+
+        if (accountTx?.account) {
+          await this.accountsService.applyTransaction(
+            tx,
+            accountTx.account,
+            new Decimal(withdrawal.amount),
+            AccountTxType.ADJUSTMENT,
+            TxRefType.WITHDRAW,
+            withdrawal.id,
+            undefined,
+          );
+        }
+
+        return tx.withdrawRequest.update({
+          where: { id: withdrawal.id },
+          data: { status: WithdrawStatus.REVERSED, note: reason ?? withdrawal.note },
+          include: { user: true },
+        });
+      }
+
+      return withdrawal;
+    });
+
+    await this.enqueueTahesabDeletionForWithdrawal(updated.id);
+    return updated;
+  }
+
   private async enqueueTahesabDeletionForWithdrawal(withdrawalId: string): Promise<void> {
     const existing = await this.prisma.tahesabOutbox.findFirst({
       where: {
