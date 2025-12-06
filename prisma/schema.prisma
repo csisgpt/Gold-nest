@@ -436,6 +436,9 @@ model RemittanceGroup {
   /// Status of the group (OPEN, PARTIAL, CLOSED, CANCELLED)
   status RemittanceGroupStatus @default(OPEN)
 
+  /// Optional Tahesab document ID for the group-level accounting entry
+  tahesabDocId String?
+
   /// Legs associated with this group
   legs Remittance[]
 }
@@ -472,6 +475,9 @@ model Remittance {
   /// Status of this leg: PENDING until funds move, COMPLETED after both AccountTx are created,
   /// CANCELLED if the leg is voided.
   status RemittanceStatus @default(PENDING)
+
+  /// Optional Tahesab document ID for the accounting entry of this leg
+  tahesabDocId String?
 
   fromAccountTx   AccountTx? @relation("RemittanceFromTx", fields: [fromAccountTxId], references: [id])
   fromAccountTxId String?  @unique

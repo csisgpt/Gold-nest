@@ -119,9 +119,29 @@ export class TahesabOutboxService {
         const payload = item.payload as TahesabOutboxPayloadMap[TahesabOutboxAction];
         const result = await this.dispatch(action, payload);
         const factorCode = this.extractFactorCode(result);
-        await this.prisma.tahesabOutbox.update({
-          where: { id: item.id },
-          data: { status: 'SUCCESS', lastError: null, tahesabFactorCode: factorCode },
+        await this.prisma.$transaction(async (tx) => {
+          await tx.tahesabOutbox.update({
+            where: { id: item.id },
+            data: { status: 'SUCCESS', lastError: null, tahesabFactorCode: factorCode },
+          });
+
+          if (item.correlationId && factorCode) {
+            const remittance = await tx.remittance.findUnique({
+              where: { id: item.correlationId },
+            });
+            if (remittance) {
+              await tx.remittance.update({
+                where: { id: remittance.id },
+                data: { tahesabDocId: remittance.tahesabDocId ?? factorCode },
+              });
+              if (remittance.groupId) {
+                await tx.remittanceGroup.updateMany({
+                  where: { id: remittance.groupId, tahesabDocId: null },
+                  data: { tahesabDocId: factorCode },
+                });
+              }
+            }
+          }
         });
       } catch (error) {
         const retryCount = item.retryCount + 1;
