@@ -23,6 +23,11 @@ import {
   RemittanceLegSettlementInputDto,
 } from './dto/create-multi-leg-remittance.dto';
 import { RemittanceGroupResponseDto } from './dto/remittance-group-response.dto';
+import {
+  RemittanceDetailsResponseDto,
+  RemittanceSettlementEdgeDto,
+} from './dto/remittance-details-response.dto';
+import { OpenRemittanceSummaryDto } from './dto/open-remittance-summary.dto';
 
 @Injectable()
 export class RemittancesService {
@@ -49,16 +54,7 @@ export class RemittancesService {
 
     const leg = legs[0];
 
-    return {
-      id: leg.id,
-      fromUserId: leg.fromUserId,
-      toUserId: leg.toUserId,
-      toMobile: leg.toUser.mobile,
-      instrumentCode: leg.instrument.code,
-      amount: leg.amount.toString(),
-      note: leg.note ?? undefined,
-      createdAt: leg.createdAt,
-    };
+    return this.mapRemittanceToDto({ ...leg, group: leg.group });
   }
 
   async createGroupForUser(
@@ -86,20 +82,12 @@ export class RemittancesService {
       include: {
         instrument: true,
         toUser: true,
+        group: true,
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    return remittances.map((remittance) => ({
-      id: remittance.id,
-      fromUserId: remittance.fromUserId,
-      toUserId: remittance.toUserId,
-      toMobile: remittance.toUser.mobile,
-      instrumentCode: remittance.instrument.code,
-      amount: remittance.amount.toString(),
-      note: remittance.note ?? undefined,
-      createdAt: remittance.createdAt,
-    }));
+    return remittances.map((remittance) => this.mapRemittanceToDto(remittance));
   }
 
   async findGroupsByUser(userId: string): Promise<RemittanceGroupResponseDto[]> {
@@ -116,6 +104,7 @@ export class RemittancesService {
           include: {
             toUser: true,
             instrument: true,
+            group: true,
           },
         },
       },
@@ -123,6 +112,199 @@ export class RemittancesService {
     });
 
     return groups.map((group) => this.mapGroupToDto(group));
+  }
+
+  async findOneWithSettlementsForUser(
+    remittanceId: string,
+    userId: string,
+  ): Promise<RemittanceDetailsResponseDto> {
+    const remittance = await this.prisma.remittance.findUnique({
+      where: { id: remittanceId },
+      include: {
+        instrument: true,
+        toUser: true,
+        fromUser: true,
+        group: true,
+        settlementsAsLeg: {
+          include: {
+            sourceRemittance: {
+              include: {
+                instrument: true,
+                fromUser: true,
+                toUser: true,
+              },
+            },
+          },
+        },
+        settlementsAsSource: {
+          include: {
+            leg: {
+              include: {
+                instrument: true,
+                fromUser: true,
+                toUser: true,
+                group: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!remittance) {
+      throw new NotFoundException('Remittance not found');
+    }
+
+    if (
+      remittance.fromUserId !== userId &&
+      remittance.toUserId !== userId &&
+      remittance.onBehalfOfUserId !== userId &&
+      remittance.group?.createdByUserId !== userId
+    ) {
+      throw new NotFoundException('Remittance not found');
+    }
+
+    const base: RemittanceDetailsResponseDto = {
+      ...this.mapRemittanceToDto(remittance),
+      settles: [],
+      settledBy: [],
+    };
+
+    const settles: RemittanceSettlementEdgeDto[] = remittance.settlementsAsLeg.map((link) => {
+      const source = link.sourceRemittance;
+      return {
+        remittanceId: source.id,
+        amount: link.amount.toString(),
+        instrumentCode: source.instrument.code,
+        status: source.status,
+        fromUserId: source.fromUserId,
+        fromMobile: source.fromUser.mobile,
+        toUserId: source.toUserId,
+        toMobile: source.toUser.mobile,
+        note: link.note ?? undefined,
+        createdAt: link.createdAt,
+      };
+    });
+
+    const settledBy: RemittanceSettlementEdgeDto[] = remittance.settlementsAsSource.map((link) => {
+      const leg = link.leg;
+      return {
+        remittanceId: leg.id,
+        amount: link.amount.toString(),
+        instrumentCode: leg.instrument.code,
+        status: leg.status,
+        fromUserId: leg.fromUserId,
+        fromMobile: leg.fromUser.mobile,
+        toUserId: leg.toUserId,
+        toMobile: leg.toUser.mobile,
+        note: link.note ?? undefined,
+        createdAt: link.createdAt,
+      };
+    });
+
+    base.settles = settles;
+    base.settledBy = settledBy;
+
+    return base;
+  }
+
+  async findOpenObligationsForUser(userId: string): Promise<OpenRemittanceSummaryDto[]> {
+    const remittances = await this.prisma.remittance.findMany({
+      where: {
+        status: {
+          in: [RemittanceStatus.PENDING, RemittanceStatus.PARTIAL],
+        },
+        OR: [{ toUserId: userId }, { fromUserId: userId }, { onBehalfOfUserId: userId }],
+      },
+      include: {
+        instrument: true,
+        fromUser: true,
+        toUser: true,
+        group: true,
+        settlementsAsSource: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const result: OpenRemittanceSummaryDto[] = [];
+
+    for (const remittance of remittances) {
+      const settledAmount = remittance.settlementsAsSource.reduce(
+        (acc, link) => acc.add(link.amount),
+        new Decimal(0),
+      );
+      const originalAmount = new Decimal(remittance.amount);
+      const remainingAmount = originalAmount.minus(settledAmount);
+
+      if (remainingAmount.lte(0)) {
+        continue;
+      }
+
+      let direction: 'INCOMING' | 'OUTGOING' | 'ON_BEHALF';
+      let counterpartyUserId: string;
+      let counterpartyMobile: string;
+
+      if (remittance.onBehalfOfUserId && remittance.onBehalfOfUserId === userId) {
+        direction = 'ON_BEHALF';
+        counterpartyUserId = remittance.toUserId;
+        counterpartyMobile = remittance.toUser.mobile;
+      } else if (remittance.toUserId === userId) {
+        direction = 'INCOMING';
+        counterpartyUserId = remittance.fromUserId;
+        counterpartyMobile = remittance.fromUser.mobile;
+      } else {
+        direction = 'OUTGOING';
+        counterpartyUserId = remittance.toUserId;
+        counterpartyMobile = remittance.toUser.mobile;
+      }
+
+      result.push({
+        id: remittance.id,
+        instrumentCode: remittance.instrument.code,
+        originalAmount: originalAmount.toString(),
+        settledAmount: settledAmount.toString(),
+        remainingAmount: remainingAmount.toString(),
+        status: remittance.status,
+        direction,
+        counterpartyUserId,
+        counterpartyMobile,
+        onBehalfOfUserId: remittance.onBehalfOfUserId ?? undefined,
+        note: remittance.note ?? undefined,
+        createdAt: remittance.createdAt,
+        groupId: remittance.groupId ?? undefined,
+        groupKind: remittance.group?.kind,
+      });
+    }
+
+    return result;
+  }
+
+  private mapRemittanceToDto(
+    remittance: Remittance & {
+      instrument: Instrument;
+      toUser: User;
+      group?: RemittanceGroup | null;
+    },
+  ): RemittanceResponseDto {
+    return {
+      id: remittance.id,
+      fromUserId: remittance.fromUserId,
+      toUserId: remittance.toUserId,
+      toMobile: remittance.toUser.mobile,
+      instrumentCode: remittance.instrument.code,
+      amount: remittance.amount.toString(),
+      note: remittance.note ?? undefined,
+      createdAt: remittance.createdAt,
+      status: remittance.status,
+      onBehalfOfUserId: remittance.onBehalfOfUserId ?? undefined,
+      channel: remittance.channel,
+      iban: remittance.iban ?? undefined,
+      cardLast4: remittance.cardLast4 ?? undefined,
+      externalPaymentRef: remittance.externalPaymentRef ?? undefined,
+      groupId: remittance.groupId ?? undefined,
+      groupKind: remittance.group?.kind,
+      groupStatus: remittance.group?.status,
+    };
   }
 
   private mapGroupToDto(
@@ -134,15 +316,10 @@ export class RemittancesService {
       note: group.note ?? undefined,
       status: group.status,
       createdAt: group.createdAt,
-      legs: group.legs.map((leg) => ({
-        id: leg.id,
-        fromUserId: leg.fromUserId,
-        toUserId: leg.toUserId,
-        toMobile: leg.toUser.mobile,
-        instrumentCode: leg.instrument.code,
-        amount: leg.amount.toString(),
-        note: leg.note ?? undefined,
-        createdAt: leg.createdAt,
+      legs: group.legs.map((leg) => this.mapRemittanceToDto({ ...leg, group } as Remittance & {
+        toUser: User;
+        instrument: Instrument;
+        group: RemittanceGroup;
       })),
     };
   }
@@ -154,7 +331,7 @@ export class RemittancesService {
     explicitKind?: string,
   ): Promise<{
     group: RemittanceGroup;
-    legs: (Remittance & { toUser: User; instrument: Instrument })[];
+    legs: (Remittance & { toUser: User; instrument: Instrument; group?: RemittanceGroup | null })[];
   }> {
     if (!legsInput.length) {
       throw new BadRequestException('At least one leg is required');
@@ -423,6 +600,7 @@ export class RemittancesService {
         include: {
           toUser: true,
           instrument: true,
+          group: true,
         },
       });
 
