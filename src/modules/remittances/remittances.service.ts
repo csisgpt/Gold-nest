@@ -28,6 +28,7 @@ import {
   RemittanceSettlementEdgeDto,
 } from './dto/remittance-details-response.dto';
 import { OpenRemittanceSummaryDto } from './dto/open-remittance-summary.dto';
+import { TahesabRemittancesService } from '../tahesab/tahesab-remittances.service';
 
 @Injectable()
 export class RemittancesService {
@@ -36,6 +37,7 @@ export class RemittancesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
+    private readonly tahesabRemittances: TahesabRemittancesService,
   ) {}
 
   async createForUser(fromUserId: string, dto: CreateRemittanceDto): Promise<RemittanceResponseDto> {
@@ -304,6 +306,7 @@ export class RemittancesService {
       groupId: remittance.groupId ?? undefined,
       groupKind: remittance.group?.kind,
       groupStatus: remittance.group?.status,
+      tahesabDocId: remittance.tahesabDocId ?? undefined,
     };
   }
 
@@ -331,7 +334,12 @@ export class RemittancesService {
     explicitKind?: string,
   ): Promise<{
     group: RemittanceGroup;
-    legs: (Remittance & { toUser: User; instrument: Instrument; group?: RemittanceGroup | null })[];
+    legs: (Remittance & {
+      toUser: User;
+      fromUser: User;
+      instrument: Instrument;
+      group?: RemittanceGroup | null;
+    })[];
   }> {
     if (!legsInput.length) {
       throw new BadRequestException('At least one leg is required');
@@ -598,9 +606,11 @@ export class RemittancesService {
       const legsWithRelations = await tx.remittance.findMany({
         where: { id: { in: legsCreated.map((l) => l.id) } },
         include: {
+          fromUser: true,
           toUser: true,
           instrument: true,
           group: true,
+          settlementsAsLeg: true,
         },
       });
 
@@ -610,6 +620,15 @@ export class RemittancesService {
     this.logger.log(
       `Remittance group ${group.id} created by ${fromUserId} with ${legs.length} legs; settlements: ${settlementCount}`,
     );
+
+    for (const leg of legs) {
+      await this.tahesabRemittances.enqueueRemittanceLeg(leg as Remittance & {
+        toUser: User;
+        fromUser: User;
+        instrument: Instrument;
+        group?: RemittanceGroup | null;
+      });
+    }
 
     return { group, legs };
   }

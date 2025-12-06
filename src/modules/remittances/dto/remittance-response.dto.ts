@@ -82,4 +82,10 @@ export class RemittanceResponseDto {
       'Status of the remittance group (OPEN, PARTIAL, CLOSED, CANCELLED).',
   })
   groupStatus?: 'OPEN' | 'PARTIAL' | 'CLOSED' | 'CANCELLED';
+
+  @ApiProperty({
+    required: false,
+    description: 'Tahesab document ID associated with this remittance leg (if any).',
+  })
+  tahesabDocId?: string;
 }

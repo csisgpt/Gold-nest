@@ -1,13 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, RemittanceChannel } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   TahesabOutboxAction,
   TahesabOutboxPayloadMap,
   TahesabDocumentResult,
+  RemittanceOutboxPayload,
 } from './tahesab.methods';
 import { TahesabDocumentsService } from './tahesab-documents.service';
 import { TahesabAccountsService } from './tahesab-accounts.service';
+import { SimpleVoucherDto } from './tahesab-documents.service';
+import { SabteKolOrMovaghat } from './tahesab.methods';
 
 @Injectable()
 export class TahesabOutboxService {
@@ -95,6 +98,8 @@ export class TahesabOutboxService {
         return this.documents.createTalabBedehi(
           payload as TahesabOutboxPayloadMap['DoNewSanadTalabBedehi'],
         );
+      case 'RemittanceVoucher':
+        return this.processRemittanceVoucher(payload as RemittanceOutboxPayload);
       case 'DoDeleteSanad':
         return this.documents.deleteDocument(
           payload as TahesabOutboxPayloadMap['DoDeleteSanad'],
@@ -103,6 +108,28 @@ export class TahesabOutboxService {
         this.logger.warn(`No dispatcher configured for ${action}`);
         return null;
     }
+  }
+
+  private async processRemittanceVoucher(payload: RemittanceOutboxPayload) {
+    const amount = Number(payload.amount);
+    const dto: SimpleVoucherDto = {
+      sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
+      moshtariCode: payload.toCustomerCode,
+      factorNumber: payload.legId,
+      shamsiYear: payload.shamsiYear,
+      shamsiMonth: payload.shamsiMonth,
+      shamsiDay: payload.shamsiDay,
+      mablagh: amount,
+      sharh: payload.description,
+      factorCode: payload.accountCode,
+    };
+
+    const action: TahesabOutboxAction =
+      payload.channel === RemittanceChannel.BANK_TRANSFER
+        ? 'DoNewSanadVKHBank'
+        : 'DoNewSanadVKHVaghNaghd';
+
+    return this.dispatch(action, dto);
   }
 
   async processBatch(limit = 50): Promise<void> {
@@ -119,9 +146,29 @@ export class TahesabOutboxService {
         const payload = item.payload as TahesabOutboxPayloadMap[TahesabOutboxAction];
         const result = await this.dispatch(action, payload);
         const factorCode = this.extractFactorCode(result);
-        await this.prisma.tahesabOutbox.update({
-          where: { id: item.id },
-          data: { status: 'SUCCESS', lastError: null, tahesabFactorCode: factorCode },
+        await this.prisma.$transaction(async (tx) => {
+          await tx.tahesabOutbox.update({
+            where: { id: item.id },
+            data: { status: 'SUCCESS', lastError: null, tahesabFactorCode: factorCode },
+          });
+
+          if (item.correlationId && factorCode) {
+            const remittance = await tx.remittance.findUnique({
+              where: { id: item.correlationId },
+            });
+            if (remittance) {
+              await tx.remittance.update({
+                where: { id: remittance.id },
+                data: { tahesabDocId: remittance.tahesabDocId ?? factorCode },
+              });
+              if (remittance.groupId) {
+                await tx.remittanceGroup.updateMany({
+                  where: { id: remittance.groupId, tahesabDocId: null },
+                  data: { tahesabDocId: factorCode },
+                });
+              }
+            }
+          }
         });
       } catch (error) {
         const retryCount = item.retryCount + 1;

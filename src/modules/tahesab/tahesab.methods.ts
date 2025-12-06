@@ -1,3 +1,4 @@
+import { InstrumentType, RemittanceChannel } from '@prisma/client';
 import type {
   DoEditMoshtariRequestDto,
   DoEditMoshtariResponseDto,
@@ -274,7 +275,24 @@ export type TahesabOutboxAction =
   | 'DoNewSanadVKHBank'
   | 'DoNewSanadTakhfif'
   | 'DoNewSanadTalabBedehi'
-  | 'DoDeleteSanad';
+  | 'DoDeleteSanad'
+  | 'RemittanceVoucher';
+
+export interface RemittanceOutboxPayload {
+  legId: string;
+  fromCustomerCode: string;
+  toCustomerCode: string;
+  instrumentCode: string;
+  instrumentType: InstrumentType;
+  channel: RemittanceChannel;
+  amount: string;
+  accountCode: string;
+  shamsiYear: string;
+  shamsiMonth: string;
+  shamsiDay: string;
+  description: string;
+  settlements?: { sourceRemittanceId: string; amount: string }[];
+}
 
 // Outbox uses DTO payloads instead of raw positional arrays
 export interface TahesabOutboxPayloadMap {
@@ -287,4 +305,5 @@ export interface TahesabOutboxPayloadMap {
   DoNewSanadTakhfif: SimpleVoucherDto;
   DoNewSanadTalabBedehi: SimpleVoucherDto;
   DoDeleteSanad: DoDeleteSanadRequestDto;
+  RemittanceVoucher: RemittanceOutboxPayload;
 }
