@@ -137,9 +137,27 @@ enum RemittanceGroupStatus {
 }
 
 enum RemittanceStatus {
-  PENDING
-  COMPLETED
-  CANCELLED
+  PENDING   // obligation created, not settled at all
+  PARTIAL   // partially settled by one or more settlement legs
+  COMPLETED // fully settled
+  CANCELLED // voided
+}
+
+enum RemittanceChannel {
+  INTERNAL        // default: internal bookkeeping / wallet transfer
+  CASH            // physical cash
+  BANK_TRANSFER   // standard IBAN / wire transfer
+  CARD            // POS/card payment
+  MIXED           // mixture of above, details in note or external ref
+  OTHER
+}
+
+enum RemittanceGroupKind {
+  TRANSFER    // simple internal transfer(s)
+  SETTLEMENT  // explicit settlement of one or more existing remittances
+  NETTING     // netting/offsetting flows (we only tag it here for now)
+  PASS_THROUGH // pass-through remittance, paying directly to third parties on behalf of someone
+  OTHER
 }
 
 model TahesabOutbox {
@@ -412,6 +430,9 @@ model RemittanceGroup {
   /// Optional external reference (e.g. for reconciliation with tahesab or external systems)
   externalRef String? @unique
 
+  /// High-level intent of this group
+  kind RemittanceGroupKind @default(TRANSFER)
+
   /// Status of the group (OPEN, PARTIAL, CLOSED, CANCELLED)
   status RemittanceGroupStatus @default(OPEN)
 
@@ -432,11 +453,21 @@ model Remittance {
   toUser   User   @relation("RemittanceTo", fields: [toUserId], references: [id])
   toUserId String
 
+  /// Optional "on behalf of" user: the party whose obligation is being settled by this leg
+  onBehalfOfUser   User?   @relation("RemittanceOnBehalfOf", fields: [onBehalfOfUserId], references: [id])
+  onBehalfOfUserId String?
+
   instrument   Instrument @relation(fields: [instrumentId], references: [id])
   instrumentId String
 
   amount Decimal @db.Decimal(24, 6)
   note   String?
+
+  /// How the payment was made in the real world
+  channel            RemittanceChannel @default(INTERNAL)
+  iban               String?
+  cardLast4          String?  // last 4 digits of card, if applicable
+  externalPaymentRef String?  // bank ref number, POS trace, etc.
 
   /// Status of this leg: PENDING until funds move, COMPLETED after both AccountTx are created,
   /// CANCELLED if the leg is voided.
@@ -447,6 +478,30 @@ model Remittance {
 
   toAccountTx   AccountTx? @relation("RemittanceToTx", fields: [toAccountTxId], references: [id])
   toAccountTxId String?  @unique
+
+  settlementsAsLeg    RemittanceSettlementLink[] @relation("SettlementLegLinks")
+  settlementsAsSource RemittanceSettlementLink[] @relation("SettlementSourceLinks")
+}
+
+model RemittanceSettlementLink {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  /// The executing leg (a remittance that carries money)
+  leg   Remittance @relation("SettlementLegLinks", fields: [legId], references: [id])
+  legId String
+
+  /// The source remittance that this leg settles (fully or partially)
+  sourceRemittance   Remittance @relation("SettlementSourceLinks", fields: [sourceRemittanceId], references: [id])
+  sourceRemittanceId String
+
+  /// How much of the leg amount is allocated to this particular source remittance
+  amount Decimal @db.Decimal(24, 6)
+
+  note String?
+
+  @@index([legId])
+  @@index([sourceRemittanceId])
 }
 
 model GoldLot {

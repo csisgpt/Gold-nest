@@ -1,12 +1,27 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { AccountTxType, Instrument, Remittance, RemittanceGroup, TxRefType, User } from '@prisma/client';
+import {
+  AccountTxType,
+  Instrument,
+  Remittance,
+  RemittanceChannel,
+  RemittanceGroup,
+  RemittanceGroupStatus,
+  RemittanceGroupKind,
+  RemittanceStatus,
+  TxRefType,
+  User,
+} from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountsService } from '../accounts/accounts.service';
 import { CreateRemittanceDto } from './dto/create-remittance.dto';
 import { RemittanceResponseDto } from './dto/remittance-response.dto';
 import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
-import { CreateMultiLegRemittanceDto, RemittanceLegInputDto } from './dto/create-multi-leg-remittance.dto';
+import {
+  CreateMultiLegRemittanceDto,
+  RemittanceLegInputDto,
+  RemittanceLegSettlementInputDto,
+} from './dto/create-multi-leg-remittance.dto';
 import { RemittanceGroupResponseDto } from './dto/remittance-group-response.dto';
 
 @Injectable()
@@ -50,25 +65,14 @@ export class RemittancesService {
     fromUserId: string,
     dto: CreateMultiLegRemittanceDto,
   ): Promise<RemittanceGroupResponseDto> {
-    const { group, legs } = await this.createGroupInternal(fromUserId, dto.legs, dto.groupNote);
+    const { group, legs } = await this.createGroupInternal(
+      fromUserId,
+      dto.legs,
+      dto.groupNote,
+      dto.kind,
+    );
 
-    return {
-      id: group.id,
-      createdByUserId: group.createdByUserId,
-      note: group.note ?? undefined,
-      status: group.status,
-      createdAt: group.createdAt,
-      legs: legs.map((leg) => ({
-        id: leg.id,
-        fromUserId: leg.fromUserId,
-        toUserId: leg.toUserId,
-        toMobile: leg.toUser.mobile,
-        instrumentCode: leg.instrument.code,
-        amount: leg.amount.toString(),
-        note: leg.note ?? undefined,
-        createdAt: leg.createdAt,
-      })),
-    };
+    return this.mapGroupToDto({ group, legs });
   }
 
   async findByUser(userId: string): Promise<RemittanceResponseDto[]> {
@@ -147,6 +151,7 @@ export class RemittancesService {
     fromUserId: string,
     legsInput: RemittanceLegInputDto[],
     groupNote?: string,
+    explicitKind?: string,
   ): Promise<{
     group: RemittanceGroup;
     legs: (Remittance & { toUser: User; instrument: Instrument })[];
@@ -155,8 +160,12 @@ export class RemittancesService {
       throw new BadRequestException('At least one leg is required');
     }
 
-    const amounts = legsInput.map((leg) => ({ leg, amount: new Decimal(leg.amount) }));
-    for (const { amount } of amounts) {
+    const parsedLegs = legsInput.map((leg, index) => ({
+      input: leg,
+      amount: new Decimal(leg.amount),
+      index,
+    }));
+    for (const { amount } of parsedLegs) {
       if (amount.lte(0)) {
         throw new BadRequestException('Amount must be positive');
       }
@@ -169,6 +178,23 @@ export class RemittancesService {
     for (const mobile of uniqueMobiles) {
       if (!usersByMobile.has(mobile)) {
         throw new NotFoundException(`Destination user with mobile ${mobile} not found`);
+      }
+    }
+
+    const onBehalfMobiles = legsInput
+      .map((l) => l.onBehalfOfMobile)
+      .filter((m): m is string => Boolean(m));
+    const uniqueOnBehalfMobiles = Array.from(new Set(onBehalfMobiles));
+    let onBehalfUsersByMobile = new Map<string, User>();
+    if (uniqueOnBehalfMobiles.length) {
+      const onBehalfUsers = await this.prisma.user.findMany({
+        where: { mobile: { in: uniqueOnBehalfMobiles } },
+      });
+      onBehalfUsersByMobile = new Map(onBehalfUsers.map((u) => [u.mobile, u] as const));
+      for (const mobile of uniqueOnBehalfMobiles) {
+        if (!onBehalfUsersByMobile.has(mobile)) {
+          throw new NotFoundException(`On-behalf-of user not found for mobile: ${mobile}`);
+        }
       }
     }
 
@@ -189,17 +215,33 @@ export class RemittancesService {
       }
     }
 
+    let kind: RemittanceGroupKind;
+    if (explicitKind) {
+      if (!Object.values(RemittanceGroupKind).includes(explicitKind as RemittanceGroupKind)) {
+        throw new BadRequestException('Invalid remittance group kind');
+      }
+      kind = explicitKind as RemittanceGroupKind;
+    } else if (legsInput.some((l) => l.settlements && l.settlements.length > 0)) {
+      kind = RemittanceGroupKind.SETTLEMENT;
+    } else if (legsInput.some((l) => l.onBehalfOfMobile)) {
+      kind = RemittanceGroupKind.PASS_THROUGH;
+    } else {
+      kind = RemittanceGroupKind.TRANSFER;
+    }
+
     const totalsByInstrument = new Map<string, Decimal>();
-    amounts.forEach(({ leg, amount }) => {
-      const existing = totalsByInstrument.get(leg.instrumentCode) ?? new Decimal(0);
-      totalsByInstrument.set(leg.instrumentCode, existing.add(amount));
+    parsedLegs.forEach(({ input, amount }) => {
+      const existing = totalsByInstrument.get(input.instrumentCode) ?? new Decimal(0);
+      totalsByInstrument.set(input.instrumentCode, existing.add(amount));
     });
 
+    let settlementCount = 0;
     const { group, legs } = await this.prisma.$transaction(async (tx) => {
       const groupRecord = await tx.remittanceGroup.create({
         data: {
           createdByUserId: fromUserId,
           note: groupNote,
+          kind,
         },
       });
 
@@ -216,21 +258,35 @@ export class RemittancesService {
       }
 
       const legsCreated: Remittance[] = [];
-      for (const { leg, amount } of amounts) {
+      for (const { input: leg, amount } of parsedLegs) {
         const toUser = usersByMobile.get(leg.toMobile)!;
         const instrument = instrumentsByCode.get(leg.instrumentCode)!;
         const fromAccount = fromAccounts.get(instrument.code)!;
         const toAccount = await this.accountsService.getOrCreateAccount(toUser.id, instrument.code, tx);
+
+        const onBehalfUser = leg.onBehalfOfMobile
+          ? onBehalfUsersByMobile.get(leg.onBehalfOfMobile)
+          : undefined;
+
+        if (leg.channel && !Object.values(RemittanceChannel).includes(leg.channel as RemittanceChannel)) {
+          throw new BadRequestException('Invalid remittance channel');
+        }
+        const channel: RemittanceChannel = (leg.channel as RemittanceChannel) || RemittanceChannel.INTERNAL;
 
         const remittanceRecord = await tx.remittance.create({
           data: {
             groupId: groupRecord.id,
             fromUserId,
             toUserId: toUser.id,
+            onBehalfOfUserId: onBehalfUser?.id,
             instrumentId: instrument.id,
             amount,
             note: leg.note,
-            status: 'PENDING',
+            channel,
+            iban: leg.iban,
+            cardLast4: leg.cardLast4,
+            externalPaymentRef: leg.externalPaymentRef,
+            status: RemittanceStatus.PENDING,
           },
         });
 
@@ -259,17 +315,106 @@ export class RemittancesService {
           data: {
             fromAccountTxId: fromTx.txRecord.id,
             toAccountTxId: toTx.txRecord.id,
-            status: 'COMPLETED',
+            status: RemittanceStatus.COMPLETED,
           },
         });
 
         legsCreated.push(updatedLeg);
       }
 
+      const allSettlementInputs: { leg: Remittance; input: RemittanceLegSettlementInputDto }[] = [];
+      legsCreated.forEach((leg, idx) => {
+        const legInput = legsInput[idx];
+        if (legInput.settlements && legInput.settlements.length > 0) {
+          for (const settlement of legInput.settlements) {
+            allSettlementInputs.push({ leg, input: settlement });
+          }
+        }
+      });
+      settlementCount = allSettlementInputs.length;
+
+      if (allSettlementInputs.length) {
+        const sourceIds = Array.from(new Set(allSettlementInputs.map((s) => s.input.remittanceId)));
+        const sourceRemittances = await tx.remittance.findMany({
+          where: { id: { in: sourceIds } },
+          include: {
+            instrument: true,
+            settlementsAsSource: true,
+          },
+        });
+        const sourceById = new Map(sourceRemittances.map((r) => [r.id, r] as const));
+
+        for (const sourceId of sourceIds) {
+          if (!sourceById.has(sourceId)) {
+            throw new NotFoundException(`Source remittance not found: ${sourceId}`);
+          }
+        }
+
+        const sourceSettledTotals = new Map<string, Decimal>();
+        for (const source of sourceRemittances) {
+          const totalSettledBefore = source.settlementsAsSource.reduce(
+            (acc, link) => acc.add(link.amount),
+            new Decimal(0),
+          );
+          sourceSettledTotals.set(source.id, totalSettledBefore);
+        }
+
+        const settlementTotalsByLegId = new Map<string, Decimal>();
+
+        for (const { leg, input } of allSettlementInputs) {
+          const settlementAmount = new Decimal(input.amount);
+          if (settlementAmount.lte(0)) {
+            throw new BadRequestException('Settlement amount must be positive');
+          }
+          const source = sourceById.get(input.remittanceId)!;
+          if (source.instrumentId !== leg.instrumentId) {
+            throw new BadRequestException('Settlement instrument mismatch');
+          }
+
+          const currentLegTotal = settlementTotalsByLegId.get(leg.id) ?? new Decimal(0);
+          const newLegTotal = currentLegTotal.add(settlementAmount);
+          if (newLegTotal.gt(leg.amount)) {
+            throw new BadRequestException(`Settlement amount exceeds leg amount for leg ${leg.id}`);
+          }
+          settlementTotalsByLegId.set(leg.id, newLegTotal);
+
+          const currentSettled = sourceSettledTotals.get(source.id) ?? new Decimal(0);
+          const sourceRemainingBefore = new Decimal(source.amount).minus(currentSettled);
+          if (sourceRemainingBefore.lte(0)) {
+            throw new BadRequestException(`Remittance ${source.id} is already fully settled`);
+          }
+          if (sourceRemainingBefore.lt(settlementAmount)) {
+            throw new BadRequestException(
+              `Settlement amount exceeds remaining balance of remittance ${source.id}`,
+            );
+          }
+
+          const updatedSettled = currentSettled.add(settlementAmount);
+          sourceSettledTotals.set(source.id, updatedSettled);
+
+          await tx.remittanceSettlementLink.create({
+            data: {
+              legId: leg.id,
+              sourceRemittanceId: source.id,
+              amount: settlementAmount,
+              note: input.note,
+            },
+          });
+
+          const sourceStatus = updatedSettled.eq(new Decimal(source.amount))
+            ? RemittanceStatus.COMPLETED
+            : RemittanceStatus.PARTIAL;
+          await tx.remittance.update({
+            where: { id: source.id },
+            data: { status: sourceStatus },
+          });
+        }
+      }
+
       const closedGroup = await tx.remittanceGroup.update({
         where: { id: groupRecord.id },
         data: {
-          status: 'CLOSED',
+          status: RemittanceGroupStatus.CLOSED,
         },
       });
 
@@ -284,7 +429,9 @@ export class RemittancesService {
       return { group: closedGroup, legs: legsWithRelations };
     });
 
-    this.logger.log(`Remittance group ${group.id} created by ${fromUserId} with ${legs.length} legs`);
+    this.logger.log(
+      `Remittance group ${group.id} created by ${fromUserId} with ${legs.length} legs; settlements: ${settlementCount}`,
+    );
 
     return { group, legs };
   }
