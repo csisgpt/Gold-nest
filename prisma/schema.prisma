@@ -129,6 +129,19 @@ enum AttachmentEntityType {
   REMITTANCE
 }
 
+enum RemittanceGroupStatus {
+  OPEN
+  PARTIAL
+  CLOSED
+  CANCELLED
+}
+
+enum RemittanceStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
 model TahesabOutbox {
   id          String   @id @default(cuid())
   createdAt   DateTime @default(now())
@@ -182,6 +195,7 @@ model User {
 
   remittancesSent     Remittance[] @relation("RemittanceFrom")
   remittancesReceived Remittance[] @relation("RemittanceTo")
+  remittanceGroupsCreated RemittanceGroup[]
 
   // سمت "تریدهای تاییدشده توسط این کاربر (ادمین)"
   approvedTrades Trade[] @relation("ApprovedTrades")
@@ -384,9 +398,33 @@ model WithdrawRequest {
   accountTxId String?
 }
 
+model RemittanceGroup {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  /// The user who initiated this group (creator/initiator)
+  createdBy   User   @relation(fields: [createdByUserId], references: [id])
+  createdByUserId String
+
+  /// Optional high-level note / description
+  note   String?
+
+  /// Optional external reference (e.g. for reconciliation with tahesab or external systems)
+  externalRef String? @unique
+
+  /// Status of the group (OPEN, PARTIAL, CLOSED, CANCELLED)
+  status RemittanceGroupStatus @default(OPEN)
+
+  /// Legs associated with this group
+  legs Remittance[]
+}
+
 model Remittance {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
+
+  group   RemittanceGroup? @relation(fields: [groupId], references: [id])
+  groupId String?
 
   fromUser   User   @relation("RemittanceFrom", fields: [fromUserId], references: [id])
   fromUserId String
@@ -399,6 +437,10 @@ model Remittance {
 
   amount Decimal @db.Decimal(24, 6)
   note   String?
+
+  /// Status of this leg: PENDING until funds move, COMPLETED after both AccountTx are created,
+  /// CANCELLED if the leg is voided.
+  status RemittanceStatus @default(PENDING)
 
   fromAccountTx   AccountTx? @relation("RemittanceFromTx", fields: [fromAccountTxId], references: [id])
   fromAccountTxId String?  @unique

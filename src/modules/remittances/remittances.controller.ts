@@ -5,6 +5,8 @@ import { RemittancesService } from './remittances.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
+import { CreateMultiLegRemittanceDto } from './dto/create-multi-leg-remittance.dto';
+import { RemittanceGroupResponseDto } from './dto/remittance-group-response.dto';
 
 @ApiTags('remittances')
 @ApiBearerAuth('access-token')
@@ -22,5 +24,20 @@ export class RemittancesController {
   @UseGuards(JwtAuthGuard)
   async listMy(@CurrentUser() user: JwtRequestUser) {
     return this.remittancesService.findByUser(user.id);
+  }
+
+  @Post('remittances/groups')
+  @UseGuards(JwtAuthGuard)
+  async createGroup(
+    @Body() dto: CreateMultiLegRemittanceDto,
+    @CurrentUser() user: JwtRequestUser,
+  ): Promise<RemittanceGroupResponseDto> {
+    return this.remittancesService.createGroupForUser(user.id, dto);
+  }
+
+  @Get('remittances/groups/my')
+  @UseGuards(JwtAuthGuard)
+  async listMyGroups(@CurrentUser() user: JwtRequestUser): Promise<RemittanceGroupResponseDto[]> {
+    return this.remittancesService.findGroupsByUser(user.id);
   }
 }
