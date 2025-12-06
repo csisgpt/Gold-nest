@@ -610,6 +610,7 @@ export class RemittancesService {
           toUser: true,
           instrument: true,
           group: true,
+          settlementsAsLeg: true,
         },
       });
 

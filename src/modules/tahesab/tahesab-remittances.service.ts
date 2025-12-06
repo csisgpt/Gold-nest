@@ -5,11 +5,11 @@ import {
   Remittance,
   RemittanceChannel,
   RemittanceGroup,
+  RemittanceSettlementLink,
   User,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
-import { SabteKolOrMovaghat, TahesabOutboxAction } from './tahesab.methods';
-import { SimpleVoucherDto } from './tahesab-documents.service';
+import { RemittanceOutboxPayload } from './tahesab.methods';
 import { TahesabOutboxService } from './tahesab-outbox.service';
 import { TahesabIntegrationConfigService } from './tahesab-integration.config';
 
@@ -18,6 +18,7 @@ export type RemittanceForTahesab = Remittance & {
   instrument: Instrument;
   fromUser: User;
   toUser: User;
+  settlementsAsLeg?: RemittanceSettlementLink[];
 };
 
 @Injectable()
@@ -28,13 +29,6 @@ export class TahesabRemittancesService {
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
   ) {}
-
-  private resolveVoucherMethod(channel: RemittanceChannel): TahesabOutboxAction {
-    if (channel === RemittanceChannel.BANK_TRANSFER) {
-      return 'DoNewSanadVKHBank';
-    }
-    return 'DoNewSanadVKHVaghNaghd';
-  }
 
   private resolveAccountCode(leg: RemittanceForTahesab): string | null {
     if (leg.instrument.type === InstrumentType.GOLD) {
@@ -89,20 +83,27 @@ export class TahesabRemittancesService {
       leg.createdAt,
     );
 
-    const dto: SimpleVoucherDto = {
-      sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
-      moshtariCode: toCustomerCode,
-      factorNumber: leg.id,
+    const payload: RemittanceOutboxPayload = {
+      legId: leg.id,
+      fromCustomerCode,
+      toCustomerCode,
+      instrumentCode: leg.instrument.code,
+      instrumentType: leg.instrument.type,
+      channel: leg.channel,
+      amount: new Decimal(leg.amount).abs().toString(),
+      accountCode,
       shamsiYear,
       shamsiMonth,
       shamsiDay,
-      mablagh: new Decimal(leg.amount).abs().toNumber(),
-      sharh: this.buildTahesabDescriptionForRemittance(leg),
-      factorCode: accountCode,
+      description: this.buildTahesabDescriptionForRemittance(leg),
+      settlements: leg.settlementsAsLeg?.map((s) => ({
+        sourceRemittanceId: s.sourceRemittanceId,
+        amount: new Decimal(s.amount).toString(),
+      })),
     };
 
-    const action = this.resolveVoucherMethod(leg.channel);
-
-    await this.tahesabOutbox.enqueueOnce(action, dto, { correlationId: leg.id });
+    await this.tahesabOutbox.enqueue('RemittanceVoucher', payload, {
+      correlationId: leg.id,
+    });
   }
 }
