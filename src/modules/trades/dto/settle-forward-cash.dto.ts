@@ -11,7 +11,7 @@ export class SettleForwardCashDto {
 
   @ApiProperty({
     description:
-      'Net cash settlement amount (positive if we pay to client, negative if we receive from client)',
+      'Net cash settlement amount (positive if client pays the house, negative if the house pays the client)',
     example: 1500000.0,
   })
   @IsNumber()

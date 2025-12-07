@@ -45,6 +45,41 @@ export class TradesService {
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
   ) {}
 
+  /**
+   * Trade state transitions (high level):
+   * - PENDING -> APPROVED | REJECTED | CANCELLED_* (cancelled by admin/user)
+   * - APPROVED -> SETTLED | CANCELLED_* (cannot settle twice)
+   * - SETTLED is terminal for wallet operations and cannot be cancelled.
+   */
+
+  private validateTypeAndSettlementMethod(type: TradeType, method: SettlementMethod): void {
+    const allowedByType: Record<TradeType, SettlementMethod[]> = {
+      [TradeType.SPOT]: [
+        SettlementMethod.WALLET,
+        SettlementMethod.CASH,
+        SettlementMethod.EXTERNAL,
+        SettlementMethod.PHYSICAL,
+      ],
+      [TradeType.TOMORROW]: [
+        SettlementMethod.CASH,
+        SettlementMethod.PHYSICAL,
+        SettlementMethod.MIXED,
+      ],
+      [TradeType.DAY_AFTER]: [
+        SettlementMethod.CASH,
+        SettlementMethod.PHYSICAL,
+        SettlementMethod.MIXED,
+      ],
+    };
+
+    const allowed = allowedByType[type];
+    if (!allowed?.includes(method)) {
+      throw new BadRequestException(
+        `Settlement method ${method} is not allowed for trade type ${type}`,
+      );
+    }
+  }
+
   async createForUser(userId: string, dto: CreateTradeDto) {
     const instrument = await this.instrumentsService.findByCode(dto.instrumentCode);
     const quantity = new Decimal(dto.quantity);
@@ -52,6 +87,8 @@ export class TradesService {
     const totalAmount = quantity.mul(pricePerUnit);
     // Default to SPOT to preserve existing behavior until clients explicitly pass forward types.
     const tradeType = dto.type ?? TradeType.SPOT;
+
+    this.validateTypeAndSettlementMethod(tradeType, dto.settlementMethod);
 
     if (quantity.lte(0) || pricePerUnit.lte(0)) {
       throw new BadRequestException('Quantity and pricePerUnit must be positive');
@@ -66,6 +103,20 @@ export class TradesService {
       const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
       if (usable.lt(totalAmount)) {
         throw new InsufficientCreditException('Not enough IRR usable balance to open BUY trade');
+      }
+    }
+
+    if (dto.settlementMethod === SettlementMethod.WALLET && dto.side === TradeSide.SELL) {
+      const assetAccount = await this.accountsService.getOrCreateAccount(
+        userId,
+        instrument.code,
+      );
+
+      const usable = new Decimal(assetAccount.balance).minus(assetAccount.minBalance);
+      if (usable.lt(quantity)) {
+        throw new InsufficientCreditException(
+          'Not enough asset balance to sell with WALLET settlement',
+        );
       }
     }
 
@@ -119,7 +170,9 @@ export class TradesService {
       });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status !== TradeStatus.PENDING) {
-        throw new BadRequestException('Trade already processed');
+        throw new BadRequestException(
+          `Only PENDING trades can be approved (current status: ${trade.status})`,
+        );
       }
 
       const { count: updatedCount } = await tx.trade.updateMany({
@@ -133,7 +186,9 @@ export class TradesService {
       });
 
       if (updatedCount === 0) {
-        throw new BadRequestException('Trade already processed');
+        throw new BadRequestException(
+          `Only PENDING trades can be approved (current status: ${trade.status})`,
+        );
       }
 
       const quantity = new Decimal(trade.quantity);
@@ -165,6 +220,15 @@ export class TradesService {
           const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
           if (usable.lt(total)) {
             throw new InsufficientCreditException('Insufficient IRR for settlement');
+          }
+        }
+
+        if (trade.side === TradeSide.SELL) {
+          const usableAssetBalance = new Decimal(userAsset.balance).minus(
+            userAsset.minBalance,
+          );
+          if (usableAssetBalance.lt(quantity)) {
+            throw new InsufficientCreditException('Not enough asset to approve sell trade');
           }
         }
 
@@ -412,7 +476,10 @@ export class TradesService {
 
   async settleForwardTradeInCash(tradeId: string, dto: SettleForwardCashDto, adminId?: string) {
     const updated = await this.prisma.$transaction(async (tx) => {
-      const trade = await tx.trade.findUnique({ where: { id: tradeId }, include: { client: true, instrument: true } });
+      const trade = await tx.trade.findUnique({
+        where: { id: tradeId },
+        include: { client: true, instrument: true },
+      });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.type !== TradeType.TOMORROW && trade.type !== TradeType.DAY_AFTER) {
         throw new BadRequestException('Only forward trades can be settled in cash');
@@ -420,23 +487,105 @@ export class TradesService {
       if (trade.settlementMethod !== SettlementMethod.CASH && trade.settlementMethod !== SettlementMethod.MIXED) {
         throw new BadRequestException('Settlement method must be CASH or MIXED');
       }
+      if (trade.status === TradeStatus.SETTLED) {
+        throw new BadRequestException('Trade is already settled');
+      }
       if (trade.status === TradeStatus.CANCELLED_BY_ADMIN || trade.status === TradeStatus.CANCELLED_BY_USER) {
         throw new BadRequestException('Cannot settle a cancelled trade');
+      }
+      if (trade.status !== TradeStatus.APPROVED) {
+        throw new BadRequestException(
+          `Only APPROVED forward trades can be settled in cash (current status: ${trade.status})`,
+        );
+      }
+
+      const amount = new Decimal(dto.settlementAmount);
+
+      // settlementAmount > 0 => client pays (loss). settlementAmount < 0 => client receives (gain).
+      if (trade.settlementMethod === SettlementMethod.CASH || trade.settlementMethod === SettlementMethod.MIXED) {
+        if (!amount.isZero()) {
+          const userIrr = await this.accountsService.getOrCreateAccount(
+            trade.clientId,
+            IRR_INSTRUMENT_CODE,
+            tx,
+          );
+
+          const houseIrr = await this.accountsService.getOrCreateAccount(
+            HOUSE_USER_ID,
+            IRR_INSTRUMENT_CODE,
+            tx,
+          );
+
+          if (amount.gt(0)) {
+            const usable = new Decimal(userIrr.balance).minus(userIrr.minBalance);
+            if (usable.lt(amount)) {
+              throw new InsufficientCreditException(
+                'Not enough IRR balance for forward cash settlement',
+              );
+            }
+
+            await this.accountsService.applyTransaction(
+              tx,
+              userIrr,
+              amount.negated(),
+              AccountTxType.TRADE_DEBIT,
+              TxRefType.TRADE,
+              trade.id,
+              adminId,
+            );
+
+            await this.accountsService.applyTransaction(
+              tx,
+              houseIrr,
+              amount,
+              AccountTxType.TRADE_CREDIT,
+              TxRefType.TRADE,
+              trade.id,
+              adminId,
+            );
+          } else {
+            const absAmount = amount.abs();
+            const usableHouse = new Decimal(houseIrr.balance).minus(houseIrr.minBalance);
+            if (usableHouse.lt(absAmount)) {
+              throw new InsufficientCreditException(
+                'House IRR balance is not enough to credit client for forward cash settlement',
+              );
+            }
+
+            await this.accountsService.applyTransaction(
+              tx,
+              houseIrr,
+              absAmount.negated(),
+              AccountTxType.TRADE_DEBIT,
+              TxRefType.TRADE,
+              trade.id,
+              adminId,
+            );
+
+            await this.accountsService.applyTransaction(
+              tx,
+              userIrr,
+              absAmount,
+              AccountTxType.TRADE_CREDIT,
+              TxRefType.TRADE,
+              trade.id,
+              adminId,
+            );
+          }
+        }
       }
 
       const updatedTrade = await tx.trade.update({
         where: { id: trade.id },
         data: {
           settlementPrice: new Decimal(dto.settlementPrice),
-          settlementAmount: new Decimal(dto.settlementAmount),
+          settlementAmount: amount,
           realizedPnl: dto.realizedPnl !== undefined ? new Decimal(dto.realizedPnl) : undefined,
           status: TradeStatus.SETTLED,
           approvedById: trade.approvedById ?? adminId,
         },
         include: { client: true, instrument: true },
       });
-
-      // TODO: formalize PnL posting rules; for now we avoid mutating wallet balances here to stay safe.
 
       return updatedTrade;
     });
@@ -447,14 +596,22 @@ export class TradesService {
 
   async cancelTrade(tradeId: string, reason?: string) {
     const updated = await this.prisma.$transaction(async (tx) => {
-      const trade = await tx.trade.findUnique({ where: { id: tradeId }, include: { client: true, instrument: true } });
+      const trade = await tx.trade.findUnique({
+        where: { id: tradeId },
+        include: { client: true, instrument: true },
+      });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status === TradeStatus.CANCELLED_BY_ADMIN || trade.status === TradeStatus.CANCELLED_BY_USER) {
         return trade;
       }
       if (trade.status === TradeStatus.SETTLED) {
         // TODO: full rollback of settled trades requires explicit rules.
-        throw new BadRequestException('Settled trades require dedicated rollback');
+        throw new BadRequestException('Cannot cancel a settled trade');
+      }
+      if (trade.status !== TradeStatus.PENDING && trade.status !== TradeStatus.APPROVED) {
+        throw new BadRequestException(
+          `Only PENDING or APPROVED trades can be cancelled (current status: ${trade.status})`,
+        );
       }
 
       const cancelStatus = TradeStatus.CANCELLED_BY_ADMIN;
@@ -487,6 +644,7 @@ export class TradesService {
     );
 
     const amount = new Decimal(trade.settlementAmount);
+    // Wallet balances are already updated inline; this voucher mirrors the cash movement in Tahesab.
     const dto: SimpleVoucherDto = {
       sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
       moshtariCode,
@@ -525,7 +683,9 @@ export class TradesService {
       const trade = await tx.trade.findUnique({ where: { id } });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status !== TradeStatus.PENDING) {
-        throw new BadRequestException('Trade already processed');
+        throw new BadRequestException(
+          `Only PENDING trades can be rejected (current status: ${trade.status})`,
+        );
       }
 
       const updated = await tx.trade.update({
