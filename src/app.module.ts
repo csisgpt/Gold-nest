@@ -17,10 +17,14 @@ import { RemittancesModule } from './modules/remittances/remittances.module';
 import { AppController } from './app.controller';
 import { TahesabModule } from './modules/tahesab/tahesab.module';
 import { PhysicalCustodyModule } from './modules/physical-custody/physical-custody.module';
+import { validateEnv } from './config/env.validation';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      validate: validateEnv,
+    }),
     PrismaModule,
     AccountsModule,
     UsersModule,
