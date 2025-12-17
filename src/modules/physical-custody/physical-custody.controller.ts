@@ -1,4 +1,7 @@
-import { Body, Controller, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 import { PhysicalCustodyService } from './physical-custody.service';
 import { CreatePhysicalCustodyMovementDto } from './dto/create-physical-custody-movement.dto';
 import { CancelPhysicalCustodyMovementDto } from './dto/cancel-physical-custody-movement.dto';
@@ -7,9 +10,10 @@ import { CancelPhysicalCustodyMovementDto } from './dto/cancel-physical-custody-
 export class PhysicalCustodyController {
   constructor(private readonly service: PhysicalCustodyService) {}
 
+  @UseGuards(JwtAuthGuard)
   @Post()
-  request(@Req() req: any, @Body() dto: CreatePhysicalCustodyMovementDto) {
-    return this.service.requestMovement(req.user?.id, dto);
+  request(@CurrentUser() user: JwtRequestUser, @Body() dto: CreatePhysicalCustodyMovementDto) {
+    return this.service.requestMovement(user.id, dto);
   }
 
   @Post(':id/approve')

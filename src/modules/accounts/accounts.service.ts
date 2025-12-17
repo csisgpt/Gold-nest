@@ -7,12 +7,14 @@ import {
   TxRefType,
   InstrumentType,
   TradeSide,
+  UserRole,
+  UserStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
 import { AccountStatementEntryDto } from './dto/account-statement-entry.dto';
 import { AccountStatementFiltersDto } from './dto/account-statement-filters.dto';
-import { IRR_INSTRUMENT_CODE } from './constants';
+import { HOUSE_USER_ID, IRR_INSTRUMENT_CODE } from './constants';
 
 type DepositRequestType = Prisma.DepositRequestGetPayload<{}>;
 // تایپ داده‌های Withdraw
@@ -35,6 +37,7 @@ export interface ApplyTransactionInput {
   refType: TxRefType;
   refId?: string;
   createdById?: string;
+  reversalOfId?: string;
 }
 
 @Injectable()
@@ -42,11 +45,15 @@ export class AccountsService {
   constructor(private readonly prisma: PrismaService) { }
 
   async getOrCreateAccount(
-    userId: string | null,
+    userId: string,
     instrumentCode: string,
-    tx?: any,                       // 👈 اینجا رو شُل کردیم
+    tx?: PrismaClientOrTx,
   ) {
-    const client = tx ?? this.prisma;
+    const client: PrismaClientOrTx = tx ?? this.prisma;
+
+    if (userId === HOUSE_USER_ID) {
+      await this.ensureHouseUser(client);
+    }
 
     const instrument = await client.instrument.findUnique({
       where: { code: instrumentCode },
@@ -71,6 +78,22 @@ export class AccountsService {
     });
   }
 
+  private async ensureHouseUser(client: PrismaClientOrTx) {
+    await client.user.upsert({
+      where: { id: HOUSE_USER_ID },
+      update: {},
+      create: {
+        id: HOUSE_USER_ID,
+        fullName: 'House Account',
+        mobile: '09999999999',
+        email: 'house-system@goldnest.local',
+        password: '$2b$10$1rC5KTpfKCrj3Ghr/2e3MOl4m2YPSPiJYn/DCz2yNLOUZo8Ag1KmG',
+        role: UserRole.ADMIN,
+        status: UserStatus.ACTIVE,
+      },
+    });
+  }
+
   async applyTransaction(
     inputOrTx: ApplyTransactionInput | PrismaClientOrTx,
     accountOrInput?: any,
@@ -79,6 +102,7 @@ export class AccountsService {
     refType?: TxRefType,
     refId?: string,
     createdById?: string,
+    reversalOfId?: string,
   ) {
     const isLegacyInput = (candidate: any): candidate is ApplyTransactionInput =>
       typeof candidate?.accountId === 'string';
@@ -93,6 +117,7 @@ export class AccountsService {
           refType: refType!,
           refId,
           createdById,
+          reversalOfId,
         } as ApplyTransactionInput,
         tx: inputOrTx,
       };
@@ -125,6 +150,7 @@ export class AccountsService {
           refType: input.refType,
           refId: input.refId,
           createdById: input.createdById,
+          reversalOfId: input.reversalOfId,
         },
       });
 

@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.build.json",
     "prisma:generate": "prisma generate",
     "seed": "ts-node prisma/seed.ts",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "test": "TS_NODE_TRANSPILE_ONLY=1 node --require ts-node/register --test test/app.e2e.test.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -26,6 +27,7 @@
     "@nestjs/schedule": "^4.0.0",
     "@nestjs/swagger": "^7.4.2",
     "@nestjs/throttler": "file:vendor/nestjs-throttler",
+    "axios": "file:vendor/axios",
     "@prisma/client": "^5.19.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
