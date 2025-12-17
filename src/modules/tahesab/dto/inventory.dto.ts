@@ -28,3 +28,7 @@ export class DoTarazAbshodeSekehArzRow {
 export class DoTarazAbshodeSekehArzResponseDto {
   balances?: DoTarazAbshodeSekehArzRow[];
 }
+
+export class GetMojoodiKarSakhteRequestDto {
+  jensFelez: number;
+}

@@ -14,6 +14,15 @@ import { AccountStatementEntryDto } from './dto/account-statement-entry.dto';
 import { AccountStatementFiltersDto } from './dto/account-statement-filters.dto';
 import { IRR_INSTRUMENT_CODE } from './constants';
 
+type DepositRequestType = Prisma.DepositRequestGetPayload<{}>;
+// تایپ داده‌های Withdraw
+type WithdrawRequestType = Prisma.WithdrawRequestGetPayload<{}>;
+// تایپ داده‌های Trade، شامل اینکلود Instrument
+type TradeType = Prisma.TradeGetPayload<{ include: { instrument: true } }>;
+// تایپ داده‌های Remittance
+type RemittanceType = Prisma.RemittanceGetPayload<{}>;
+
+
 // 👇 این type alias رو اضافه کن
 type PrismaClientOrTx = PrismaClient | Prisma.TransactionClient;
 
@@ -77,16 +86,16 @@ export class AccountsService {
     const { input, tx } = isLegacyInput(inputOrTx)
       ? { input: inputOrTx, tx: accountOrInput }
       : {
-          input: {
-            accountId: accountOrInput?.id,
-            delta: delta!,
-            type: type!,
-            refType: refType!,
-            refId,
-            createdById,
-          } as ApplyTransactionInput,
-          tx: inputOrTx,
-        };
+        input: {
+          accountId: accountOrInput?.id,
+          delta: delta!,
+          type: type!,
+          refType: refType!,
+          refId,
+          createdById,
+        } as ApplyTransactionInput,
+        tx: inputOrTx,
+      };
 
     const deltaDecimal = new Decimal(input.delta);
 
@@ -198,19 +207,27 @@ export class AccountsService {
         : [],
       tradeIds.size
         ? this.prisma.trade.findMany({
-            where: { id: { in: Array.from(tradeIds) } },
-            include: { instrument: true },
-          })
+          where: { id: { in: Array.from(tradeIds) } },
+          include: { instrument: true },
+        })
         : [],
       remittanceIds.size
         ? this.prisma.remittance.findMany({ where: { id: { in: Array.from(remittanceIds) } } })
         : [],
     ]);
 
-    const depositMap = new Map(deposits.map((d) => [d.id, d]));
-    const withdrawMap = new Map(withdraws.map((w) => [w.id, w]));
-    const tradeMap = new Map(trades.map((t) => [t.id, t]));
-    const remittanceMap = new Map(remittances.map((r) => [r.id, r]));
+    const depositMap = new Map<string, DepositRequestType>(
+      deposits.map((d) => [d.id, d] as const)
+    );
+    const withdrawMap = new Map<string, WithdrawRequestType>(
+      withdraws.map((w) => [w.id, w] as const)
+    );
+    const tradeMap = new Map<string, TradeType>(
+      trades.map((t) => [t.id, t] as const)
+    );
+    const remittanceMap = new Map<string, RemittanceType>(
+      remittances.map((r) => [r.id, r] as const)
+    );
 
     const entries: AccountStatementEntryDto[] = accountTxs.map((tx) => {
       const delta = new Decimal(tx.delta);

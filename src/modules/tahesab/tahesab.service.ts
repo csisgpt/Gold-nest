@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TahesabHttpClient } from './tahesab-http.client';
-import type { TahesabMethodMap } from './tahesab.methods';
+import type { BankBalance, TahesabDocumentResult, TahesabMethodMap } from './tahesab.methods';
 import {
   DoDeleteSanadRequestDto,
   DoDeleteSanadResponseDto,
@@ -47,6 +47,7 @@ import {
   DoTarazAbshodeSekehArzRequestDto,
   DoTarazAbshodeSekehArzResponseDto,
   GetMojoodiAbshodeRequestDto,
+
   GetMojoodiAbshodeResponseDto,
 } from './dto/inventory.dto';
 import {
@@ -62,6 +63,7 @@ import {
   GetMojoodiKarSakhteRequestDto,
   GetMojoodiKarSakhteResponseDto,
   PingResponseDto,
+  TahesabBalanceRowDto,
 } from './dto/common.dto';
 
 /** Facade for internal Tahesab services. Prefer using specific services in new code. */
@@ -69,7 +71,7 @@ import {
 export class TahesabService {
   private readonly logger = new Logger(TahesabService.name);
 
-  constructor(private readonly tahesabHttpClient: TahesabHttpClient) {}
+  constructor(private readonly tahesabHttpClient: TahesabHttpClient) { }
 
   async callMethod<K extends keyof TahesabMethodMap>(
     method: K,
@@ -97,10 +99,8 @@ export class TahesabService {
       p.jensFelez ?? 0,
     ];
 
-    return this.callMethod<typeof payloadArray, DoNewMoshtariResponseDto>(
-      'DoNewMoshtari',
-      payloadArray,
-    );
+
+    return this.callMethod('DoNewMoshtari', payloadArray as any);
   }
 
   async updateCustomer(
@@ -120,10 +120,7 @@ export class TahesabService {
       p.description ?? '',
     ];
 
-    return this.callMethod<typeof payloadArray, DoEditMoshtariResponseDto>(
-      'DoEditMoshtari',
-      payloadArray,
-    );
+    return this.callMethod('DoEditMoshtari', payloadArray as any);
   }
 
   async listCustomers(
@@ -133,10 +130,13 @@ export class TahesabService {
       payload.mobile !== undefined
         ? [payload.mobile]
         : [payload.fromCode ?? '', payload.toCode ?? ''];
-    return this.callMethod<typeof payloadArray, DoListMoshtariResponseDto>(
-      'DoListMoshtari',
-      payloadArray,
-    );
+
+    return this.callMethod('DoListMoshtari', payloadArray as any);
+
+    // return this.callMethod< DoListMoshtariResponseDto>(
+    //   'DoListMoshtari',
+    //   payloadArray,
+    // );
   }
 
   async getCustomerByCode(
@@ -156,10 +156,8 @@ export class TahesabService {
     payload: GetMandeHesabByCodeRequestDto,
   ): Promise<GetMandeHesabResponseDto[]> {
     const payloadArray = [payload.customerCodes];
-    return this.callMethod<typeof payloadArray, GetMandeHesabResponseDto[]>(
-      'getmandehesabbycode',
-      payloadArray,
-    );
+
+    return this.callMethod('getmandehesabbycode', payloadArray as any);
   }
 
   async getBalanceByDate(
@@ -183,10 +181,8 @@ export class TahesabService {
       payload.filterNoSanad ?? '',
       payload.jensFelez ?? 0,
     ];
-    return this.callMethod<typeof payloadArray, DoListAsnadResponseDto>(
-      'DoListAsnad',
-      payloadArray,
-    );
+
+    return this.callMethod('DoListAsnad', payloadArray as any);
   }
 
   // Inventory
@@ -194,20 +190,23 @@ export class TahesabService {
     payload: GetMojoodiAbshodeRequestDto,
   ): Promise<GetMojoodiAbshodeResponseDto> {
     const payloadArray = [payload.ayar, payload.jensFelez];
-    return this.callMethod<typeof payloadArray, GetMojoodiAbshodeResponseDto>(
-      'GetMojoodiAbshodeMotefareghe',
-      payloadArray,
-    );
+
+    return this.callMethod('GetMojoodiAbshodeMotefareghe', payloadArray as any);
+
   }
 
   async getAbshodeSekeCurrencyBalance(
     payload: DoTarazAbshodeSekehArzRequestDto,
   ): Promise<DoTarazAbshodeSekehArzResponseDto> {
-    const payloadArray = [payload.includeCoin ? 1 : 0, payload.jensFelez];
-    return this.callMethod<typeof payloadArray, DoTarazAbshodeSekehArzResponseDto>(
+    const rows = await this.callMethod(
       'DoTarazAbshodeSekehArz',
-      payloadArray,
+      [payload.includeCoin ? 1 : 0, payload.jensFelez],
     );
+
+    return {
+      balances: rows,
+    };
+
   }
 
   // Etiket / RFID
@@ -219,9 +218,9 @@ export class TahesabService {
       payload.toCode ?? '',
       payload.withPhoto ? 1 : 0,
     ];
-    return this.callMethod<typeof payloadArray, DoListEtiketResponseDto>(
+    return this.callMethod(
       'DoListEtiket',
-      payloadArray,
+      payloadArray as any,
     );
   }
 
@@ -229,14 +228,14 @@ export class TahesabService {
     payload: DoListGetUpdatedEtiketRequestDto,
   ): Promise<DoListGetUpdatedEtiketResponseDto> {
     const payloadArray = [payload.fromDateTime, payload.toDateTime];
-    return this.callMethod<typeof payloadArray, DoListGetUpdatedEtiketResponseDto>(
+    return this.callMethod(
       'DoListGetUpdatedEtiket',
-      payloadArray,
+      payloadArray as any,
     );
   }
 
   async getEtiketTableInfo(): Promise<GetEtiketTableInfoResponseDto> {
-    return this.callMethod<[], GetEtiketTableInfoResponseDto>(
+    return this.callMethod(
       'GetEtiketTableInfo',
       [],
     );
@@ -273,7 +272,7 @@ export class TahesabService {
   // Sanad / Vouchers
   async createGoldVoucher(
     payload: DoNewSanadGoldRequestDto,
-  ): Promise<DoNewSanadGoldResponseDto> {
+  ): Promise<TahesabDocumentResult> {
     const p = payload;
     const payloadArray = [
       p.sabteKolOrMovaghat,
@@ -295,9 +294,9 @@ export class TahesabService {
       p.multiRadif ?? 0,
       p.jensFelez ?? 0,
     ];
-    return this.callMethod<typeof payloadArray, DoNewSanadGoldResponseDto>(
+    return this.callMethod(
       'DoNewSanadVKHGOLD',
-      payloadArray,
+      payloadArray as any,
     );
   }
 
@@ -317,9 +316,9 @@ export class TahesabService {
       payload.shamsiMonth,
       payload.shamsiDay,
     ];
-    return this.callMethod<typeof payloadArray, DoNewSanadInquiryResponseDto>(
+    return this.callMethod(
       'DoNewSanadInquiry',
-      payloadArray,
+      payloadArray as any,
     );
   }
 
@@ -330,29 +329,29 @@ export class TahesabService {
 
   async getBankBalance(
     payload: GetBankBalanceRequestDto,
-  ): Promise<GetBankBalanceResponseDto> {
-    return this.callMethod('GetBankMande', [payload.bankCode]);
+  ): Promise<TahesabBalanceRowDto[]> {
+    return this.callMethod('GetBankMande', [String(payload.bankCode)]);
   }
 
   async getCashboxBalance(
     payload: GetCashboxBalanceRequestDto,
-  ): Promise<GetCashboxBalanceResponseDto> {
+  ): Promise<TahesabBalanceRowDto[]> {
     return this.callMethod('GetSandoghMande', [payload.cashboxCode]);
   }
 
   async listCoins(): Promise<DoListNameSekehResponseDto> {
-    return this.callMethod<[], DoListNameSekehResponseDto>('DoListNameSekeh', []);
+    return this.callMethod('DoListNameSekeh', []);
   }
 
   async listBankAccounts(): Promise<DoListHesabBankiResponseDto> {
-    return this.callMethod<[], DoListHesabBankiResponseDto>(
+    return this.callMethod(
       'DoListHesabBanki',
       [],
     );
   }
 
   async listKarSakhte(): Promise<DoListNameKarSakhteResponseDto> {
-    return this.callMethod<[], DoListNameKarSakhteResponseDto>(
+    return this.callMethod(
       'DoListNameKarSakhte',
       [],
     );
@@ -360,13 +359,13 @@ export class TahesabService {
 
   async getMojoodiBank(
     payload: GetMojoodiBankRequestDto,
-  ): Promise<GetMojoodiBankResponseDto> {
-    return this.callMethod('GetMojoodiBank', [payload.bankCode]);
+  ): Promise<BankBalance[]> {
+    return this.callMethod('GetMojoodiBank', [String(payload.bankCode)]);
   }
 
   async getMojoodiKarSakhte(
     payload: GetMojoodiKarSakhteRequestDto,
-  ): Promise<GetMojoodiKarSakhteResponseDto> {
+  ): Promise<TahesabBalanceRowDto[]> {
     return this.callMethod('GetMojoodiKarSakhte', [payload.jensFelez]);
   }
 }

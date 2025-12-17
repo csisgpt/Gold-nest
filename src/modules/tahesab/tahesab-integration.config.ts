@@ -17,7 +17,9 @@ export class TahesabIntegrationConfigService {
     return flag === undefined || flag === 'true' || flag === '1';
   }
 
-  getCustomerCode(user?: Pick<User, 'tahesabCustomerCode'> | null): string | null {
+  getCustomerCode(
+    user?: Partial<Pick<User, 'tahesabCustomerCode'>> | null
+  ): string | null {
     return user?.tahesabCustomerCode ?? null;
   }
 

@@ -16,7 +16,7 @@ export class TahesabInventoryService {
   }
 
   async getAbshodeMojoodi(
-    ayar: number | string,
+    ayar: number,
     jensFelez: JensFelez = JensFelez.Gold,
   ) {
     return this.client.call('GetMojoodiAbshodeMotefareghe', [ayar, jensFelez]);
@@ -34,7 +34,7 @@ export class TahesabInventoryService {
   }
 
   async getMojoodiBank(dto: GetMojoodiBankRequestDto) {
-    return this.client.call('GetMojoodiBank', [dto.bankCode]);
+    return this.client.call('GetMojoodiBank', [String(dto.bankCode)]);
   }
 
   async getMojoodiKarSakhte(dto: GetMojoodiKarSakhteRequestDto) {

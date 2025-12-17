@@ -1,5 +1,4 @@
 const {
-  Injectable,
   SetMetadata,
   applyDecorators,
   TooManyRequestsException,
@@ -29,7 +28,7 @@ class ThrottlerModule {
   }
 }
 
-@Injectable()
+// @Injectable()
 class ThrottlerGuard {
   constructor(options) {
     this.options = options || { ttl: 60, limit: 60 };

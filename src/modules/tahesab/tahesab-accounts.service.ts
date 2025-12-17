@@ -31,7 +31,7 @@ export class TahesabAccountsService {
       p.moshtariCode ?? -1,
       p.jensFelez ?? 0,
     ];
-    return this.client.call('DoNewMoshtari', payloadArray);
+    return this.client.call('DoNewMoshtari', payloadArray  as any);
   }
 
   async updateCustomer(dto: DoEditMoshtariRequestDto) {
@@ -48,14 +48,14 @@ export class TahesabAccountsService {
       p.referrerCode ?? '',
       p.description ?? '',
     ];
-    return this.client.call('DoEditMoshtari', payloadArray);
+    return this.client.call('DoEditMoshtari', payloadArray as any);
   }
 
   async listCustomers(dto: DoListMoshtariRequestDto) {
     const payloadArray = dto.mobile
       ? [dto.mobile]
       : [dto.fromCode ?? '', dto.toCode ?? ''];
-    return this.client.call('DoListMoshtari', payloadArray);
+    return this.client.call('DoListMoshtari', payloadArray  as any);
   }
 
   async getCustomerByCode(dto: GetMoshtariByCodeRequestDto) {
@@ -68,11 +68,11 @@ export class TahesabAccountsService {
 
   async getBalanceByCustomerCode(dto: GetMandeHesabByCodeRequestDto) {
     const payloadArray = [dto.customerCodes];
-    return this.client.call('getmandehesabbycode', payloadArray);
+    return this.client.call('getmandehesabbycode', payloadArray  as any);
   }
 
   async getBalanceByDate(dto: GetMandeHesabByDateRequestDto) {
     const payloadArray = [dto.customerCode, dto.dateShamsi];
-    return this.client.call('GetMandeHesabByTarikh', payloadArray);
+    return this.client.call('GetMandeHesabByTarikh', payloadArray  as any);
   }
 }

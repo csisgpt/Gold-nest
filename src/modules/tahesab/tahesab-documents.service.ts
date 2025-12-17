@@ -64,7 +64,7 @@ export class TahesabDocumentsService {
       p.multiRadif ?? 0,
       p.jensFelez ?? 0,
     ];
-    return this.client.call('DoNewSanadVKHGOLD', payloadArray);
+    return this.client.call('DoNewSanadVKHGOLD', payloadArray as any);
   }
 
   async createGoldBuySell(dto: GoldBuySellDto) {
@@ -85,7 +85,7 @@ export class TahesabDocumentsService {
       dto.factorCode ?? '',
       dto.jensFelez ?? JensFelez.Gold,
     ];
-    return this.client.call('DoNewSanadBuySaleGOLD', payloadArray);
+    return this.client.call('DoNewSanadBuySaleGOLD', payloadArray as any);
   }
 
   async createSekehInOut(dto: GoldBuySellDto) {
@@ -106,7 +106,7 @@ export class TahesabDocumentsService {
       dto.factorCode ?? '',
       dto.jensFelez ?? JensFelez.Gold,
     ];
-    return this.client.call('DoNewSanadVKHSEKEH', payloadArray);
+    return this.client.call('DoNewSanadVKHSEKEH', payloadArray as any);
   }
 
   async createSekehBuySell(dto: GoldBuySellDto) {
@@ -127,7 +127,7 @@ export class TahesabDocumentsService {
       dto.factorCode ?? '',
       dto.jensFelez ?? JensFelez.Gold,
     ];
-    return this.client.call('DoNewSanadBuySaleSEKEH', payloadArray);
+    return this.client.call('DoNewSanadBuySaleSEKEH', payloadArray as any);
   }
 
   async createCashInOut(dto: SimpleVoucherDto) {
@@ -142,7 +142,7 @@ export class TahesabDocumentsService {
       dto.sharh ?? '',
       dto.factorCode ?? '',
     ];
-    return this.client.call('DoNewSanadVKHVaghNaghd', payloadArray);
+    return this.client.call('DoNewSanadVKHVaghNaghd', payloadArray as any);
   }
 
   async createBankInOut(dto: SimpleVoucherDto) {
@@ -157,7 +157,7 @@ export class TahesabDocumentsService {
       dto.sharh ?? '',
       dto.factorCode ?? '',
     ];
-    return this.client.call('DoNewSanadVKHBank', payloadArray);
+    return this.client.call('DoNewSanadVKHBank', payloadArray as any);
   }
 
   async createDiscount(dto: SimpleVoucherDto) {
@@ -172,7 +172,7 @@ export class TahesabDocumentsService {
       dto.sharh ?? '',
       dto.factorCode ?? '',
     ];
-    return this.client.call('DoNewSanadTakhfif', payloadArray);
+    return this.client.call('DoNewSanadTakhfif', payloadArray as any);
   }
 
   async createTalabBedehi(dto: SimpleVoucherDto) {
@@ -187,7 +187,7 @@ export class TahesabDocumentsService {
       dto.sharh ?? '',
       dto.factorCode ?? '',
     ];
-    return this.client.call('DoNewSanadTalabBedehi', payloadArray);
+    return this.client.call('DoNewSanadTalabBedehi', payloadArray as any);
   }
 
   async createKarsakhteBuySell(dto: GoldBuySellDto) {
@@ -208,7 +208,7 @@ export class TahesabDocumentsService {
       dto.factorCode ?? '',
       dto.jensFelez ?? JensFelez.Gold,
     ];
-    return this.client.call('DoNewSanadBuySaleKar', payloadArray);
+    return this.client.call('DoNewSanadBuySaleKar', payloadArray as any);
   }
 
   async createKarsakhteInOut(dto: GoldBuySellDto) {
@@ -229,7 +229,7 @@ export class TahesabDocumentsService {
       dto.factorCode ?? '',
       dto.jensFelez ?? JensFelez.Gold,
     ];
-    return this.client.call('DoNewSanadVKHKar', payloadArray);
+    return this.client.call('DoNewSanadVKHKar', payloadArray as any);
   }
 
   async createEtiketBuySell(dto: GoldBuySellDto) {
@@ -250,7 +250,7 @@ export class TahesabDocumentsService {
       dto.factorCode ?? '',
       dto.jensFelez ?? JensFelez.Gold,
     ];
-    return this.client.call('DoNewSanadBuySaleEtiket', payloadArray);
+    return this.client.call('DoNewSanadBuySaleEtiket', payloadArray as any);
   }
 
   async createEtiketInOut(dto: GoldBuySellDto) {
@@ -271,7 +271,7 @@ export class TahesabDocumentsService {
       dto.factorCode ?? '',
       dto.jensFelez ?? JensFelez.Gold,
     ];
-    return this.client.call('DoNewSanadVKHEtiket', payloadArray);
+    return this.client.call('DoNewSanadVKHEtiket', payloadArray as any);
   }
 
   async deleteDocument(dto: DoDeleteSanadRequestDto) {
@@ -286,6 +286,6 @@ export class TahesabDocumentsService {
       dto.shamsiMonth,
       dto.shamsiDay,
     ];
-    return this.client.call('DoNewSanadInquiry', payloadArray);
+    return this.client.call('DoNewSanadInquiry', payloadArray as any);
   }
 }

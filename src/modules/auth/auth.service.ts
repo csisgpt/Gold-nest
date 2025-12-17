@@ -14,6 +14,7 @@ export class AuthService {
   ) {}
 
   async login(dto: LoginDto) {
+    console.log(dto)
     const user = await this.usersService.findWithPasswordByMobile(dto.mobile);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');

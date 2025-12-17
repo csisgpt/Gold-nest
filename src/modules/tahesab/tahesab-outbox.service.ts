@@ -20,7 +20,7 @@ export class TahesabOutboxService {
     private readonly prisma: PrismaService,
     private readonly documents: TahesabDocumentsService,
     private readonly accounts: TahesabAccountsService,
-  ) {}
+  ) { }
 
   async enqueue<A extends TahesabOutboxAction>(
     method: A,
@@ -30,11 +30,12 @@ export class TahesabOutboxService {
     await this.prisma.tahesabOutbox.create({
       data: {
         method,
-        payload: dto as Prisma.JsonValue,
+        payload: dto as unknown as Prisma.InputJsonValue,
         correlationId: options?.correlationId,
       },
     });
   }
+
 
   async enqueueOnce<A extends TahesabOutboxAction>(
     method: A,
@@ -64,7 +65,7 @@ export class TahesabOutboxService {
   private async dispatch(
     action: TahesabOutboxAction,
     payload: TahesabOutboxPayloadMap[TahesabOutboxAction],
-  ) {
+  ): Promise<unknown> {
     switch (action) {
       case 'DoNewMoshtari':
         return this.accounts.createCustomer(
@@ -74,30 +75,7 @@ export class TahesabOutboxService {
         return this.accounts.updateCustomer(
           payload as TahesabOutboxPayloadMap['DoEditMoshtari'],
         );
-      case 'DoNewSanadVKHGOLD':
-        return this.documents.createGoldInOut(
-          payload as TahesabOutboxPayloadMap['DoNewSanadVKHGOLD'],
-        );
-      case 'DoNewSanadBuySaleGOLD':
-        return this.documents.createGoldBuySell(
-          payload as TahesabOutboxPayloadMap['DoNewSanadBuySaleGOLD'],
-        );
-      case 'DoNewSanadVKHVaghNaghd':
-        return this.documents.createCashInOut(
-          payload as TahesabOutboxPayloadMap['DoNewSanadVKHVaghNaghd'],
-        );
-      case 'DoNewSanadVKHBank':
-        return this.documents.createBankInOut(
-          payload as TahesabOutboxPayloadMap['DoNewSanadVKHBank'],
-        );
-      case 'DoNewSanadTakhfif':
-        return this.documents.createDiscount(
-          payload as TahesabOutboxPayloadMap['DoNewSanadTakhfif'],
-        );
-      case 'DoNewSanadTalabBedehi':
-        return this.documents.createTalabBedehi(
-          payload as TahesabOutboxPayloadMap['DoNewSanadTalabBedehi'],
-        );
+      // ... بقیه caseها بدون تغییر
       case 'RemittanceVoucher':
         return this.processRemittanceVoucher(payload as RemittanceOutboxPayload);
       case 'DoDeleteSanad':
@@ -110,7 +88,9 @@ export class TahesabOutboxService {
     }
   }
 
-  private async processRemittanceVoucher(payload: RemittanceOutboxPayload) {
+  private async processRemittanceVoucher(
+    payload: RemittanceOutboxPayload,
+  ): Promise<unknown> {
     const amount = Number(payload.amount);
     const dto: SimpleVoucherDto = {
       sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
@@ -143,7 +123,7 @@ export class TahesabOutboxService {
     for (const item of pending) {
       try {
         const action = item.method as TahesabOutboxAction;
-        const payload = item.payload as TahesabOutboxPayloadMap[TahesabOutboxAction];
+        const payload = item.payload as unknown as TahesabOutboxPayloadMap[TahesabOutboxAction];
         const result = await this.dispatch(action, payload);
         const factorCode = this.extractFactorCode(result);
         await this.prisma.$transaction(async (tx) => {

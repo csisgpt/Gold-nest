@@ -19,7 +19,7 @@ export class TahesabDocsReportService {
       dto.filterNoSanad ?? '',
       dto.jensFelez ?? 0,
     ];
-    return this.client.call('DoListAsnad', payloadArray);
+    return this.client.call('DoListAsnad', payloadArray as any);
   }
 
   async inquiryDocument(dto: DoNewSanadInquiryRequestDto) {
@@ -30,7 +30,7 @@ export class TahesabDocsReportService {
       dto.shamsiMonth,
       dto.shamsiDay,
     ];
-    return this.client.call('DoNewSanadInquiry', payloadArray);
+    return this.client.call('DoNewSanadInquiry', payloadArray as any);
   }
 
   async deleteDocument(dto: DoDeleteSanadRequestDto) {

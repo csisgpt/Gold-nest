@@ -24,12 +24,12 @@ export class TahesabEtiketService {
 
   async listEtikets(dto: DoListEtiketRequestDto) {
     const payloadArray = [dto.fromCode ?? '', dto.toCode ?? '', dto.withPhoto ? 1 : 0];
-    return this.client.call('DoListEtiket', payloadArray);
+    return this.client.call('DoListEtiket', payloadArray as any);
   }
 
   async listUpdatedEtikets(dto: DoListGetUpdatedEtiketRequestDto) {
     const payloadArray = [dto.fromDateTime, dto.toDateTime];
-    return this.client.call('DoListGetUpdatedEtiket', payloadArray);
+    return this.client.call('DoListGetUpdatedEtiket', payloadArray as any);
   }
 
   async listEtiketsByCodeKar(codeKar: string) {

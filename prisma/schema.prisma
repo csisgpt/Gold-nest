@@ -137,41 +137,41 @@ enum RemittanceGroupStatus {
 }
 
 enum RemittanceStatus {
-  PENDING   // obligation created, not settled at all
-  PARTIAL   // partially settled by one or more settlement legs
+  PENDING // obligation created, not settled at all
+  PARTIAL // partially settled by one or more settlement legs
   COMPLETED // fully settled
   CANCELLED // voided
 }
 
 enum RemittanceChannel {
-  INTERNAL        // default: internal bookkeeping / wallet transfer
-  CASH            // physical cash
-  BANK_TRANSFER   // standard IBAN / wire transfer
-  CARD            // POS/card payment
-  MIXED           // mixture of above, details in note or external ref
+  INTERNAL // default: internal bookkeeping / wallet transfer
+  CASH // physical cash
+  BANK_TRANSFER // standard IBAN / wire transfer
+  CARD // POS/card payment
+  MIXED // mixture of above, details in note or external ref
   OTHER
 }
 
 enum RemittanceGroupKind {
-  TRANSFER    // simple internal transfer(s)
-  SETTLEMENT  // explicit settlement of one or more existing remittances
-  NETTING     // netting/offsetting flows (we only tag it here for now)
+  TRANSFER // simple internal transfer(s)
+  SETTLEMENT // explicit settlement of one or more existing remittances
+  NETTING // netting/offsetting flows (we only tag it here for now)
   PASS_THROUGH // pass-through remittance, paying directly to third parties on behalf of someone
   OTHER
 }
 
 model TahesabOutbox {
-  id          String   @id @default(cuid())
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  method      String
-  payload     Json
-  status      TahesabOutboxStatus @default(PENDING)
-  retryCount  Int      @default(0)
-  lastError   String?
-  nextRetryAt DateTime @default(now())
-  correlationId String?
+  method            String
+  payload           Json
+  status            TahesabOutboxStatus @default(PENDING)
+  retryCount        Int                 @default(0)
+  lastError         String?
+  nextRetryAt       DateTime            @default(now())
+  correlationId     String?
   tahesabFactorCode String?
 
   @@index([method, correlationId])
@@ -193,7 +193,6 @@ model User {
   password String
   email    String @unique
 
-  // Optional external accounting linkage
   tahesabCustomerCode String? @unique
 
   role   UserRole   @default(CLIENT)
@@ -211,12 +210,18 @@ model User {
   processedDeposits  DepositRequest[]  @relation("DepositProcessedBy")
   processedWithdraws WithdrawRequest[] @relation("WithdrawProcessedBy")
 
-  remittancesSent     Remittance[] @relation("RemittanceFrom")
-  remittancesReceived Remittance[] @relation("RemittanceTo")
+  remittancesSent         Remittance[]      @relation("RemittanceFrom")
+  remittancesReceived     Remittance[]      @relation("RemittanceTo")
   remittanceGroupsCreated RemittanceGroup[]
+
+  // 👇 این رو اضافه کن برای onBehalfOfUser
+  remittancesOnBehalfOf Remittance[] @relation("RemittanceOnBehalfOf")
 
   // سمت "تریدهای تاییدشده توسط این کاربر (ادمین)"
   approvedTrades Trade[] @relation("ApprovedTrades")
+
+  physicalCustodyPositions PhysicalCustodyPosition[]
+  physicalCustodyMovements PhysicalCustodyMovement[]
 
   goldLots GoldLot[]
   files    File[]    @relation("FilesUploadedBy")
@@ -232,9 +237,9 @@ model Instrument {
   type InstrumentType
   unit InstrumentUnit
 
-  accounts Account[]
-  trades   Trade[]
-  prices   InstrumentPrice[]
+  accounts    Account[]
+  trades      Trade[]
+  prices      InstrumentPrice[]
   remittances Remittance[]
 }
 
@@ -344,8 +349,8 @@ model PhysicalCustodyPosition {
   weightGram Decimal @db.Decimal(24, 4)
   ayar       Int
 
-  @@index([userId, assetType])
   @@unique([userId, assetType])
+  @@index([userId, assetType])
 }
 
 model PhysicalCustodyMovement {
@@ -421,11 +426,11 @@ model RemittanceGroup {
   createdAt DateTime @default(now())
 
   /// The user who initiated this group (creator/initiator)
-  createdBy   User   @relation(fields: [createdByUserId], references: [id])
+  createdBy       User   @relation(fields: [createdByUserId], references: [id])
   createdByUserId String
 
   /// Optional high-level note / description
-  note   String?
+  note String?
 
   /// Optional external reference (e.g. for reconciliation with tahesab or external systems)
   externalRef String? @unique
@@ -469,8 +474,8 @@ model Remittance {
   /// How the payment was made in the real world
   channel            RemittanceChannel @default(INTERNAL)
   iban               String?
-  cardLast4          String?  // last 4 digits of card, if applicable
-  externalPaymentRef String?  // bank ref number, POS trace, etc.
+  cardLast4          String? // last 4 digits of card, if applicable
+  externalPaymentRef String? // bank ref number, POS trace, etc.
 
   /// Status of this leg: PENDING until funds move, COMPLETED after both AccountTx are created,
   /// CANCELLED if the leg is voided.
@@ -480,10 +485,10 @@ model Remittance {
   tahesabDocId String?
 
   fromAccountTx   AccountTx? @relation("RemittanceFromTx", fields: [fromAccountTxId], references: [id])
-  fromAccountTxId String?  @unique
+  fromAccountTxId String?    @unique
 
   toAccountTx   AccountTx? @relation("RemittanceToTx", fields: [toAccountTxId], references: [id])
-  toAccountTxId String?  @unique
+  toAccountTxId String?    @unique
 
   settlementsAsLeg    RemittanceSettlementLink[] @relation("SettlementLegLinks")
   settlementsAsSource RemittanceSettlementLink[] @relation("SettlementSourceLinks")

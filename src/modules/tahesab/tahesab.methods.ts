@@ -17,6 +17,7 @@ import type { GoldBuySellDto, SimpleVoucherDto } from './tahesab-documents.servi
 import type {
   DoTarazAbshodeSekehArzRow,
   GetMojoodiAbshodeRow,
+  GetMojoodiAbshodeResponseDto
 } from './dto/inventory.dto';
 import type { DoListAsnadResponseDto } from './dto/list-documents.dto';
 import type {
@@ -96,12 +97,15 @@ export type TahesabMethodMap = {
   // Inventory / balances
   GetMojoodiBank: { args: [nameBank: string]; response: BankBalance[] };
   GetMojoodiAbshodeMotefareghe: {
-    args: [ayar: number | string, jensFelez: JensFelez];
-    response: AbshodeMojoodiRow[];
+    args: [number, number]; // آرگومان‌های payloadArray
+    response: GetMojoodiAbshodeResponseDto; // <-- اصلاح شد
   };
-  GetMojoodiKarSakhte: { args: [jensFelez: JensFelez]; response: TahesabBalanceRowDto[] };
+  GetMojoodiKarSakhte: {
+    args: [jensFelez: JensFelez];
+    response: TahesabBalanceRowDto[];
+  };
   DoTarazAbshodeSekehArz: {
-    args: [baEhtesabSekeh: number, jensFelez: JensFelez];
+    args: [number, JensFelez];
     response: DoTarazAbshodeSekehArzRow[];
   };
 
@@ -152,9 +156,14 @@ export type TahesabMethodMap = {
   DoListNameSekeh: { args: []; response: DoListNameSekehResponseDto };
   DoListHesabBanki: { args: []; response: DoListHesabBankiResponseDto };
   DoListNameKarSakhte: { args: []; response: DoListNameKarSakhteResponseDto };
-  GetBankMande: { args: [bankCode: string]; response: TahesabBalanceRowDto[] };
-  GetSandoghMande: { args: [cashboxCode: string]; response: TahesabBalanceRowDto[] };
-
+  GetBankMande: {
+    args: [bankCode: string];
+    response: TahesabBalanceRowDto[];
+  };
+  GetSandoghMande: {
+    args: [cashboxCode: string];
+    response: TahesabBalanceRowDto[];
+  };
   // Documents creation variations
   DoNewSanadVKHGOLD: {
     args: [

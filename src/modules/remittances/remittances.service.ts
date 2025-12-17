@@ -38,7 +38,7 @@ export class RemittancesService {
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
     private readonly tahesabRemittances: TahesabRemittancesService,
-  ) {}
+  ) { }
 
   async createForUser(fromUserId: string, dto: CreateRemittanceDto): Promise<RemittanceResponseDto> {
     const { legs } = await this.createGroupInternal(
@@ -69,8 +69,13 @@ export class RemittancesService {
       dto.groupNote,
       dto.kind,
     );
-
-    return this.mapGroupToDto({ group, legs });
+  
+    // 🛠️ اصلاح: آبجکت group را با فیلد legs ادغام کنید
+    // سپس آن را به mapGroupToDto پاس دهید
+    return this.mapGroupToDto({
+      ...group, // تمام پراپرتی‌های RemittanceGroup
+      legs: legs, // اضافه کردن پراپرتی legs
+    });
   }
 
   async findByUser(userId: string): Promise<RemittanceResponseDto[]> {
@@ -319,11 +324,12 @@ export class RemittancesService {
       note: group.note ?? undefined,
       status: group.status,
       createdAt: group.createdAt,
-      legs: group.legs.map((leg) => this.mapRemittanceToDto({ ...leg, group } as Remittance & {
-        toUser: User;
-        instrument: Instrument;
-        group: RemittanceGroup;
-      })),
+      legs: group.legs.map((leg) =>
+        this.mapRemittanceToDto({
+          ...leg,
+          group: group, // 👈 اصلاح شده: آبجکت گروه را به سادگی به عنوان فیلد group اضافه کنید
+        })
+      ),
     };
   }
 
