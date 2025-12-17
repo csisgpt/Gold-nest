@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   AccountTxType,
   AttachmentEntityType,
@@ -452,7 +458,7 @@ export class TradesService {
     // is confirmed.
   }
 
-  private async enqueueTahesabDeletionForTrade(tradeId: string): Promise<void> {
+  private async enqueueTahesabDeletionForTrade(tradeId: string, correlationId?: string): Promise<void> {
     const existing = await this.prisma.tahesabOutbox.findFirst({
       where: {
         correlationId: tradeId,
@@ -470,7 +476,7 @@ export class TradesService {
     await this.tahesabOutbox.enqueueOnce(
       'DoDeleteSanad',
       { factorCode: existing.tahesabFactorCode },
-      { correlationId: `spot:cancel:${tradeId}` },
+      { correlationId: correlationId ?? `spot:cancel:${tradeId}` },
     );
   }
 
@@ -604,14 +610,8 @@ export class TradesService {
       if (trade.status === TradeStatus.CANCELLED_BY_ADMIN || trade.status === TradeStatus.CANCELLED_BY_USER) {
         return trade;
       }
-      if (trade.status === TradeStatus.SETTLED) {
-        // TODO: full rollback of settled trades requires explicit rules.
-        throw new BadRequestException('Cannot cancel a settled trade');
-      }
-      if (trade.status !== TradeStatus.PENDING && trade.status !== TradeStatus.APPROVED) {
-        throw new BadRequestException(
-          `Only PENDING or APPROVED trades can be cancelled (current status: ${trade.status})`,
-        );
+      if (trade.status !== TradeStatus.PENDING) {
+        throw new ConflictException('Only PENDING trades can be cancelled');
       }
 
       const cancelStatus = TradeStatus.CANCELLED_BY_ADMIN;
@@ -625,8 +625,60 @@ export class TradesService {
       return updatedTrade;
     });
 
-    await this.enqueueTahesabDeletionForTrade(tradeId);
+    await this.enqueueTahesabDeletionForTrade(tradeId, `spot:cancel:${tradeId}`);
     return updated;
+  }
+
+  async reverseTrade(tradeId: string, adminId?: string, reason?: string) {
+    const reversed = await this.prisma.$transaction(async (tx) => {
+      const trade = await tx.trade.findUnique({
+        where: { id: tradeId },
+        include: { client: true, instrument: true },
+      });
+      if (!trade) throw new NotFoundException('Trade not found');
+      if (trade.reversedAt) return trade;
+      if (trade.status !== TradeStatus.APPROVED) {
+        throw new ConflictException('Only APPROVED trades can be reversed');
+      }
+
+      if (trade.settlementMethod === SettlementMethod.WALLET) {
+        const tradeTxs = await tx.accountTx.findMany({
+          where: { refType: TxRefType.TRADE, refId: trade.id },
+          orderBy: { createdAt: 'asc' },
+        });
+
+        for (const txRecord of tradeTxs) {
+          const existingReversal = await tx.accountTx.findFirst({ where: { reversalOfId: txRecord.id } });
+          if (existingReversal) {
+            continue;
+          }
+
+          await this.accountsService.applyTransaction(
+            tx,
+            { id: txRecord.accountId },
+            new Decimal(txRecord.delta).negated(),
+            AccountTxType.ADJUSTMENT,
+            TxRefType.TRADE,
+            trade.id,
+            adminId,
+            txRecord.id,
+          );
+        }
+      }
+
+      return tx.trade.update({
+        where: { id: trade.id },
+        data: {
+          status: TradeStatus.CANCELLED_BY_ADMIN,
+          reversedAt: new Date(),
+          adminNote: reason ?? trade.adminNote,
+        },
+        include: { client: true, instrument: true },
+      });
+    });
+
+    await this.enqueueTahesabDeletionForTrade(tradeId, `trade:${tradeId}:reverse`);
+    return reversed;
   }
 
   private async enqueueTahesabForForwardCashSettlement(trade: TradeWithRelations): Promise<void> {

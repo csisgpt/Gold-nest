@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
-import { AccountTxType, AttachmentEntityType, DepositStatus, TxRefType } from '@prisma/client';
+import { AccountTxType, AttachmentEntityType, DepositRequest, DepositStatus, TxRefType } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountsService } from '../accounts/accounts.service';
@@ -63,26 +63,19 @@ export class DepositsService {
 
   async approve(id: string, dto: DecisionDto, adminId: string) {
     const updatedDeposit = await this.prisma.$transaction(async (tx) => {
-      const deposit = await tx.depositRequest.findUnique({
-        where: { id },
-        include: { user: true },
-      });
+      const [deposit] = await tx.$queryRaw<DepositRequest[]>`
+        SELECT * FROM "DepositRequest" WHERE id = ${id} FOR UPDATE
+      `;
+
       if (!deposit) throw new NotFoundException('Deposit not found');
-      if (deposit.status !== DepositStatus.PENDING) {
-        throw new BadRequestException('Deposit already processed');
+      if (deposit.accountTxId) {
+        return tx.depositRequest.findUnique({ where: { id }, include: { user: true } });
       }
 
-      const { count } = await tx.depositRequest.updateMany({
-        where: { id, status: DepositStatus.PENDING },
-        data: {
-          status: DepositStatus.APPROVED,
-          processedAt: new Date(),
-          processedById: adminId,
-          note: dto.note,
-        },
-      });
-
-      if (count === 0) {
+      if (
+        deposit.status !== DepositStatus.PENDING &&
+        !(deposit.status === DepositStatus.APPROVED && deposit.accountTxId === null)
+      ) {
         throw new BadRequestException('Deposit already processed');
       }
 
@@ -104,9 +97,15 @@ export class DepositsService {
 
       this.logger.log(`Deposit ${id} approved by ${adminId}`);
 
+      const processedAt = deposit.processedAt ? new Date(deposit.processedAt) : new Date();
+
       return tx.depositRequest.update({
         where: { id },
         data: {
+          status: DepositStatus.APPROVED,
+          processedAt,
+          processedById: deposit.processedById ?? adminId,
+          note: dto.note ?? deposit.note,
           accountTxId: txResult.txRecord.id,
         },
         include: { user: true },

@@ -28,6 +28,10 @@ export class PhysicalCustodyService {
     userId: string,
     dto: CreatePhysicalCustodyMovementDto,
   ): Promise<PhysicalCustodyMovement> {
+    if (!userId) {
+      throw new BadRequestException('Authenticated user is required for custody requests');
+    }
+
     return this.prisma.physicalCustodyMovement.create({
       data: {
         userId,

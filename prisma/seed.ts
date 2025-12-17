@@ -28,6 +28,7 @@ const prisma = new PrismaClient();
 
 const NUM_CLIENTS = 12;
 const NUM_FAKE_TRADES = 6;
+const HOUSE_USER_ID = process.env.HOUSE_USER_ID || 'house-system-user';
 
 async function main() {
     console.log('--- Start Seeding GoldNest Application ---');
@@ -46,6 +47,20 @@ async function main() {
     let clientB: any;
 
     // Upsert برای کاربران اصلی
+    const houseUser = await prisma.user.upsert({
+        where: { id: HOUSE_USER_ID },
+        update: {},
+        create: {
+            id: HOUSE_USER_ID,
+            fullName: 'House Account',
+            mobile: '09999999999',
+            email: 'house-system@goldnest.local',
+            password: sharedPassword,
+            role: UserRole.ADMIN,
+            status: UserStatus.ACTIVE,
+        },
+    });
+
     adminUser = await prisma.user.upsert({
         where: { mobile: '09120000001' },
         update: {},

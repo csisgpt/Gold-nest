@@ -11,6 +11,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
+import { ReverseTradeDto } from './dto/reverse-trade.dto';
 
 @ApiTags('trades')
 @ApiBearerAuth('access-token')
@@ -76,5 +77,29 @@ export class TradesController {
     @CurrentUser() admin: JwtRequestUser,
   ) {
     return this.tradesService.reject(id, dto, admin.id);
+  }
+
+  @Post('admin/trades/:id/cancel')
+  @Throttle(30, 60)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: ReverseTradeDto,
+    @CurrentUser() admin: JwtRequestUser,
+  ) {
+    return this.tradesService.cancelTrade(id, dto?.reason ?? `Cancelled by ${admin.id}`);
+  }
+
+  @Post('admin/trades/:id/reverse')
+  @Throttle(30, 60)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  reverse(
+    @Param('id') id: string,
+    @Body() dto: ReverseTradeDto,
+    @CurrentUser() admin: JwtRequestUser,
+  ) {
+    return this.tradesService.reverseTrade(id, admin.id, dto?.reason);
   }
 }
