@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -17,6 +17,7 @@ import { RemittancesModule } from './modules/remittances/remittances.module';
 import { AppController } from './app.controller';
 import { TahesabModule } from './modules/tahesab/tahesab.module';
 import { PhysicalCustodyModule } from './modules/physical-custody/physical-custody.module';
+import { RequestIdMiddleware } from './common/http/request-id.middleware';
 
 @Module({
   imports: [
@@ -48,4 +49,8 @@ import { PhysicalCustodyModule } from './modules/physical-custody/physical-custo
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestIdMiddleware).forRoutes('*');
+  }
+}

@@ -3,6 +3,8 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { ApiExceptionFilter } from './common/http/api-exception.filter';
+import { ApiResponseInterceptor } from './common/http/api-response.interceptor';
 
 
 async function bootstrap() {
@@ -15,6 +17,9 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
+
+  app.useGlobalFilters(new ApiExceptionFilter());
+  app.useGlobalInterceptors(new ApiResponseInterceptor());
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Gold Trading API')
