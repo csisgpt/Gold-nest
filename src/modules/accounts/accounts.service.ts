@@ -15,6 +15,7 @@ import { InsufficientCreditException } from '../../common/exceptions/insufficien
 import { AccountStatementEntryDto } from './dto/account-statement-entry.dto';
 import { AccountStatementFiltersDto } from './dto/account-statement-filters.dto';
 import { HOUSE_USER_ID, IRR_INSTRUMENT_CODE } from './constants';
+import { runInTx } from '../../common/db/tx.util';
 
 type DepositRequestType = Prisma.DepositRequestGetPayload<{}>;
 // تایپ داده‌های Withdraw
@@ -94,6 +95,15 @@ export class AccountsService {
     });
   }
 
+  async lockAccounts(tx: Prisma.TransactionClient, accountIds: string[]): Promise<void> {
+    const uniqueIds = Array.from(new Set(accountIds.filter(Boolean)));
+    if (uniqueIds.length === 0) return;
+
+    await tx.$queryRaw`
+      SELECT id FROM "Account" WHERE id IN (${Prisma.join(uniqueIds)}) ORDER BY id FOR UPDATE
+    `;
+  }
+
   async applyTransaction(
     inputOrTx: ApplyTransactionInput | PrismaClientOrTx,
     accountOrInput?: any,
@@ -124,7 +134,7 @@ export class AccountsService {
 
     const deltaDecimal = new Decimal(input.delta);
 
-    const executor = async (trx: any) => {
+    const executor = async (trx: Prisma.TransactionClient) => {
       await trx.$executeRawUnsafe(
         `SELECT 1 FROM "Account" WHERE id = $1 FOR UPDATE`,
         input.accountId,
@@ -168,7 +178,7 @@ export class AccountsService {
     }
 
     // اگر نه، خودمون یه ترنزکشن می‌سازیم
-    return this.prisma.$transaction((trx) => executor(trx));
+    return runInTx(this.prisma, (trx) => executor(trx));
   }
 
   async getStatementForUser(

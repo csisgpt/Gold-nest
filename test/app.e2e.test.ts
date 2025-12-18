@@ -9,13 +9,16 @@ import {
   SettlementMethod,
   TradeSide,
   TradeStatus,
+  TxRefType,
   UserRole,
+  WithdrawStatus,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { AppModule } from '../src/app.module';
 import { AccountsService } from '../src/modules/accounts/accounts.service';
 import { HOUSE_USER_ID, IRR_INSTRUMENT_CODE } from '../src/modules/accounts/constants';
 import { DepositsService } from '../src/modules/deposits/deposits.service';
+import { WithdrawalsService } from '../src/modules/withdrawals/withdrawals.service';
 import { PrismaService } from '../src/modules/prisma/prisma.service';
 import { TradesService } from '../src/modules/trades/trades.service';
 import { CreateTradeDto } from '../src/modules/trades/dto/create-trade.dto';
@@ -177,6 +180,88 @@ test('Physical custody approve/cancel require admin role', async (t) => {
   assert.strictEqual(cancelledBody.status, 'CANCELLED');
 });
 
+test('Admin approvals for deposits/withdrawals enforce JWT and admin role', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await prisma.user.create({
+    data: {
+      fullName: `admin-${Date.now()}`,
+      mobile: `09${Date.now().toString().slice(-9)}`,
+      email: `admin-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: UserRole.ADMIN,
+      status: 'ACTIVE',
+    },
+  });
+
+  const client = await prisma.user.create({
+    data: {
+      fullName: `client-${Date.now()}`,
+      mobile: `09${(Date.now() + 1).toString().slice(-9)}`,
+      email: `client-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: UserRole.CLIENT,
+      status: 'ACTIVE',
+    },
+  });
+
+  await ensureInstrument(prisma, IRR_INSTRUMENT_CODE, InstrumentUnit.CURRENCY, InstrumentType.FIAT);
+
+  const deposit = await prisma.depositRequest.create({
+    data: {
+      userId: client.id,
+      amount: new Decimal(1000),
+      method: 'bank',
+      status: DepositStatus.PENDING,
+    },
+  });
+
+  const withdrawal = await prisma.withdrawRequest.create({
+    data: {
+      userId: client.id,
+      amount: new Decimal(500),
+      status: WithdrawStatus.PENDING,
+    },
+  });
+
+  const unauthDepositApprove = await fetch(`${baseUrl}/admin/deposits/${deposit.id}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: 'test' }),
+  });
+  assert.strictEqual(unauthDepositApprove.status, 401);
+
+  const clientDepositApprove = await fetch(`${baseUrl}/admin/deposits/${deposit.id}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(client) },
+    body: JSON.stringify({ note: 'test' }),
+  });
+  assert.strictEqual(clientDepositApprove.status, 403);
+
+  const unauthWithdrawApprove = await fetch(`${baseUrl}/admin/withdrawals/${withdrawal.id}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: 'test' }),
+  });
+  assert.strictEqual(unauthWithdrawApprove.status, 401);
+
+  const clientWithdrawApprove = await fetch(`${baseUrl}/admin/withdrawals/${withdrawal.id}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(client) },
+    body: JSON.stringify({ note: 'test' }),
+  });
+  assert.strictEqual(clientWithdrawApprove.status, 403);
+
+  const adminWithdrawApprove = await fetch(`${baseUrl}/admin/withdrawals/${withdrawal.id}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({ note: 'test' }),
+  });
+  assert.ok(adminWithdrawApprove.status >= 200 && adminWithdrawApprove.status < 300);
+});
+
 async function ensureInstrument(prisma: PrismaService, code: string, unit: InstrumentUnit, type: InstrumentType) {
   return prisma.instrument.upsert({
     where: { code },
@@ -293,6 +378,72 @@ test('Deposit approval recovers from APPROVED without tx', async (t) => {
 
   const recovered = await depositsService.approve(deposit.id, { note: 'recover' }, admin.id);
   assert.ok(recovered.accountTxId);
+});
+
+test('Withdrawal approval is idempotent and recoverable', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const withdrawalsService = app.get(WithdrawalsService);
+  const accountsService = app.get(AccountsService);
+
+  const admin = await prisma.user.create({
+    data: {
+      fullName: `admin-${Date.now()}`,
+      mobile: `09${Date.now().toString().slice(-9)}`,
+      email: `admin-withdraw-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: 'ADMIN',
+      status: 'ACTIVE',
+    },
+  });
+
+  const client = await prisma.user.create({
+    data: {
+      fullName: `client-${Date.now()}`,
+      mobile: `09${(Date.now() + 1).toString().slice(-9)}`,
+      email: `client-withdraw-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: 'CLIENT',
+      status: 'ACTIVE',
+    },
+  });
+
+  await ensureInstrument(prisma, IRR_INSTRUMENT_CODE, InstrumentUnit.CURRENCY, InstrumentType.FIAT);
+  const account = await accountsService.getOrCreateAccount(client.id, IRR_INSTRUMENT_CODE);
+  await prisma.account.update({ where: { id: account.id }, data: { balance: new Decimal(1200) } });
+
+  const withdrawal = await prisma.withdrawRequest.create({
+    data: { userId: client.id, amount: new Decimal(700), status: WithdrawStatus.PENDING },
+  });
+
+  const first = await withdrawalsService.approve(withdrawal.id, { note: 'first' }, admin.id);
+  const second = await withdrawalsService.approve(withdrawal.id, { note: 'second' }, admin.id);
+  assert.strictEqual(first.accountTxId, second.accountTxId);
+
+  const accountAfter = await prisma.account.findUnique({ where: { id: account.id } });
+  assert.strictEqual(decimalString(accountAfter?.balance), decimalString(new Decimal(500)));
+
+  const recoverable = await prisma.withdrawRequest.create({
+    data: {
+      userId: client.id,
+      amount: new Decimal(200),
+      status: WithdrawStatus.APPROVED,
+      processedById: admin.id,
+    },
+  });
+
+  const preRecovery = await prisma.accountTx.count({
+    where: { refId: recoverable.id, refType: TxRefType.WITHDRAW },
+  });
+
+  const recoveredWithdraw = await withdrawalsService.approve(recoverable.id, { note: 'recover' }, admin.id);
+  assert.ok(recoveredWithdraw.accountTxId);
+
+  const postRecovery = await prisma.accountTx.count({
+    where: { refId: recoverable.id, refType: TxRefType.WITHDRAW },
+  });
+  assert.strictEqual(postRecovery, preRecovery + 1);
 });
 
 test('Trade reverse is idempotent and restores balances', async (t) => {

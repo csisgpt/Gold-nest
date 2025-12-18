@@ -30,6 +30,7 @@ import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.
 import { BuyOrSale, SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { GoldBuySellDto, SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { SettleForwardCashDto } from './dto/settle-forward-cash.dto';
+import { runInTx } from '../../common/db/tx.util';
 
 type TradeWithRelations =
   | (Awaited<ReturnType<PrismaService['trade']['findUnique']>> & {
@@ -126,7 +127,7 @@ export class TradesService {
       }
     }
 
-    const trade = await this.prisma.$transaction(async (tx) => {
+    const trade = await runInTx(this.prisma, async (tx) => {
       const record = await tx.trade.create({
         data: {
           clientId: userId,
@@ -149,7 +150,7 @@ export class TradesService {
       );
 
       return record;
-    });
+    }, { logger: this.logger });
 
     return trade;
   }
@@ -169,7 +170,7 @@ export class TradesService {
   }
 
   async approve(id: string, dto: ApproveTradeDto, adminId: string) {
-    const updatedTrade = await this.prisma.$transaction(async (tx) => {
+    const updatedTrade = await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id },
         include: { instrument: true, client: true },
@@ -222,6 +223,14 @@ export class TradesService {
           IRR_INSTRUMENT_CODE,
           tx,
         );
+
+        await this.accountsService.lockAccounts(tx, [
+          irrAccount.id,
+          houseIrr.id,
+          userAsset.id,
+          houseAsset.id,
+        ]);
+
         if (trade.side === TradeSide.BUY) {
           const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
           if (usable.lt(total)) {
@@ -346,7 +355,7 @@ export class TradesService {
       );
 
       return updatedTrade;
-    });
+    }, { logger: this.logger });
 
     await this.enqueueTahesabForWalletTrade(updatedTrade);
     await this.enqueueTahesabForForwardPhysicalSettlement(updatedTrade);
@@ -481,7 +490,7 @@ export class TradesService {
   }
 
   async settleForwardTradeInCash(tradeId: string, dto: SettleForwardCashDto, adminId?: string) {
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id: tradeId },
         include: { client: true, instrument: true },
@@ -521,6 +530,8 @@ export class TradesService {
             IRR_INSTRUMENT_CODE,
             tx,
           );
+
+          await this.accountsService.lockAccounts(tx, [userIrr.id, houseIrr.id]);
 
           if (amount.gt(0)) {
             const usable = new Decimal(userIrr.balance).minus(userIrr.minBalance);
@@ -594,14 +605,14 @@ export class TradesService {
       });
 
       return updatedTrade;
-    });
+    }, { logger: this.logger });
 
     await this.enqueueTahesabForForwardCashSettlement(updated);
     return updated;
   }
 
   async cancelTrade(tradeId: string, reason?: string) {
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id: tradeId },
         include: { client: true, instrument: true },
@@ -623,14 +634,14 @@ export class TradesService {
       });
 
       return updatedTrade;
-    });
+    }, { logger: this.logger });
 
     await this.enqueueTahesabDeletionForTrade(tradeId, `spot:cancel:${tradeId}`);
     return updated;
   }
 
   async reverseTrade(tradeId: string, adminId?: string, reason?: string) {
-    const reversed = await this.prisma.$transaction(async (tx) => {
+    const reversed = await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id: tradeId },
         include: { client: true, instrument: true },
@@ -646,6 +657,8 @@ export class TradesService {
           where: { refType: TxRefType.TRADE, refId: trade.id },
           orderBy: { createdAt: 'asc' },
         });
+
+        await this.accountsService.lockAccounts(tx, tradeTxs.map((txRecord) => txRecord.accountId));
 
         for (const txRecord of tradeTxs) {
           const existingReversal = await tx.accountTx.findFirst({ where: { reversalOfId: txRecord.id } });
@@ -675,7 +688,7 @@ export class TradesService {
         },
         include: { client: true, instrument: true },
       });
-    });
+    }, { logger: this.logger });
 
     await this.enqueueTahesabDeletionForTrade(tradeId, `trade:${tradeId}:reverse`);
     return reversed;
@@ -731,7 +744,7 @@ export class TradesService {
   }
 
   async reject(id: string, dto: RejectTradeDto, adminId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    return runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({ where: { id } });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status !== TradeStatus.PENDING) {
@@ -752,6 +765,6 @@ export class TradesService {
       this.logger.log(`Trade ${trade.id} status ${trade.status} -> ${updated.status} by admin ${adminId}`);
 
       return updated;
-    });
+    }, { logger: this.logger });
   }
 }

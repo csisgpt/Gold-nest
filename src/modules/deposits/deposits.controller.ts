@@ -36,18 +36,21 @@ export class DepositsController {
   }
 
   @Get('admin/deposits')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   listAdmin(@Query('status') status?: DepositStatus) {
     return this.depositsService.findByStatus(status);
   }
 
   @Post('admin/deposits/:id/approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   approve(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.depositsService.approve(id, dto, admin.id);
   }
 
   @Post('admin/deposits/:id/reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   reject(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.depositsService.reject(id, dto, admin.id);

@@ -29,6 +29,7 @@ import {
 } from './dto/remittance-details-response.dto';
 import { OpenRemittanceSummaryDto } from './dto/open-remittance-summary.dto';
 import { TahesabRemittancesService } from '../tahesab/tahesab-remittances.service';
+import { runInTx } from '../../common/db/tx.util';
 
 @Injectable()
 export class RemittancesService {
@@ -427,7 +428,7 @@ export class RemittancesService {
     });
 
     let settlementCount = 0;
-    const { group, legs } = await this.prisma.$transaction(async (tx) => {
+    const { group, legs } = await runInTx(this.prisma, async (tx) => {
       const groupRecord = await tx.remittanceGroup.create({
         data: {
           createdByUserId: fromUserId,
@@ -437,6 +438,8 @@ export class RemittancesService {
       });
 
       const fromAccounts = new Map<string, Awaited<ReturnType<typeof this.accountsService.getOrCreateAccount>>>();
+      const toAccounts = new Map<string, Awaited<ReturnType<typeof this.accountsService.getOrCreateAccount>>>();
+      const accountIdsToLock = new Set<string>();
       for (const code of uniqueInstrumentCodes) {
         const account = await this.accountsService.getOrCreateAccount(fromUserId, code, tx);
         fromAccounts.set(code, account);
@@ -448,12 +451,23 @@ export class RemittancesService {
         }
       }
 
+      const pendingLegs: {
+        remittance: Remittance;
+        fromAccount: Awaited<ReturnType<typeof this.accountsService.getOrCreateAccount>>;
+        toAccount: Awaited<ReturnType<typeof this.accountsService.getOrCreateAccount>>;
+        amount: Decimal;
+      }[] = [];
       const legsCreated: Remittance[] = [];
       for (const { input: leg, amount } of parsedLegs) {
         const toUser = usersByMobile.get(leg.toMobile)!;
         const instrument = instrumentsByCode.get(leg.instrumentCode)!;
         const fromAccount = fromAccounts.get(instrument.code)!;
-        const toAccount = await this.accountsService.getOrCreateAccount(toUser.id, instrument.code, tx);
+        const toAccountKey = `${toUser.id}:${instrument.code}`;
+        let toAccount = toAccounts.get(toAccountKey);
+        if (!toAccount) {
+          toAccount = await this.accountsService.getOrCreateAccount(toUser.id, instrument.code, tx);
+          toAccounts.set(toAccountKey, toAccount);
+        }
 
         const onBehalfUser = leg.onBehalfOfMobile
           ? onBehalfUsersByMobile.get(leg.onBehalfOfMobile)
@@ -481,13 +495,22 @@ export class RemittancesService {
           },
         });
 
+        accountIdsToLock.add(fromAccount.id);
+        accountIdsToLock.add(toAccount.id);
+
+        pendingLegs.push({ remittance: remittanceRecord, fromAccount, toAccount, amount });
+      }
+
+      await this.accountsService.lockAccounts(tx, Array.from(accountIdsToLock));
+
+      for (const { remittance, fromAccount, toAccount, amount } of pendingLegs) {
         const fromTx = await this.accountsService.applyTransaction(
           tx,
           fromAccount,
           amount.negated(),
           AccountTxType.REMITTANCE,
           TxRefType.REMITTANCE,
-          remittanceRecord.id,
+          remittance.id,
           fromUserId,
         );
 
@@ -497,12 +520,12 @@ export class RemittancesService {
           amount,
           AccountTxType.REMITTANCE,
           TxRefType.REMITTANCE,
-          remittanceRecord.id,
+          remittance.id,
           fromUserId,
         );
 
         const updatedLeg = await tx.remittance.update({
-          where: { id: remittanceRecord.id },
+          where: { id: remittance.id },
           data: {
             fromAccountTxId: fromTx.txRecord.id,
             toAccountTxId: toTx.txRecord.id,
@@ -621,7 +644,7 @@ export class RemittancesService {
       });
 
       return { group: closedGroup, legs: legsWithRelations };
-    });
+    }, { logger: this.logger });
 
     this.logger.log(
       `Remittance group ${group.id} created by ${fromUserId} with ${legs.length} legs; settlements: ${settlementCount}`,

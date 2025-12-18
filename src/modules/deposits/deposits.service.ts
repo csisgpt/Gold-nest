@@ -11,6 +11,7 @@ import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
 import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
 import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
+import { runInTx } from '../../common/db/tx.util';
 
 @Injectable()
 export class DepositsService {
@@ -25,7 +26,7 @@ export class DepositsService {
   ) {}
 
   async createForUser(userId: string, dto: CreateDepositDto) {
-    return this.prisma.$transaction(async (tx) => {
+    return runInTx(this.prisma, async (tx) => {
       const deposit = await tx.depositRequest.create({
         data: {
           userId,
@@ -44,7 +45,7 @@ export class DepositsService {
       );
 
       return deposit;
-    });
+    }, { logger: this.logger });
   }
 
   findMy(userId: string) {
@@ -62,7 +63,7 @@ export class DepositsService {
   }
 
   async approve(id: string, dto: DecisionDto, adminId: string) {
-    const updatedDeposit = await this.prisma.$transaction(async (tx) => {
+    const updatedDeposit = await runInTx(this.prisma, async (tx) => {
       const [deposit] = await tx.$queryRaw<DepositRequest[]>`
         SELECT * FROM "DepositRequest" WHERE id = ${id} FOR UPDATE
       `;
@@ -84,6 +85,8 @@ export class DepositsService {
         IRR_INSTRUMENT_CODE,
         tx,
       );
+
+      await this.accountsService.lockAccounts(tx, [account.id]);
 
       const txResult = await this.accountsService.applyTransaction(
         tx,
@@ -110,7 +113,7 @@ export class DepositsService {
         },
         include: { user: true },
       });
-    });
+    }, { logger: this.logger });
 
     await this.enqueueTahesabCashInForDeposit(updatedDeposit);
 
@@ -118,7 +121,7 @@ export class DepositsService {
   }
 
   async reject(id: string, dto: DecisionDto, adminId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    return runInTx(this.prisma, async (tx) => {
       const deposit = await tx.depositRequest.findUnique({ where: { id } });
       if (!deposit) throw new NotFoundException('Deposit not found');
       if (deposit.status !== DepositStatus.PENDING) {
@@ -142,7 +145,7 @@ export class DepositsService {
       this.logger.log(`Deposit ${id} rejected by ${adminId}`);
 
       return tx.depositRequest.findUnique({ where: { id } });
-    });
+    }, { logger: this.logger });
   }
 
   private async enqueueTahesabCashInForDeposit(
@@ -188,7 +191,7 @@ export class DepositsService {
   }
 
   async cancelDeposit(depositId: string, reason?: string) {
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await runInTx(this.prisma, async (tx) => {
       const deposit = await tx.depositRequest.findUnique({ where: { id: depositId }, include: { user: true } });
       if (!deposit) throw new NotFoundException('Deposit not found');
 
@@ -210,6 +213,7 @@ export class DepositsService {
           : null;
 
         if (accountTx?.account) {
+          await this.accountsService.lockAccounts(tx, [accountTx.account.id]);
           await this.accountsService.applyTransaction(
             tx,
             accountTx.account,
@@ -229,7 +233,7 @@ export class DepositsService {
       }
 
       return deposit;
-    });
+    }, { logger: this.logger });
 
     await this.enqueueTahesabDeletionForDeposit(updated.id);
     return updated;
