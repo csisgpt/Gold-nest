@@ -7,6 +7,7 @@ import { FilesService } from '../files/files.service';
 import { GOLD_750_INSTRUMENT_CODE, HOUSE_USER_ID } from '../accounts/constants';
 import { CreateGoldLotDto } from './dto/create-gold-lot.dto';
 import { InstrumentsService } from '../instruments/instruments.service';
+import { runInTx } from '../../common/db/tx.util';
 
 @Injectable()
 export class GoldService {
@@ -24,7 +25,7 @@ export class GoldService {
     // Ensure gold instrument exists so ledger posting works
     await this.instrumentsService.findByCode(GOLD_750_INSTRUMENT_CODE);
 
-    return this.prisma.$transaction(async (tx) => {
+    return runInTx(this.prisma, async (tx) => {
       const lot = await tx.goldLot.create({
         data: {
           userId: dto.userId,
@@ -54,6 +55,8 @@ export class GoldService {
         GOLD_750_INSTRUMENT_CODE,
         tx,
       );
+
+      await this.accountsService.lockAccounts(tx, [userGold.id, houseGold.id]);
 
       await this.accountsService.applyTransaction(
         {

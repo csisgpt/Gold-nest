@@ -36,18 +36,21 @@ export class WithdrawalsController {
   }
 
   @Get('admin/withdrawals')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   listAdmin(@Query('status') status?: WithdrawStatus) {
     return this.withdrawalsService.findByStatus(status);
   }
 
   @Post('admin/withdrawals/:id/approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   approve(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.withdrawalsService.approve(id, dto, admin.id);
   }
 
   @Post('admin/withdrawals/:id/reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   reject(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.withdrawalsService.reject(id, dto, admin.id);

@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { AccountTxType, AttachmentEntityType, TxRefType, WithdrawStatus } from '@prisma/client';
+import { AccountTxType, AttachmentEntityType, TxRefType, WithdrawRequest, WithdrawStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountsService } from '../accounts/accounts.service';
@@ -12,6 +12,7 @@ import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
 import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
 import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
+import { runInTx } from '../../common/db/tx.util';
 
 @Injectable()
 export class WithdrawalsService {
@@ -39,7 +40,7 @@ export class WithdrawalsService {
       throw new BadRequestException('Insufficient capacity for withdrawal');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    return runInTx(this.prisma, async (tx) => {
       const withdraw = await tx.withdrawRequest.create({
         data: {
           userId,
@@ -59,7 +60,7 @@ export class WithdrawalsService {
       );
 
       return withdraw;
-    });
+    }, { logger: this.logger });
   }
 
   findMy(userId: string) {
@@ -77,27 +78,20 @@ export class WithdrawalsService {
   }
 
   async approve(id: string, dto: DecisionDto, adminId: string) {
-    const updatedWithdrawal = await this.prisma.$transaction(async (tx) => {
-      const withdraw = await tx.withdrawRequest.findUnique({
-        where: { id },
-        include: { user: true },
-      });
+    const updatedWithdrawal = await runInTx(this.prisma, async (tx) => {
+      const [withdraw] = await tx.$queryRaw<WithdrawRequest[]>`
+        SELECT * FROM "WithdrawRequest" WHERE id = ${id} FOR UPDATE
+      `;
+
       if (!withdraw) throw new NotFoundException('Withdraw not found');
-      if (withdraw.status !== WithdrawStatus.PENDING) {
-        throw new BadRequestException('Withdrawal already processed');
+      if (withdraw.accountTxId) {
+        return tx.withdrawRequest.findUnique({ where: { id }, include: { user: true } });
       }
 
-      const { count } = await tx.withdrawRequest.updateMany({
-        where: { id, status: WithdrawStatus.PENDING },
-        data: {
-          status: WithdrawStatus.APPROVED,
-          processedAt: new Date(),
-          processedById: adminId,
-          note: dto.note,
-        },
-      });
-
-      if (count === 0) {
+      const statusAllowsRecovery =
+        withdraw.status === WithdrawStatus.PENDING ||
+        (withdraw.status === WithdrawStatus.APPROVED && withdraw.accountTxId === null);
+      if (!statusAllowsRecovery) {
         throw new BadRequestException('Withdrawal already processed');
       }
 
@@ -113,6 +107,8 @@ export class WithdrawalsService {
         throw new InsufficientCreditException('Insufficient IRR balance for withdrawal');
       }
 
+      await this.accountsService.lockAccounts(tx, [account.id]);
+
       const txResult = await this.accountsService.applyTransaction(
         tx,
         account,
@@ -125,14 +121,20 @@ export class WithdrawalsService {
 
       this.logger.log(`Withdrawal ${id} approved by ${adminId}`);
 
+      const processedAt = withdraw.processedAt ? new Date(withdraw.processedAt) : new Date();
+
       return tx.withdrawRequest.update({
         where: { id },
         data: {
+          status: WithdrawStatus.APPROVED,
+          processedAt,
+          processedById: withdraw.processedById ?? adminId,
+          note: dto.note ?? withdraw.note,
           accountTxId: txResult.txRecord.id,
         },
         include: { user: true },
       });
-    });
+    }, { logger: this.logger });
 
     await this.enqueueTahesabCashOutForWithdrawal(updatedWithdrawal);
 
@@ -140,7 +142,7 @@ export class WithdrawalsService {
   }
 
   async reject(id: string, dto: DecisionDto, adminId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    return runInTx(this.prisma, async (tx) => {
       const withdraw = await tx.withdrawRequest.findUnique({ where: { id } });
       if (!withdraw) throw new NotFoundException('Withdraw not found');
       if (withdraw.status !== WithdrawStatus.PENDING) {
@@ -164,7 +166,7 @@ export class WithdrawalsService {
       this.logger.log(`Withdrawal ${id} rejected by ${adminId}`);
 
       return tx.withdrawRequest.findUnique({ where: { id } });
-    });
+    }, { logger: this.logger });
   }
 
   private async enqueueTahesabCashOutForWithdrawal(
@@ -213,7 +215,7 @@ export class WithdrawalsService {
   }
 
   async cancelWithdrawal(withdrawalId: string, reason?: string) {
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await runInTx(this.prisma, async (tx) => {
       const withdrawal = await tx.withdrawRequest.findUnique({ where: { id: withdrawalId }, include: { user: true } });
       if (!withdrawal) throw new NotFoundException('Withdraw not found');
 
@@ -235,6 +237,7 @@ export class WithdrawalsService {
           : null;
 
         if (accountTx?.account) {
+          await this.accountsService.lockAccounts(tx, [accountTx.account.id]);
           await this.accountsService.applyTransaction(
             tx,
             accountTx.account,
@@ -254,7 +257,7 @@ export class WithdrawalsService {
       }
 
       return withdrawal;
-    });
+    }, { logger: this.logger });
 
     await this.enqueueTahesabDeletionForWithdrawal(updated.id);
     return updated;
