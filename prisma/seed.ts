@@ -32,6 +32,8 @@ const HOUSE_USER_ID = process.env.HOUSE_USER_ID || 'house-system-user';
 
 async function main() {
     console.log('--- Start Seeding GoldNest Application ---');
+    faker.seed(42);
+
     const saltRounds = 10;
     const sharedPassword = await bcrypt.hash('Password@123', saltRounds);
     const now = new Date();
@@ -39,12 +41,7 @@ async function main() {
     // --- ۱. ایجاد کاربران پایه (Admin, Trader, Client) ---
     console.log('1. Creating base Users...');
 
-    // تعریف متغیرها در دامنه اصلی main
-    let adminUser: any;
-    let traderUser: any;
     const clients: any[] = [];
-    let clientA: any;
-    let clientB: any;
 
     // Upsert برای کاربران اصلی
     const houseUser = await prisma.user.upsert({
@@ -61,9 +58,16 @@ async function main() {
         },
     });
 
-    adminUser = await prisma.user.upsert({
+    const adminUser = await prisma.user.upsert({
         where: { mobile: '09120000001' },
-        update: {},
+        update: {
+            fullName: 'مدیر کل سیستم',
+            email: 'admin@goldnest.com',
+            password: sharedPassword,
+            role: UserRole.ADMIN,
+            status: UserStatus.ACTIVE,
+            tahesabCustomerCode: 'TC_ADMIN_001',
+        },
         create: {
             fullName: 'مدیر کل سیستم',
             mobile: '09120000001',
@@ -75,9 +79,16 @@ async function main() {
         },
     });
 
-    traderUser = await prisma.user.upsert({
+    const traderUser = await prisma.user.upsert({
         where: { mobile: '09120000002' },
-        update: {},
+        update: {
+            fullName: 'معامله‌گر اصلی',
+            email: 'trader@goldnest.com',
+            password: sharedPassword,
+            role: UserRole.TRADER,
+            status: UserStatus.ACTIVE,
+            tahesabCustomerCode: 'TC_TRADER_002',
+        },
         create: {
             fullName: 'معامله‌گر اصلی',
             mobile: '09120000002',
@@ -93,10 +104,19 @@ async function main() {
     for (let i = 1; i <= NUM_CLIENTS; i++) {
         const clientStatus = i % 3 === 0 ? UserStatus.PENDING_APPROVAL : UserStatus.ACTIVE;
         const mobileNumber = `0912${(1000 + i).toString().padStart(4, '0')}${(i + 1).toString().padStart(2, '0')}`;
-        const emailAddress = `client${i}_${faker.string.alphanumeric(4)}@faker.com`;
+        const emailAddress = `client${i}@goldnest.local`;
 
-        const client = await prisma.user.create({
-            data: {
+        const client = await prisma.user.upsert({
+            where: { mobile: mobileNumber },
+            update: {
+                fullName: faker.person.fullName(),
+                email: emailAddress,
+                password: sharedPassword,
+                role: UserRole.CLIENT,
+                status: clientStatus,
+                tahesabCustomerCode: `TC_CLIENT_${i.toString().padStart(3, '0')}`,
+            },
+            create: {
                 fullName: faker.person.fullName(),
                 mobile: mobileNumber,
                 email: emailAddress,
@@ -108,8 +128,8 @@ async function main() {
         });
         clients.push(client);
     }
-    clientA = clients[0];
-    clientB = clients[1];
+    const clientA = clients[0];
+    const clientB = clients[1];
 
     // --- ۲. ایجاد ابزارهای معاملاتی (Instrument) ---
     console.log('2. Creating Instruments...');
@@ -119,13 +139,13 @@ async function main() {
 
     irr = await prisma.instrument.upsert({
         where: { code: 'IRR' },
-        update: {},
+        update: { name: 'ریال ایران', type: InstrumentType.FIAT, unit: InstrumentUnit.CURRENCY },
         create: { code: 'IRR', name: 'ریال ایران', type: InstrumentType.FIAT, unit: InstrumentUnit.CURRENCY },
     });
 
     gold = await prisma.instrument.upsert({
         where: { code: 'GOLD_GRAM' },
-        update: {},
+        update: { name: 'طلای ۱۸ عیار گرمی', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
         create: { code: 'GOLD_GRAM', name: 'طلای ۱۸ عیار گرمی', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
     });
 
@@ -134,46 +154,60 @@ async function main() {
 
     const goldPrice = 3500000;
 
-    await prisma.instrumentPrice.create({
-        data: {
-            instrumentId: gold.id,
-            buyPrice: new Decimal(goldPrice - 50000),
-            sellPrice: new Decimal(goldPrice),
-            source: 'Exchange Data',
-        },
-    });
+    const existingGoldPrice = await prisma.instrumentPrice.findFirst({ where: { instrumentId: gold.id } });
+    if (!existingGoldPrice) {
+        await prisma.instrumentPrice.create({
+            data: {
+                instrumentId: gold.id,
+                buyPrice: new Decimal(goldPrice - 50000),
+                sellPrice: new Decimal(goldPrice),
+                source: 'Exchange Data',
+            },
+        });
+    }
 
 
     // --- ۴. ایجاد حساب‌های کاربری (Account) و موجودی اولیه ---
     console.log('4. Creating Accounts and initial Balances...');
 
-    let clientA_irr_account: any;
+    const upsertAccount = async (userId: string, instrumentId: string, balance: Decimal) => {
+        return prisma.account.upsert({
+            where: { userId_instrumentId: { userId, instrumentId } },
+            update: { balance },
+            create: { userId, instrumentId, balance },
+            select: { id: true, userId: true, instrumentId: true },
+        });
+    };
 
-    clientA_irr_account = await prisma.account.create({
-        data: {
-            userId: clientA.id,
-            instrumentId: irr.id,
-            balance: new Decimal(faker.number.int({ min: 10000000, max: 50000000 })),
-        },
-        select: { id: true, userId: true, instrumentId: true },
-    });
+    const clientA_irr_account = await upsertAccount(
+        clientA.id,
+        irr.id,
+        new Decimal(faker.number.int({ min: 10000000, max: 50000000 })),
+    );
 
-    await prisma.account.create({
-        data: {
-            userId: clientA.id,
-            instrumentId: gold.id,
-            balance: new Decimal(faker.number.float({ min: 5, max: 20, fractionDigits: 2 })),
-        },
-        select: { id: true, userId: true, instrumentId: true },
-    });
+    await upsertAccount(
+        clientA.id,
+        gold.id,
+        new Decimal(faker.number.float({ min: 5, max: 20, fractionDigits: 2 })),
+    );
 
     for (const client of clients.slice(1)) {
-        await prisma.account.createMany({
-            data: [
-                { userId: client.id, instrumentId: irr.id, balance: new Decimal(faker.number.int({ min: 5000000, max: 30000000 })) },
-                { userId: client.id, instrumentId: gold.id, balance: new Decimal(faker.number.float({ min: 1, max: 15, fractionDigits: 2 })) },
-            ],
-        });
+        await upsertAccount(
+            client.id,
+            irr.id,
+            new Decimal(faker.number.int({ min: 5000000, max: 30000000 })),
+        );
+        await upsertAccount(
+            client.id,
+            gold.id,
+            new Decimal(faker.number.float({ min: 1, max: 15, fractionDigits: 2 })),
+        );
+    }
+
+    const existingTrades = await prisma.trade.count();
+    if (existingTrades > 0) {
+        console.log('Sample transactional data already present, skipping duplicate inserts.');
+        return;
     }
 
 
