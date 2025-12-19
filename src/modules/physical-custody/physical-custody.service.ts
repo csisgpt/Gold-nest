@@ -1,9 +1,12 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
+  AccountTxType,
   CustodyAssetType,
   PhysicalCustodyMovement,
   PhysicalCustodyMovementStatus,
   PhysicalCustodyMovementType,
+  PhysicalCustodyPosition,
+  TxRefType,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,6 +16,8 @@ import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
 import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
 import { SabteKolOrMovaghat, VoroodOrKhorooj } from '../tahesab/tahesab.methods';
 import { DoNewSanadGoldRequestDto } from '../tahesab/dto/sanad.dto';
+import { AccountsService } from '../accounts/accounts.service';
+import { GOLD_750_INSTRUMENT_CODE, HOUSE_USER_ID } from '../accounts/constants';
 
 @Injectable()
 export class PhysicalCustodyService {
@@ -22,7 +27,21 @@ export class PhysicalCustodyService {
     private readonly prisma: PrismaService,
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
+    private readonly accountsService: AccountsService,
   ) {}
+
+  private toEquivGram750(weightGram: Decimal | string | number, ayar: number): Decimal {
+    const weight = new Decimal(weightGram ?? 0);
+    const equiv = weight.mul(ayar).div(750);
+    return new Decimal(equiv.toFixed(6));
+  }
+
+  private getPositionBalance(position: Pick<PhysicalCustodyPosition, 'equivGram750' | 'weightGram' | 'ayar'>): Decimal {
+    if (position.equivGram750 !== null && position.equivGram750 !== undefined) {
+      return new Decimal(position.equivGram750);
+    }
+    return this.toEquivGram750(position.weightGram, position.ayar);
+  }
 
   async requestMovement(
     userId: string,
@@ -47,6 +66,8 @@ export class PhysicalCustodyService {
 
   async approveMovement(id: string): Promise<PhysicalCustodyMovement> {
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM "PhysicalCustodyMovement" WHERE id = ${id} FOR UPDATE`;
+
       const movement = await tx.physicalCustodyMovement.findUnique({
         where: { id },
         include: { user: true },
@@ -63,30 +84,72 @@ export class PhysicalCustodyService {
           userId: movement.userId,
           assetType: movement.assetType,
           weightGram: new Decimal(0),
-          ayar: movement.ayar,
+          ayar: 750,
+          equivGram750: new Decimal(0),
         },
       });
 
-      const delta = new Decimal(movement.weightGram);
-      if (movement.movementType === PhysicalCustodyMovementType.WITHDRAWAL) {
-        if (new Decimal(position.weightGram).lt(delta)) {
-          throw new BadRequestException('Insufficient custody balance');
-        }
+      const deltaEquiv = this.toEquivGram750(movement.weightGram, movement.ayar);
+      const currentBalance = this.getPositionBalance(position);
+
+      if (movement.movementType === PhysicalCustodyMovementType.WITHDRAWAL && currentBalance.lt(deltaEquiv)) {
+        throw new BadRequestException('Insufficient custody balance');
       }
 
-      const newWeight =
+      const newBalance =
         movement.movementType === PhysicalCustodyMovementType.DEPOSIT
-          ? new Decimal(position.weightGram).plus(delta)
-          : new Decimal(position.weightGram).minus(delta);
+          ? currentBalance.plus(deltaEquiv)
+          : currentBalance.minus(deltaEquiv);
 
       await tx.physicalCustodyPosition.update({
         where: { id: position.id },
-        data: { weightGram: newWeight },
+        data: {
+          equivGram750: newBalance,
+          weightGram: new Decimal(newBalance.toFixed(4)),
+          ayar: 750,
+        },
       });
+
+      const userGoldAccount = await this.accountsService.getOrCreateAccount(
+        movement.userId,
+        GOLD_750_INSTRUMENT_CODE,
+        tx,
+      );
+      const houseGoldAccount = await this.accountsService.getOrCreateAccount(
+        HOUSE_USER_ID,
+        GOLD_750_INSTRUMENT_CODE,
+        tx,
+      );
+
+      const walletDelta =
+        movement.movementType === PhysicalCustodyMovementType.DEPOSIT ? deltaEquiv : deltaEquiv.negated();
+
+      const { txRecord: userTx } = await this.accountsService.applyTransaction(
+        tx,
+        userGoldAccount,
+        walletDelta,
+        AccountTxType.CUSTODY,
+        TxRefType.PHYSICAL_CUSTODY_MOVEMENT,
+        movement.id,
+      );
+
+      const { txRecord: houseTx } = await this.accountsService.applyTransaction(
+        tx,
+        houseGoldAccount,
+        walletDelta,
+        AccountTxType.CUSTODY,
+        TxRefType.PHYSICAL_CUSTODY_MOVEMENT,
+        movement.id,
+      );
 
       return tx.physicalCustodyMovement.update({
         where: { id: movement.id },
-        data: { status: PhysicalCustodyMovementStatus.APPROVED },
+        data: {
+          status: PhysicalCustodyMovementStatus.APPROVED,
+          equivGram750: deltaEquiv,
+          userGoldAccountTxId: userTx.id,
+          houseGoldAccountTxId: houseTx.id,
+        },
         include: { user: true },
       });
     });
@@ -97,6 +160,8 @@ export class PhysicalCustodyService {
 
   async cancelMovement(id: string, dto?: CancelPhysicalCustodyMovementDto): Promise<PhysicalCustodyMovement> {
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM "PhysicalCustodyMovement" WHERE id = ${id} FOR UPDATE`;
+
       const movement = await tx.physicalCustodyMovement.findUnique({ where: { id }, include: { user: true } });
       if (!movement) throw new NotFoundException('Movement not found');
 
@@ -123,21 +188,82 @@ export class PhysicalCustodyService {
         throw new BadRequestException('No custody position to reverse');
       }
 
-      const delta = new Decimal(movement.weightGram);
-      const newWeight =
-        movement.movementType === PhysicalCustodyMovementType.DEPOSIT
-          ? new Decimal(position.weightGram).minus(delta)
-          : new Decimal(position.weightGram).plus(delta);
+      const deltaEquiv = movement.equivGram750
+        ? new Decimal(movement.equivGram750)
+        : this.toEquivGram750(movement.weightGram, movement.ayar);
+      const currentBalance = this.getPositionBalance(position);
 
-      if (newWeight.lt(0)) {
+      const newBalance =
+        movement.movementType === PhysicalCustodyMovementType.DEPOSIT
+          ? currentBalance.minus(deltaEquiv)
+          : currentBalance.plus(deltaEquiv);
+
+      if (newBalance.lt(0)) {
         throw new BadRequestException('Reversal would make custody negative');
       }
 
-      await tx.physicalCustodyPosition.update({ where: { id: position.id }, data: { weightGram: newWeight } });
+      await tx.physicalCustodyPosition.update({
+        where: { id: position.id },
+        data: {
+          equivGram750: newBalance,
+          weightGram: new Decimal(newBalance.toFixed(4)),
+          ayar: 750,
+        },
+      });
+
+      const reverseForMovementType = (value: Decimal) =>
+        movement.movementType === PhysicalCustodyMovementType.DEPOSIT ? value.negated() : value;
+
+      const originalUserTx = movement.userGoldAccountTxId
+        ? await tx.accountTx.findUnique({ where: { id: movement.userGoldAccountTxId } })
+        : null;
+      const originalHouseTx = movement.houseGoldAccountTxId
+        ? await tx.accountTx.findUnique({ where: { id: movement.houseGoldAccountTxId } })
+        : null;
+
+      const userAccount = originalUserTx
+        ? { id: originalUserTx.accountId }
+        : await this.accountsService.getOrCreateAccount(movement.userId, GOLD_750_INSTRUMENT_CODE, tx);
+      const houseAccount = originalHouseTx
+        ? { id: originalHouseTx.accountId }
+        : await this.accountsService.getOrCreateAccount(HOUSE_USER_ID, GOLD_750_INSTRUMENT_CODE, tx);
+
+      const userDelta = originalUserTx
+        ? new Decimal(originalUserTx.delta).negated()
+        : reverseForMovementType(deltaEquiv);
+      const houseDelta = originalHouseTx
+        ? new Decimal(originalHouseTx.delta).negated()
+        : reverseForMovementType(deltaEquiv);
+
+      await this.accountsService.applyTransaction(
+        tx,
+        userAccount,
+        userDelta,
+        AccountTxType.CUSTODY,
+        TxRefType.PHYSICAL_CUSTODY_MOVEMENT,
+        movement.id,
+        undefined,
+        originalUserTx?.id,
+      );
+
+      await this.accountsService.applyTransaction(
+        tx,
+        houseAccount,
+        houseDelta,
+        AccountTxType.CUSTODY,
+        TxRefType.PHYSICAL_CUSTODY_MOVEMENT,
+        movement.id,
+        undefined,
+        originalHouseTx?.id,
+      );
 
       return tx.physicalCustodyMovement.update({
         where: { id: movement.id },
-        data: { status: PhysicalCustodyMovementStatus.CANCELLED, note: dto?.reason ?? movement.note },
+        data: {
+          status: PhysicalCustodyMovementStatus.CANCELLED,
+          note: dto?.reason ?? movement.note,
+          equivGram750: movement.equivGram750 ?? deltaEquiv,
+        },
         include: { user: true },
       });
     });
@@ -162,6 +288,12 @@ export class PhysicalCustodyService {
       movement.updatedAt ?? movement.createdAt,
     );
 
+    const normalizedWeight =
+      movement.equivGram750 ?? this.toEquivGram750(movement.weightGram, movement.ayar);
+
+    const direction =
+      movement.movementType === PhysicalCustodyMovementType.DEPOSIT ? 'deposit' : 'withdrawal';
+
     const dto: DoNewSanadGoldRequestDto = {
       sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
       moshtariCode,
@@ -170,8 +302,8 @@ export class PhysicalCustodyService {
       shamsiYear,
       shamsiMonth,
       shamsiDay,
-      vazn: Number(movement.weightGram),
-      ayar: movement.ayar,
+      vazn: Number(normalizedWeight),
+      ayar: 750,
       angNumber: '',
       nameAz: 'Physical custody',
       isVoroodOrKhorooj:
@@ -179,7 +311,7 @@ export class PhysicalCustodyService {
           ? VoroodOrKhorooj.Vorood
           : VoroodOrKhorooj.Khorooj,
       isMotefaregheOrAbshode: 1,
-      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Custody movement ${movement.id}`,
+      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Custody ${direction} #${movement.id}: ${movement.weightGram}g @ ${movement.ayar} -> ${normalizedWeight}g 750eq`,
       factorCode: this.tahesabIntegration.getGoldAccountCode() ?? undefined,
     };
 

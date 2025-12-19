@@ -12,17 +12,20 @@ import {
   TxRefType,
   UserRole,
   WithdrawStatus,
+  PhysicalCustodyMovementStatus,
+  PhysicalCustodyMovementType,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { AppModule } from '../src/app.module';
 import { AccountsService } from '../src/modules/accounts/accounts.service';
-import { HOUSE_USER_ID, IRR_INSTRUMENT_CODE } from '../src/modules/accounts/constants';
+import { GOLD_750_INSTRUMENT_CODE, HOUSE_USER_ID, IRR_INSTRUMENT_CODE } from '../src/modules/accounts/constants';
 import { DepositsService } from '../src/modules/deposits/deposits.service';
 import { WithdrawalsService } from '../src/modules/withdrawals/withdrawals.service';
 import { PrismaService } from '../src/modules/prisma/prisma.service';
 import { TradesService } from '../src/modules/trades/trades.service';
 import { CreateTradeDto } from '../src/modules/trades/dto/create-trade.dto';
 import { JwtService } from '@nestjs/jwt';
+import { PhysicalCustodyService } from '../src/modules/physical-custody/physical-custody.service';
 
 let appPromise: Promise<INestApplication | null> | null = null;
 let baseUrl: string | null = null;
@@ -75,6 +78,10 @@ function requireApp(app: INestApplication | null, t: any) {
 
 function decimalString(value: any): string {
   return new Decimal(value).toString();
+}
+
+function toEquivGram750(weightGram: Decimal | string | number, ayar: number): Decimal {
+  return new Decimal(weightGram).mul(ayar).div(750);
 }
 
 function authHeader(user: { id: string; mobile: string; role: UserRole }) {
@@ -178,6 +185,193 @@ test('Physical custody approve/cancel require admin role', async (t) => {
   assert.ok(adminCancel.status >= 200 && adminCancel.status < 300);
   const cancelledBody = await adminCancel.json();
   assert.strictEqual(cancelledBody.status, 'CANCELLED');
+});
+
+test('Physical custody approval standardizes to 750eq and updates wallet/outbox', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const custodyService = app.get(PhysicalCustodyService);
+  const accountsService = app.get(AccountsService);
+
+  await ensureInstrument(prisma, GOLD_750_INSTRUMENT_CODE, InstrumentUnit.GRAM_750_EQ, InstrumentType.GOLD);
+
+  const user = await prisma.user.create({
+    data: {
+      fullName: `custody-client-${Date.now()}`,
+      mobile: `09${Date.now().toString().slice(-9)}`,
+      email: `custody-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: UserRole.CLIENT,
+      status: 'ACTIVE',
+      tahesabCustomerCode: 'TC_CUSTODY_TEST',
+    },
+  });
+
+  await prisma.physicalCustodyPosition.deleteMany({ where: { userId: user.id } });
+
+  const movement = await prisma.physicalCustodyMovement.create({
+    data: {
+      userId: user.id,
+      movementType: PhysicalCustodyMovementType.DEPOSIT,
+      status: PhysicalCustodyMovementStatus.PENDING,
+      weightGram: new Decimal(2.5),
+      ayar: 720,
+      note: 'test deposit',
+    },
+  });
+
+  const userAccount = await accountsService.getOrCreateAccount(user.id, GOLD_750_INSTRUMENT_CODE);
+  const houseAccount = await accountsService.getOrCreateAccount(HOUSE_USER_ID, GOLD_750_INSTRUMENT_CODE);
+  await prisma.account.update({ where: { id: userAccount.id }, data: { balance: new Decimal(0) } });
+  await prisma.account.update({ where: { id: houseAccount.id }, data: { balance: new Decimal(0) } });
+
+  const approved = await custodyService.approveMovement(movement.id);
+
+  const expectedEquiv = toEquivGram750(movement.weightGram, movement.ayar).toFixed(6);
+  assert.strictEqual(approved.status, PhysicalCustodyMovementStatus.APPROVED);
+  assert.strictEqual(decimalString(approved.equivGram750), expectedEquiv);
+
+  const position = await prisma.physicalCustodyPosition.findUnique({
+    where: { userId_assetType: { userId: user.id, assetType: movement.assetType } },
+  });
+  const userAccountAfter = await prisma.account.findUnique({ where: { id: userAccount.id } });
+  const houseAccountAfter = await prisma.account.findUnique({ where: { id: houseAccount.id } });
+
+  assert.strictEqual(decimalString(position?.equivGram750), expectedEquiv);
+  assert.strictEqual(decimalString(userAccountAfter?.balance), expectedEquiv);
+  assert.strictEqual(decimalString(houseAccountAfter?.balance), expectedEquiv);
+
+  const outbox = await prisma.tahesabOutbox.findFirst({ where: { correlationId: `custody:${movement.id}` } });
+  assert.ok(outbox);
+  const payload = outbox?.payload as any;
+  assert.strictEqual(payload?.ayar, 750);
+  assert.strictEqual(Number(payload?.vazn), Number(expectedEquiv));
+});
+
+test('Physical custody withdrawal rejects insufficient balance', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const custodyService = app.get(PhysicalCustodyService);
+
+  await ensureInstrument(prisma, GOLD_750_INSTRUMENT_CODE, InstrumentUnit.GRAM_750_EQ, InstrumentType.GOLD);
+
+  const user = await prisma.user.create({
+    data: {
+      fullName: `custody-withdraw-${Date.now()}`,
+      mobile: `09${Date.now().toString().slice(-9)}`,
+      email: `custody-withdraw-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: UserRole.CLIENT,
+      status: 'ACTIVE',
+    },
+  });
+
+  await prisma.physicalCustodyPosition.upsert({
+    where: { userId_assetType: { userId: user.id, assetType: 'GOLD' } },
+    update: { weightGram: new Decimal(1), ayar: 750, equivGram750: new Decimal(1) },
+    create: {
+      userId: user.id,
+      assetType: 'GOLD',
+      weightGram: new Decimal(1),
+      ayar: 750,
+      equivGram750: new Decimal(1),
+    },
+  });
+
+  const movement = await prisma.physicalCustodyMovement.create({
+    data: {
+      userId: user.id,
+      movementType: PhysicalCustodyMovementType.WITHDRAWAL,
+      status: PhysicalCustodyMovementStatus.PENDING,
+      weightGram: new Decimal(2),
+      ayar: 750,
+    },
+  });
+
+  await assert.rejects(() => custodyService.approveMovement(movement.id), /Insufficient custody balance/);
+});
+
+test('Cancelling approved custody movement reverses wallet and custody', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const custodyService = app.get(PhysicalCustodyService);
+  const accountsService = app.get(AccountsService);
+
+  await ensureInstrument(prisma, GOLD_750_INSTRUMENT_CODE, InstrumentUnit.GRAM_750_EQ, InstrumentType.GOLD);
+
+  const user = await prisma.user.create({
+    data: {
+      fullName: `custody-cancel-${Date.now()}`,
+      mobile: `09${Date.now().toString().slice(-9)}`,
+      email: `custody-cancel-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: UserRole.CLIENT,
+      status: 'ACTIVE',
+      tahesabCustomerCode: 'TC_CUSTODY_CANCEL',
+    },
+  });
+
+  await prisma.physicalCustodyPosition.deleteMany({ where: { userId: user.id } });
+
+  const userAccount = await accountsService.getOrCreateAccount(user.id, GOLD_750_INSTRUMENT_CODE);
+  const houseAccount = await accountsService.getOrCreateAccount(HOUSE_USER_ID, GOLD_750_INSTRUMENT_CODE);
+  await prisma.account.update({ where: { id: userAccount.id }, data: { balance: new Decimal(0) } });
+  await prisma.account.update({ where: { id: houseAccount.id }, data: { balance: new Decimal(0) } });
+
+  const movement = await prisma.physicalCustodyMovement.create({
+    data: {
+      userId: user.id,
+      movementType: PhysicalCustodyMovementType.DEPOSIT,
+      status: PhysicalCustodyMovementStatus.PENDING,
+      weightGram: new Decimal(1.2),
+      ayar: 750,
+    },
+  });
+
+  const approved = await custodyService.approveMovement(movement.id);
+  const expectedEquiv = toEquivGram750(movement.weightGram, movement.ayar).toFixed(6);
+
+  await prisma.tahesabOutbox.create({
+    data: {
+      method: 'DoNewSanadVKHGOLD',
+      payload: {},
+      status: 'SUCCESS',
+      tahesabFactorCode: 'FACTOR-CODE-1',
+      correlationId: `custody:${approved.id}`,
+      nextRetryAt: new Date(),
+    },
+  });
+
+  const cancelled = await custodyService.cancelMovement(approved.id, { reason: 'user requested' });
+  assert.strictEqual(cancelled.status, PhysicalCustodyMovementStatus.CANCELLED);
+
+  const position = await prisma.physicalCustodyPosition.findUnique({
+    where: { userId_assetType: { userId: user.id, assetType: 'GOLD' } },
+  });
+  assert.strictEqual(decimalString(position?.equivGram750), '0');
+
+  const userAccountAfter = await prisma.account.findUnique({ where: { id: userAccount.id } });
+  const houseAccountAfter = await prisma.account.findUnique({ where: { id: houseAccount.id } });
+  assert.strictEqual(decimalString(userAccountAfter?.balance), '0');
+  assert.strictEqual(decimalString(houseAccountAfter?.balance), '0');
+
+  const relatedTxs = await prisma.accountTx.findMany({
+    where: { refId: approved.id, refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT },
+  });
+  const userOriginal = relatedTxs.find((tx) => tx.accountId === userAccount.id && !tx.reversalOfId);
+  const userReversal = relatedTxs.find((tx) => tx.reversalOfId === userOriginal?.id);
+  assert.ok(userOriginal?.id);
+  assert.ok(userReversal?.id);
+  assert.strictEqual(decimalString(userOriginal?.delta), expectedEquiv);
+  assert.strictEqual(decimalString(userReversal?.delta), new Decimal(userOriginal?.delta ?? 0).negated().toString());
+
+  const cancelOutbox = await prisma.tahesabOutbox.findFirst({
+    where: { correlationId: `custody:cancel:${approved.id}`, method: 'DoDeleteSanad' },
+  });
+  assert.ok(cancelOutbox);
 });
 
 test('Admin approvals for deposits/withdrawals enforce JWT and admin role', async (t) => {
