@@ -9,6 +9,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
+import { AdminListDepositsDto } from './dto/admin-list-deposit-dto';
 
 @ApiTags('deposits')
 @ApiBearerAuth('access-token')
@@ -35,13 +36,21 @@ export class DepositsController {
     return this.depositsService.findMy(user.id);
   }
 
+  @Get('admin/deposits-all')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  listAllAdmin() {
+    return this.depositsService.findByStatus();
+  }
+
   @Get('admin/deposits')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
-  listAdmin(@Query('status') status?: DepositStatus) {
-    return this.depositsService.findByStatus(status);
+  listAdmin(@Query('status') query : AdminListDepositsDto) {
+    return this.depositsService.findByStatus(query.status);
   }
 
+  
   @Post('admin/deposits/:id/approve')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)

@@ -297,8 +297,8 @@ model AccountTx {
   remittanceFrom Remittance? @relation("RemittanceFromTx")
   remittanceTo   Remittance? @relation("RemittanceToTx")
 
-  reversalOf   AccountTx? @relation("AccountTxReversal", fields: [reversalOfId], references: [id])
-  reversalOfId String?    @unique
+  reversalOf   AccountTx?  @relation("AccountTxReversal", fields: [reversalOfId], references: [id])
+  reversalOfId String?     @unique
   reversals    AccountTx[] @relation("AccountTxReversal")
 
   @@index([refType, refId])

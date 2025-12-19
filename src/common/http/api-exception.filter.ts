@@ -94,7 +94,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
     details?: ApiFieldError[];
   } {
     const status = exception.getStatus();
-    const response = exception.getResponse();
+    const response: unknown = exception.getResponse();
     const baseMessage = this.extractMessage(response);
 
     const errorCode = this.mapStatusToCode(status, exception);
@@ -109,19 +109,25 @@ export class ApiExceptionFilter implements ExceptionFilter {
     };
   }
 
-  private extractMessage(response: string | Record<string, unknown>): string {
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+  }
+
+  private extractMessage(response: unknown): string {
     if (typeof response === 'string') {
       return response;
     }
 
-    const message = response?.['message'];
+    if (this.isRecord(response)) {
+      const message = response['message'];
 
-    if (Array.isArray(message) && message.length > 0) {
-      return 'Invalid input';
-    }
+      if (Array.isArray(message) && message.length > 0) {
+        return 'Invalid input';
+      }
 
-    if (typeof message === 'string') {
-      return message;
+      if (typeof message === 'string') {
+        return message;
+      }
     }
 
     return 'Unexpected error';
@@ -129,13 +135,17 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
   private extractValidationDetails(
     exception: HttpException,
-    response: string | Record<string, unknown>,
+    response: unknown,
   ): ApiFieldError[] {
     if (!(exception instanceof BadRequestException)) {
       return [];
     }
 
-    const message = (typeof response === 'object' && response ? response['message'] : undefined) ?? [];
+    if (!this.isRecord(response)) {
+      return [];
+    }
+
+    const message = response['message'];
 
     if (!Array.isArray(message)) {
       return [];
@@ -146,6 +156,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
       message: typeof item === 'string' ? item : 'Invalid input',
     }));
   }
+
 
   private mapStatusToCode(status: number, exception: HttpException): ApiErrorCode {
     switch (status) {
