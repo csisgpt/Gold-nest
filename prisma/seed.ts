@@ -159,8 +159,17 @@ async function main() {
     } else {
         gold = await prisma.instrument.upsert({
             where: { code: 'GOLD_750_EQ' },
-            update: { name: 'طلای ۱۸ عیار گرمی', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
-            create: { code: 'GOLD_750_EQ', name: 'طلای ۱۸ عیار گرمی', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
+            update: {
+                name: 'طلای ۱۸ عیار گرمی',
+                type: InstrumentType.GOLD,
+                unit: InstrumentUnit.GRAM_750_EQ,
+            },
+            create: {
+                code: 'GOLD_750_EQ',
+                name: 'طلای ۱۸ عیار گرمی',
+                type: InstrumentType.GOLD,
+                unit: InstrumentUnit.GRAM_750_EQ,
+            },
         });
     }
 

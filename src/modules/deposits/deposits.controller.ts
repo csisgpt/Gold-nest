@@ -46,7 +46,7 @@ export class DepositsController {
   @Get('admin/deposits')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
-  listAdmin(@Query('status') query : AdminListDepositsDto) {
+  listAdmin(@Query() query: AdminListDepositsDto) {
     return this.depositsService.findByStatus(query.status);
   }
 

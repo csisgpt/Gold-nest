@@ -1,23 +1,6 @@
--- Add new tx reference and type enums if missing
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_type t
-    JOIN pg_enum e ON t.oid = e.enumtypid
-    WHERE t.typname = 'TxRefType' AND e.enumlabel = 'PHYSICAL_CUSTODY_MOVEMENT'
-  ) THEN
-    ALTER TYPE "TxRefType" ADD VALUE 'PHYSICAL_CUSTODY_MOVEMENT';
-  END IF;
-END $$;
+ALTER TYPE "TxRefType" ADD VALUE 'PHYSICAL_CUSTODY_MOVEMENT';
 
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_type t
-    JOIN pg_enum e ON t.oid = e.enumtypid
-    WHERE t.typname = 'AccountTxType' AND e.enumlabel = 'CUSTODY'
-  ) THEN
-    ALTER TYPE "AccountTxType" ADD VALUE 'CUSTODY';
-  END IF;
-END $$;
+ALTER TYPE "AccountTxType" ADD VALUE 'CUSTODY';
 
 -- Extend physical custody movement for standardized grams and wallet linkage
 ALTER TABLE "PhysicalCustodyMovement"

@@ -291,6 +291,9 @@ export class PhysicalCustodyService {
     const normalizedWeight =
       movement.equivGram750 ?? this.toEquivGram750(movement.weightGram, movement.ayar);
 
+    const direction =
+      movement.movementType === PhysicalCustodyMovementType.DEPOSIT ? 'deposit' : 'withdrawal';
+
     const dto: DoNewSanadGoldRequestDto = {
       sabteKolOrMovaghat: SabteKolOrMovaghat.Kol,
       moshtariCode,
@@ -308,7 +311,7 @@ export class PhysicalCustodyService {
           ? VoroodOrKhorooj.Vorood
           : VoroodOrKhorooj.Khorooj,
       isMotefaregheOrAbshode: 1,
-      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Custody movement ${movement.id} (${movement.weightGram}g @ ${movement.ayar})`,
+      sharh: `${this.tahesabIntegration.getDescriptionPrefix()} Custody ${direction} #${movement.id}: ${movement.weightGram}g @ ${movement.ayar} -> ${normalizedWeight}g 750eq`,
       factorCode: this.tahesabIntegration.getGoldAccountCode() ?? undefined,
     };
 
