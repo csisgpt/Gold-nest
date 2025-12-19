@@ -85,6 +85,7 @@ enum TxRefType {
   GOLD_LOT
   // TODO: Introduce a Remittance entity/service to cover internal transfers.
   REMITTANCE
+  PHYSICAL_CUSTODY_MOVEMENT
 }
 
 enum AccountTxType {
@@ -95,6 +96,7 @@ enum AccountTxType {
   ADJUSTMENT
   FEE
   REMITTANCE
+  CUSTODY
 }
 
 enum DepositStatus {
@@ -354,6 +356,7 @@ model PhysicalCustodyPosition {
 
   weightGram Decimal @db.Decimal(24, 4)
   ayar       Int
+  equivGram750 Decimal @default(0) @db.Decimal(24, 6)
 
   @@unique([userId, assetType])
   @@index([userId, assetType])
@@ -374,6 +377,10 @@ model PhysicalCustodyMovement {
 
   weightGram Decimal @db.Decimal(24, 4)
   ayar       Int
+  equivGram750 Decimal? @db.Decimal(24, 6)
+
+  userGoldAccountTxId  String?
+  houseGoldAccountTxId String?
 
   tahesabFactorCode String?
   note              String?

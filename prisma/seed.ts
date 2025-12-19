@@ -143,11 +143,26 @@ async function main() {
         create: { code: 'IRR', name: 'ریال ایران', type: InstrumentType.FIAT, unit: InstrumentUnit.CURRENCY },
     });
 
-    gold = await prisma.instrument.upsert({
-        where: { code: 'GOLD_GRAM' },
-        update: { name: 'طلای ۱۸ عیار گرمی', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
-        create: { code: 'GOLD_GRAM', name: 'طلای ۱۸ عیار گرمی', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
-    });
+    const existingGoldEq = await prisma.instrument.findUnique({ where: { code: 'GOLD_750_EQ' } });
+    const legacyGold = await prisma.instrument.findUnique({ where: { code: 'GOLD_GRAM' } });
+
+    if (!existingGoldEq && legacyGold) {
+        gold = await prisma.instrument.update({
+            where: { id: legacyGold.id },
+            data: {
+                code: 'GOLD_750_EQ',
+                name: 'طلای ۱۸ عیار گرمی',
+                type: InstrumentType.GOLD,
+                unit: InstrumentUnit.GRAM_750_EQ,
+            },
+        });
+    } else {
+        gold = await prisma.instrument.upsert({
+            where: { code: 'GOLD_750_EQ' },
+            update: { name: 'طلای ۱۸ عیار گرمی', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
+            create: { code: 'GOLD_750_EQ', name: 'طلای ۱۸ عیار گرمی', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
+        });
+    }
 
     // --- ۳. ایجاد قیمت‌های اولیه (InstrumentPrice) ---
     console.log('3. Creating Instrument Prices...');
