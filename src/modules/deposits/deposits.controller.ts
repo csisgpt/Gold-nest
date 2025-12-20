@@ -22,7 +22,7 @@ export class DepositsController {
   @Post('deposits')
   @UseGuards(JwtAuthGuard)
   create(@Body() dto: CreateDepositDto, @CurrentUser() user: JwtRequestUser) {
-    return this.depositsService.createForUser(user.id, dto);
+    return this.depositsService.createForUser(user, dto);
   }
 
   @Get('deposits/my/:userId')

@@ -27,7 +27,7 @@ export class TradesController {
   @Throttle(30, 60)
   @UseGuards(JwtAuthGuard)
   create(@Body() dto: CreateTradeDto, @CurrentUser() user: JwtRequestUser) {
-    return this.tradesService.createForUser(user.id, dto);
+    return this.tradesService.createForUser(user, dto);
   }
 
   /**

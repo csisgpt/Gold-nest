@@ -90,6 +90,75 @@ function authHeader(user: { id: string; mobile: string; role: UserRole }) {
   return { Authorization: `Bearer ${token}` };
 }
 
+test('File access is limited to owner/admin and attachments require ownership', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const userA = await prisma.user.create({
+    data: {
+      fullName: `file-owner-${Date.now()}`,
+      mobile: `09${Date.now().toString().slice(-9)}`,
+      email: `file-a-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: UserRole.CLIENT,
+      status: 'ACTIVE',
+    },
+  });
+
+  const userB = await prisma.user.create({
+    data: {
+      fullName: `file-b-${Date.now()}`,
+      mobile: `09${(Date.now() + 1).toString().slice(-9)}`,
+      email: `file-b-${Date.now()}@example.com`,
+      password: 'Pass123!@#',
+      role: UserRole.CLIENT,
+      status: 'ACTIVE',
+    },
+  });
+
+  const form = new FormData();
+  form.append('file', new Blob(['hello-world'], { type: 'text/plain' }), 'hello.txt');
+
+  const uploadRes = await fetch(`${baseUrl}/files`, {
+    method: 'POST',
+    headers: authHeader(userA),
+    body: form as any,
+  });
+
+  assert.ok(uploadRes.status >= 200 && uploadRes.status < 300);
+  const uploaded = (await uploadRes.json()) as { id: string };
+  assert.ok(uploaded.id);
+
+  const forbiddenView = await fetch(`${baseUrl}/files/${uploaded.id}`, {
+    method: 'GET',
+    headers: authHeader(userB),
+  });
+  assert.strictEqual(forbiddenView.status, 403);
+
+  const allowedView = await fetch(`${baseUrl}/files/${uploaded.id}`, {
+    method: 'GET',
+    headers: authHeader(userA),
+  });
+  assert.strictEqual(allowedView.status, 200);
+  const content = await allowedView.text();
+  assert.strictEqual(content, 'hello-world');
+
+  const depositRes = await fetch(`${baseUrl}/deposits`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(userA) },
+    body: JSON.stringify({ amount: '1000', method: 'bank-transfer', fileIds: [uploaded.id] }),
+  });
+  assert.ok(depositRes.status >= 200 && depositRes.status < 300);
+
+  const forbiddenDeposit = await fetch(`${baseUrl}/deposits`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(userB) },
+    body: JSON.stringify({ amount: '1000', method: 'bank-transfer', fileIds: [uploaded.id] }),
+  });
+  assert.strictEqual(forbiddenDeposit.status, 403);
+});
+
 test('Physical custody request without JWT returns 401', async (t) => {
   const app = await bootstrapApp();
   if (!requireApp(app, t)) return;

@@ -13,6 +13,7 @@ import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { runInTx } from '../../common/db/tx.util';
 import { DepositsMapper, DepositWithUser, depositWithUserSelect } from './deposits.mapper';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 
 @Injectable()
 export class DepositsService {
@@ -26,11 +27,11 @@ export class DepositsService {
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
   ) {}
 
-  async createForUser(userId: string, dto: CreateDepositDto) {
+  async createForUser(user: JwtRequestUser, dto: CreateDepositDto) {
     return runInTx(this.prisma, async (tx) => {
       const deposit = await tx.depositRequest.create({
         data: {
-          userId,
+          userId: user.id,
           amount: new Decimal(dto.amount),
           method: dto.method,
           refNo: dto.refNo,
@@ -38,7 +39,8 @@ export class DepositsService {
         },
       });
 
-      await this.filesService.createAttachments(
+      await this.filesService.createAttachmentsForActor(
+        { id: user.id, role: user.role },
         dto.fileIds,
         AttachmentEntityType.DEPOSIT,
         deposit.id,
