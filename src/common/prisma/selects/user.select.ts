@@ -15,3 +15,10 @@ export const userSafeSelect: Prisma.UserSelect = {
   createdAt: true,
   updatedAt: true,
 };
+
+export const userTahesabSelect: Prisma.UserSelect = {
+  id: true,
+  fullName: true,
+  mobile: true,
+  tahesabCustomerCode: true,
+};

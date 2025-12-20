@@ -14,11 +14,11 @@ import { TahesabOutboxService } from './tahesab-outbox.service';
 import { TahesabIntegrationConfigService } from './tahesab-integration.config';
 
 export type RemittanceForTahesab = Remittance & {
-  group?: RemittanceGroup | null;
-  instrument: Instrument;
-  fromUser: User;
-  toUser: User;
-  settlementsAsLeg?: RemittanceSettlementLink[];
+  group?: Pick<RemittanceGroup, 'id' | 'kind' | 'status' | 'createdByUserId'> | null;
+  instrument: Pick<Instrument, 'code' | 'type'>;
+  fromUser: Partial<Pick<User, 'id' | 'mobile' | 'fullName' | 'tahesabCustomerCode'>>;
+  toUser: Partial<Pick<User, 'id' | 'mobile' | 'fullName' | 'tahesabCustomerCode'>>;
+  settlementsAsLeg?: Partial<Pick<RemittanceSettlementLink, 'sourceRemittanceId' | 'amount'>>[];
 };
 
 @Injectable()
