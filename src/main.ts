@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ApiExceptionFilter } from './common/http/api-exception.filter';
 import { ApiResponseInterceptor } from './common/http/api-response.interceptor';
+import { SensitiveFieldsInterceptor } from './common/interceptors/sensitive-fields.interceptor';
 
 
 async function bootstrap() {
@@ -19,7 +20,7 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(new ApiExceptionFilter());
-  app.useGlobalInterceptors(new ApiResponseInterceptor());
+  app.useGlobalInterceptors(new ApiResponseInterceptor(), new SensitiveFieldsInterceptor());
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Gold Trading API')

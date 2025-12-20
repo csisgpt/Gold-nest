@@ -1,13 +1,5 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import {
-  AccountTxType,
-  CustodyAssetType,
-  PhysicalCustodyMovement,
-  PhysicalCustodyMovementStatus,
-  PhysicalCustodyMovementType,
-  PhysicalCustodyPosition,
-  TxRefType,
-} from '@prisma/client';
+import { AccountTxType, CustodyAssetType, PhysicalCustodyMovementStatus, PhysicalCustodyMovementType, Prisma, TxRefType } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePhysicalCustodyMovementDto } from './dto/create-physical-custody-movement.dto';
@@ -18,6 +10,19 @@ import { SabteKolOrMovaghat, VoroodOrKhorooj } from '../tahesab/tahesab.methods'
 import { DoNewSanadGoldRequestDto } from '../tahesab/dto/sanad.dto';
 import { AccountsService } from '../accounts/accounts.service';
 import { GOLD_750_INSTRUMENT_CODE, HOUSE_USER_ID } from '../accounts/constants';
+import { PhysicalCustodyMovementResponseDto } from './dto/response/physical-custody-movement.response.dto';
+import {
+  custodyMovementSelect,
+  CustodyMovementWithUser,
+  custodyPositionSelect,
+  CustodyPositionWithUser,
+  PhysicalCustodyMapper,
+} from './physical-custody.mapper';
+import { AdminListMovementsDto } from './dto/admin-list-movements.dto';
+import { AdminListPositionsDto } from './dto/admin-list-positions.dto';
+
+const ACCOUNT_TX_TYPE_CUSTODY = 'CUSTODY' as unknown as AccountTxType;
+const TX_REF_PHYSICAL_CUSTODY_MOVEMENT = 'PHYSICAL_CUSTODY_MOVEMENT' as unknown as TxRefType;
 
 @Injectable()
 export class PhysicalCustodyService {
@@ -36,9 +41,13 @@ export class PhysicalCustodyService {
     return new Decimal(equiv.toFixed(6));
   }
 
-  private getPositionBalance(position: Pick<PhysicalCustodyPosition, 'equivGram750' | 'weightGram' | 'ayar'>): Decimal {
+  private getPositionBalance(position: {
+    equivGram750?: Decimal.Value | null;
+    weightGram: Decimal.Value;
+    ayar: number;
+  }): Decimal {
     if (position.equivGram750 !== null && position.equivGram750 !== undefined) {
-      return new Decimal(position.equivGram750);
+      return new Decimal(position.equivGram750 as Decimal.Value);
     }
     return this.toEquivGram750(position.weightGram, position.ayar);
   }
@@ -46,12 +55,12 @@ export class PhysicalCustodyService {
   async requestMovement(
     userId: string,
     dto: CreatePhysicalCustodyMovementDto,
-  ): Promise<PhysicalCustodyMovement> {
+  ): Promise<CustodyMovementWithUser> {
     if (!userId) {
       throw new BadRequestException('Authenticated user is required for custody requests');
     }
 
-    return this.prisma.physicalCustodyMovement.create({
+    const movement = await this.prisma.physicalCustodyMovement.create({
       data: {
         userId,
         assetType: CustodyAssetType.GOLD,
@@ -61,23 +70,26 @@ export class PhysicalCustodyService {
         ayar: dto.ayar,
         note: dto.note,
       },
+      select: custodyMovementSelect,
     });
+
+    return movement as CustodyMovementWithUser;
   }
 
-  async approveMovement(id: string): Promise<PhysicalCustodyMovement> {
+  async approveMovement(id: string): Promise<PhysicalCustodyMovementResponseDto> {
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT 1 FROM "PhysicalCustodyMovement" WHERE id = ${id} FOR UPDATE`;
 
       const movement = await tx.physicalCustodyMovement.findUnique({
         where: { id },
-        include: { user: true },
+        select: custodyMovementSelect,
       });
       if (!movement) throw new NotFoundException('Movement not found');
       if (movement.status !== PhysicalCustodyMovementStatus.PENDING) {
         return movement;
       }
 
-      const position = await tx.physicalCustodyPosition.upsert({
+      const position = (await tx.physicalCustodyPosition.upsert({
         where: { userId_assetType: { userId: movement.userId, assetType: movement.assetType } },
         update: {},
         create: {
@@ -86,8 +98,8 @@ export class PhysicalCustodyService {
           weightGram: new Decimal(0),
           ayar: 750,
           equivGram750: new Decimal(0),
-        },
-      });
+        } as any,
+      })) as any;
 
       const deltaEquiv = this.toEquivGram750(movement.weightGram, movement.ayar);
       const currentBalance = this.getPositionBalance(position);
@@ -107,7 +119,7 @@ export class PhysicalCustodyService {
           equivGram750: newBalance,
           weightGram: new Decimal(newBalance.toFixed(4)),
           ayar: 750,
-        },
+        } as any,
       });
 
       const userGoldAccount = await this.accountsService.getOrCreateAccount(
@@ -128,8 +140,8 @@ export class PhysicalCustodyService {
         tx,
         userGoldAccount,
         walletDelta,
-        AccountTxType.CUSTODY,
-        TxRefType.PHYSICAL_CUSTODY_MOVEMENT,
+        ACCOUNT_TX_TYPE_CUSTODY,
+        TX_REF_PHYSICAL_CUSTODY_MOVEMENT,
         movement.id,
       );
 
@@ -137,8 +149,8 @@ export class PhysicalCustodyService {
         tx,
         houseGoldAccount,
         walletDelta,
-        AccountTxType.CUSTODY,
-        TxRefType.PHYSICAL_CUSTODY_MOVEMENT,
+        ACCOUNT_TX_TYPE_CUSTODY,
+        TX_REF_PHYSICAL_CUSTODY_MOVEMENT,
         movement.id,
       );
 
@@ -149,20 +161,20 @@ export class PhysicalCustodyService {
           equivGram750: deltaEquiv,
           userGoldAccountTxId: userTx.id,
           houseGoldAccountTxId: houseTx.id,
-        },
-        include: { user: true },
+        } as any,
+        select: custodyMovementSelect,
       });
     });
 
-    await this.enqueueTahesabForPhysicalCustodyMovement(updated);
-    return updated;
+    await this.enqueueTahesabForPhysicalCustodyMovement(updated as CustodyMovementWithUser);
+    return PhysicalCustodyMapper.toMovementDto(updated as CustodyMovementWithUser);
   }
 
-  async cancelMovement(id: string, dto?: CancelPhysicalCustodyMovementDto): Promise<PhysicalCustodyMovement> {
+  async cancelMovement(id: string, dto?: CancelPhysicalCustodyMovementDto): Promise<PhysicalCustodyMovementResponseDto> {
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT 1 FROM "PhysicalCustodyMovement" WHERE id = ${id} FOR UPDATE`;
 
-      const movement = await tx.physicalCustodyMovement.findUnique({ where: { id }, include: { user: true } });
+      const movement = await tx.physicalCustodyMovement.findUnique({ where: { id }, select: custodyMovementSelect });
       if (!movement) throw new NotFoundException('Movement not found');
 
       if (movement.status === PhysicalCustodyMovementStatus.CANCELLED) {
@@ -173,7 +185,7 @@ export class PhysicalCustodyService {
         return tx.physicalCustodyMovement.update({
           where: { id: movement.id },
           data: { status: PhysicalCustodyMovementStatus.CANCELLED, note: dto?.reason ?? movement.note },
-          include: { user: true },
+          select: custodyMovementSelect,
         });
       }
 
@@ -181,9 +193,9 @@ export class PhysicalCustodyService {
         return movement;
       }
 
-      const position = await tx.physicalCustodyPosition.findUnique({
+      const position = (await tx.physicalCustodyPosition.findUnique({
         where: { userId_assetType: { userId: movement.userId, assetType: movement.assetType } },
-      });
+      })) as any;
       if (!position) {
         throw new BadRequestException('No custody position to reverse');
       }
@@ -208,7 +220,7 @@ export class PhysicalCustodyService {
           equivGram750: newBalance,
           weightGram: new Decimal(newBalance.toFixed(4)),
           ayar: 750,
-        },
+        } as any,
       });
 
       const reverseForMovementType = (value: Decimal) =>
@@ -239,8 +251,8 @@ export class PhysicalCustodyService {
         tx,
         userAccount,
         userDelta,
-        AccountTxType.CUSTODY,
-        TxRefType.PHYSICAL_CUSTODY_MOVEMENT,
+        ACCOUNT_TX_TYPE_CUSTODY,
+        TX_REF_PHYSICAL_CUSTODY_MOVEMENT,
         movement.id,
         undefined,
         originalUserTx?.id,
@@ -250,8 +262,8 @@ export class PhysicalCustodyService {
         tx,
         houseAccount,
         houseDelta,
-        AccountTxType.CUSTODY,
-        TxRefType.PHYSICAL_CUSTODY_MOVEMENT,
+        ACCOUNT_TX_TYPE_CUSTODY,
+        TX_REF_PHYSICAL_CUSTODY_MOVEMENT,
         movement.id,
         undefined,
         originalHouseTx?.id,
@@ -263,8 +275,8 @@ export class PhysicalCustodyService {
           status: PhysicalCustodyMovementStatus.CANCELLED,
           note: dto?.reason ?? movement.note,
           equivGram750: movement.equivGram750 ?? deltaEquiv,
-        },
-        include: { user: true },
+        } as any,
+        select: custodyMovementSelect,
       });
     });
 
@@ -272,11 +284,71 @@ export class PhysicalCustodyService {
       await this.enqueueTahesabDeletionForMovement(updated.id);
     }
 
-    return updated;
+    return PhysicalCustodyMapper.toMovementDto(updated as CustodyMovementWithUser);
+  }
+
+  async adminListMovements(filters: AdminListMovementsDto) {
+    const where: Prisma.PhysicalCustodyMovementWhereInput = {};
+
+    if (filters.status) where.status = filters.status;
+    if (filters.userId) where.userId = filters.userId;
+    if (filters.mobile) where.user = { mobile: { contains: filters.mobile } };
+    if (filters.fromDate || filters.toDate) {
+      where.createdAt = {
+        ...(filters.fromDate ? { gte: new Date(filters.fromDate) } : {}),
+        ...(filters.toDate ? { lte: new Date(filters.toDate) } : {}),
+      };
+    }
+
+    const take = filters.limit ?? 20;
+    const skip = ((filters.page ?? 1) - 1) * take;
+    const orderBy = { [filters.sortBy ?? 'createdAt']: filters.order ?? 'desc' } as const;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.physicalCustodyMovement.findMany({
+        where,
+        orderBy,
+        skip,
+        take,
+        select: custodyMovementSelect,
+      }),
+      this.prisma.physicalCustodyMovement.count({ where }),
+    ]);
+
+    return {
+      data: PhysicalCustodyMapper.toMovementDtos(items as CustodyMovementWithUser[]),
+      total,
+      page: filters.page ?? 1,
+      limit: take,
+    };
+  }
+
+  async adminGetMovementById(id: string) {
+    const movement = await this.prisma.physicalCustodyMovement.findUnique({
+      where: { id },
+      select: custodyMovementSelect,
+    });
+
+    if (!movement) throw new NotFoundException('Movement not found');
+    return PhysicalCustodyMapper.toMovementDto(movement as CustodyMovementWithUser);
+  }
+
+  async adminListPositions(filters: AdminListPositionsDto) {
+    const where: Prisma.PhysicalCustodyPositionWhereInput = {};
+    if (filters.userId) where.userId = filters.userId;
+    if (filters.mobile) where.user = { mobile: { contains: filters.mobile } };
+
+    const positions = await this.prisma.physicalCustodyPosition.findMany({
+      where,
+      orderBy: { updatedAt: 'desc' },
+      select: custodyPositionSelect,
+    });
+
+    return PhysicalCustodyMapper.toPositionDtos(positions as CustodyPositionWithUser[]);
   }
 
   private async enqueueTahesabForPhysicalCustodyMovement(
-    movement: PhysicalCustodyMovement & { user: { tahesabCustomerCode: string | null } },
+    movement: CustodyMovementWithUser,
   ): Promise<void> {
     if (!movement || movement.status !== PhysicalCustodyMovementStatus.APPROVED) return;
     if (!this.tahesabIntegration.isEnabled()) return;

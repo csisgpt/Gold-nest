@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import {
   AccountTxType,
   Instrument,
+  Prisma,
   Remittance,
   RemittanceChannel,
   RemittanceGroup,
@@ -30,10 +31,163 @@ import {
 import { OpenRemittanceSummaryDto } from './dto/open-remittance-summary.dto';
 import { TahesabRemittancesService } from '../tahesab/tahesab-remittances.service';
 import { runInTx } from '../../common/db/tx.util';
+import { userTahesabSelect } from '../../common/prisma/selects/user.select';
+
+type TahesabUser = Pick<User, 'id' | 'fullName' | 'mobile' | 'tahesabCustomerCode'>;
+
+type RemittanceWithListRelations = Remittance & {
+  instrument: Pick<Instrument, 'code'>;
+  toUser: Pick<User, 'mobile'>;
+  group?: Pick<RemittanceGroup, 'id' | 'kind' | 'status' | 'createdByUserId'> | null;
+};
+
+type RemittanceGroupWithLegs = RemittanceGroup & {
+  legs: (Remittance & {
+    instrument: Pick<Instrument, 'code'>;
+    toUser: Pick<User, 'mobile'>;
+    group?: Pick<RemittanceGroup, 'id' | 'kind' | 'status' | 'createdByUserId'> | null;
+  })[];
+};
+
+type RemittanceWithDetails = RemittanceWithListRelations & {
+  fromUser: Pick<User, 'mobile'>;
+  settlementsAsLeg: {
+    id: string;
+    amount: Prisma.Decimal | Decimal;
+    note: string | null;
+    createdAt: Date;
+    sourceRemittance: RemittanceWithListRelations & {
+      fromUser: Pick<User, 'mobile'>;
+      toUser: Pick<User, 'mobile'>;
+    };
+  }[];
+  settlementsAsSource: {
+    id: string;
+    amount: Prisma.Decimal | Decimal;
+    note: string | null;
+    createdAt: Date;
+    leg: RemittanceWithListRelations & {
+      fromUser: Pick<User, 'mobile'>;
+      toUser: Pick<User, 'mobile'>;
+      group?: Pick<RemittanceGroup, 'id' | 'kind' | 'status'> | null;
+    };
+  }[];
+};
+
+type RemittanceLegForTahesab = Remittance & {
+  instrument: Pick<Instrument, 'code' | 'type'>;
+  fromUser: Pick<User, 'id' | 'mobile' | 'fullName' | 'tahesabCustomerCode'>;
+  toUser: Pick<User, 'id' | 'mobile' | 'fullName' | 'tahesabCustomerCode'>;
+  group?: Pick<RemittanceGroup, 'id' | 'kind' | 'status' | 'createdByUserId'> | null;
+  settlementsAsLeg: { sourceRemittanceId: string; amount: Prisma.Decimal | Decimal }[];
+};
 
 @Injectable()
 export class RemittancesService {
   private readonly logger = new Logger(RemittancesService.name);
+
+  private readonly instrumentCodeSelect: Prisma.InstrumentSelect = { code: true };
+  private readonly instrumentCodeTypeSelect: Prisma.InstrumentSelect = { code: true, type: true };
+  private readonly userMobileSelect: Prisma.UserSelect = { mobile: true };
+
+  private readonly remittanceListSelect: Prisma.RemittanceSelect = {
+    id: true,
+    fromUserId: true,
+    toUserId: true,
+    onBehalfOfUserId: true,
+    instrument: { select: this.instrumentCodeSelect },
+    toUser: { select: this.userMobileSelect },
+    groupId: true,
+    group: { select: { id: true, kind: true, status: true, createdByUserId: true } },
+    amount: true,
+    note: true,
+    createdAt: true,
+    status: true,
+    channel: true,
+    iban: true,
+    cardLast4: true,
+    externalPaymentRef: true,
+    tahesabDocId: true,
+  };
+
+  private readonly remittanceDetailsSelect: Prisma.RemittanceSelect = {
+    ...this.remittanceListSelect,
+    fromUser: { select: this.userMobileSelect },
+    settlementsAsLeg: {
+      select: {
+        id: true,
+        amount: true,
+        note: true,
+        createdAt: true,
+        sourceRemittance: {
+          select: {
+            id: true,
+            amount: true,
+            instrument: { select: this.instrumentCodeSelect },
+            status: true,
+            fromUserId: true,
+            toUserId: true,
+            fromUser: { select: this.userMobileSelect },
+            toUser: { select: this.userMobileSelect },
+            createdAt: true,
+          },
+        },
+      },
+    },
+    settlementsAsSource: {
+      select: {
+        id: true,
+        amount: true,
+        note: true,
+        createdAt: true,
+        leg: {
+          select: {
+            id: true,
+            amount: true,
+            instrument: { select: this.instrumentCodeSelect },
+            status: true,
+            fromUserId: true,
+            toUserId: true,
+            fromUser: { select: this.userMobileSelect },
+            toUser: { select: this.userMobileSelect },
+            createdAt: true,
+            groupId: true,
+            group: { select: { id: true, kind: true, status: true } },
+          },
+        },
+      },
+    },
+  };
+
+  private readonly remittanceGroupSelect: Prisma.RemittanceGroupSelect = {
+    id: true,
+    createdByUserId: true,
+    note: true,
+    status: true,
+    createdAt: true,
+    kind: true,
+    legs: {
+      select: {
+        id: true,
+        fromUserId: true,
+        toUserId: true,
+        onBehalfOfUserId: true,
+        instrument: { select: this.instrumentCodeSelect },
+        toUser: { select: this.userMobileSelect },
+        groupId: true,
+        amount: true,
+        note: true,
+        createdAt: true,
+        status: true,
+        channel: true,
+        iban: true,
+        cardLast4: true,
+        externalPaymentRef: true,
+        tahesabDocId: true,
+      },
+    },
+  };
+
 
   constructor(
     private readonly prisma: PrismaService,
@@ -87,11 +241,7 @@ export class RemittancesService {
           { toUserId: userId },
         ],
       },
-      include: {
-        instrument: true,
-        toUser: true,
-        group: true,
-      },
+      select: this.remittanceListSelect,
       orderBy: { createdAt: 'desc' },
     });
 
@@ -107,57 +257,21 @@ export class RemittancesService {
           { legs: { some: { toUserId: userId } } },
         ],
       },
-      include: {
-        legs: {
-          include: {
-            toUser: true,
-            instrument: true,
-            group: true,
-          },
-        },
-      },
+      select: this.remittanceGroupSelect,
       orderBy: { createdAt: 'desc' },
     });
 
-    return groups.map((group) => this.mapGroupToDto(group));
+    return (groups as unknown as RemittanceGroupWithLegs[]).map((group) => this.mapGroupToDto(group));
   }
 
   async findOneWithSettlementsForUser(
     remittanceId: string,
     userId: string,
   ): Promise<RemittanceDetailsResponseDto> {
-    const remittance = await this.prisma.remittance.findUnique({
+    const remittance = (await this.prisma.remittance.findUnique({
       where: { id: remittanceId },
-      include: {
-        instrument: true,
-        toUser: true,
-        fromUser: true,
-        group: true,
-        settlementsAsLeg: {
-          include: {
-            sourceRemittance: {
-              include: {
-                instrument: true,
-                fromUser: true,
-                toUser: true,
-              },
-            },
-          },
-        },
-        settlementsAsSource: {
-          include: {
-            leg: {
-              include: {
-                instrument: true,
-                fromUser: true,
-                toUser: true,
-                group: true,
-              },
-            },
-          },
-        },
-      },
-    });
+      select: this.remittanceDetailsSelect,
+    })) as unknown as RemittanceWithDetails | null;
 
     if (!remittance) {
       throw new NotFoundException('Remittance not found');
@@ -224,12 +338,10 @@ export class RemittancesService {
         },
         OR: [{ toUserId: userId }, { fromUserId: userId }, { onBehalfOfUserId: userId }],
       },
-      include: {
-        instrument: true,
-        fromUser: true,
-        toUser: true,
-        group: true,
-        settlementsAsSource: true,
+      select: {
+        ...this.remittanceListSelect,
+        fromUser: { select: this.userMobileSelect },
+        settlementsAsSource: { select: { amount: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -288,11 +400,7 @@ export class RemittancesService {
   }
 
   private mapRemittanceToDto(
-    remittance: Remittance & {
-      instrument: Instrument;
-      toUser: User;
-      group?: RemittanceGroup | null;
-    },
+    remittance: RemittanceWithListRelations,
   ): RemittanceResponseDto {
     return {
       id: remittance.id,
@@ -316,9 +424,7 @@ export class RemittancesService {
     };
   }
 
-  private mapGroupToDto(
-    group: RemittanceGroup & { legs: (Remittance & { toUser: User; instrument: Instrument })[] },
-  ): RemittanceGroupResponseDto {
+  private mapGroupToDto(group: RemittanceGroupWithLegs): RemittanceGroupResponseDto {
     return {
       id: group.id,
       createdByUserId: group.createdByUserId,
@@ -341,12 +447,7 @@ export class RemittancesService {
     explicitKind?: string,
   ): Promise<{
     group: RemittanceGroup;
-    legs: (Remittance & {
-      toUser: User;
-      fromUser: User;
-      instrument: Instrument;
-      group?: RemittanceGroup | null;
-    })[];
+    legs: RemittanceLegForTahesab[];
   }> {
     if (!legsInput.length) {
       throw new BadRequestException('At least one leg is required');
@@ -364,7 +465,10 @@ export class RemittancesService {
     }
 
     const uniqueMobiles = Array.from(new Set(legsInput.map((l) => l.toMobile)));
-    const users = await this.prisma.user.findMany({ where: { mobile: { in: uniqueMobiles } } });
+    const users = await this.prisma.user.findMany({
+      where: { mobile: { in: uniqueMobiles } },
+      select: userTahesabSelect,
+    });
     const usersByMobile = new Map(users.map((u) => [u.mobile, u] as const));
 
     for (const mobile of uniqueMobiles) {
@@ -377,10 +481,11 @@ export class RemittancesService {
       .map((l) => l.onBehalfOfMobile)
       .filter((m): m is string => Boolean(m));
     const uniqueOnBehalfMobiles = Array.from(new Set(onBehalfMobiles));
-    let onBehalfUsersByMobile = new Map<string, User>();
+    let onBehalfUsersByMobile = new Map<string, TahesabUser>();
     if (uniqueOnBehalfMobiles.length) {
       const onBehalfUsers = await this.prisma.user.findMany({
         where: { mobile: { in: uniqueOnBehalfMobiles } },
+        select: userTahesabSelect,
       });
       onBehalfUsersByMobile = new Map(onBehalfUsers.map((u) => [u.mobile, u] as const));
       for (const mobile of uniqueOnBehalfMobiles) {
@@ -551,9 +656,12 @@ export class RemittancesService {
         const sourceIds = Array.from(new Set(allSettlementInputs.map((s) => s.input.remittanceId)));
         const sourceRemittances = await tx.remittance.findMany({
           where: { id: { in: sourceIds } },
-          include: {
-            instrument: true,
-            settlementsAsSource: true,
+          select: {
+            id: true,
+            instrumentId: true,
+            amount: true,
+            status: true,
+            settlementsAsSource: { select: { amount: true } },
           },
         });
         const sourceById = new Map(sourceRemittances.map((r) => [r.id, r] as const));
@@ -634,12 +742,29 @@ export class RemittancesService {
 
       const legsWithRelations = await tx.remittance.findMany({
         where: { id: { in: legsCreated.map((l) => l.id) } },
-        include: {
-          fromUser: true,
-          toUser: true,
-          instrument: true,
-          group: true,
-          settlementsAsLeg: true,
+        select: {
+          id: true,
+          fromUserId: true,
+          toUserId: true,
+          onBehalfOfUserId: true,
+          instrumentId: true,
+          instrument: { select: this.instrumentCodeTypeSelect },
+          amount: true,
+          note: true,
+          createdAt: true,
+          status: true,
+          fromAccountTxId: true,
+          toAccountTxId: true,
+          channel: true,
+          iban: true,
+          cardLast4: true,
+          externalPaymentRef: true,
+          groupId: true,
+          group: { select: { id: true, kind: true, status: true, createdByUserId: true } },
+          fromUser: { select: userTahesabSelect },
+          toUser: { select: userTahesabSelect },
+          tahesabDocId: true,
+          settlementsAsLeg: { select: { sourceRemittanceId: true, amount: true } },
         },
       });
 
@@ -651,12 +776,7 @@ export class RemittancesService {
     );
 
     for (const leg of legs) {
-      await this.tahesabRemittances.enqueueRemittanceLeg(leg as Remittance & {
-        toUser: User;
-        fromUser: User;
-        instrument: Instrument;
-        group?: RemittanceGroup | null;
-      });
+      await this.tahesabRemittances.enqueueRemittanceLeg(leg);
     }
 
     return { group, legs };

@@ -12,6 +12,7 @@ import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.
 import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { runInTx } from '../../common/db/tx.util';
+import { DepositsMapper, DepositWithUser, depositWithUserSelect } from './deposits.mapper';
 
 @Injectable()
 export class DepositsService {
@@ -55,11 +56,14 @@ export class DepositsService {
     });
   }
 
-  findByStatus(status?: DepositStatus) {
-    return this.prisma.depositRequest.findMany({
+  async findByStatus(status?: DepositStatus) {
+    const deposits = await this.prisma.depositRequest.findMany({
       where: { status },
       orderBy: { createdAt: 'asc' },
+      select: depositWithUserSelect,
     });
+
+    return DepositsMapper.toResponses(deposits as DepositWithUser[]);
   }
 
   async approve(id: string, dto: DecisionDto, adminId: string) {
@@ -70,7 +74,7 @@ export class DepositsService {
 
       if (!deposit) throw new NotFoundException('Deposit not found');
       if (deposit.accountTxId) {
-        return tx.depositRequest.findUnique({ where: { id }, include: { user: true } });
+        return tx.depositRequest.findUnique({ where: { id }, select: depositWithUserSelect });
       }
 
       if (
@@ -111,17 +115,17 @@ export class DepositsService {
           note: dto.note ?? deposit.note,
           accountTxId: txResult.txRecord.id,
         },
-        include: { user: true },
+        select: depositWithUserSelect,
       });
     }, { logger: this.logger });
 
     await this.enqueueTahesabCashInForDeposit(updatedDeposit);
 
-    return updatedDeposit;
+    return DepositsMapper.toResponse(updatedDeposit as DepositWithUser);
   }
 
   async reject(id: string, dto: DecisionDto, adminId: string) {
-    return runInTx(this.prisma, async (tx) => {
+    const updated = await runInTx(this.prisma, async (tx) => {
       const deposit = await tx.depositRequest.findUnique({ where: { id } });
       if (!deposit) throw new NotFoundException('Deposit not found');
       if (deposit.status !== DepositStatus.PENDING) {
@@ -144,12 +148,14 @@ export class DepositsService {
 
       this.logger.log(`Deposit ${id} rejected by ${adminId}`);
 
-      return tx.depositRequest.findUnique({ where: { id } });
+      return tx.depositRequest.findUnique({ where: { id }, select: depositWithUserSelect });
     }, { logger: this.logger });
+
+    return DepositsMapper.toResponse(updated as DepositWithUser);
   }
 
   private async enqueueTahesabCashInForDeposit(
-    deposit: Awaited<ReturnType<typeof this.prisma.depositRequest.findUnique>> & {
+    deposit: Pick<DepositRequest, 'status' | 'method' | 'amount' | 'processedAt' | 'updatedAt' | 'createdAt' | 'id'> & {
       user?: { tahesabCustomerCode?: string | null } | null;
     },
   ): Promise<void> {
@@ -192,7 +198,7 @@ export class DepositsService {
 
   async cancelDeposit(depositId: string, reason?: string) {
     const updated = await runInTx(this.prisma, async (tx) => {
-      const deposit = await tx.depositRequest.findUnique({ where: { id: depositId }, include: { user: true } });
+      const deposit = await tx.depositRequest.findUnique({ where: { id: depositId }, select: depositWithUserSelect });
       if (!deposit) throw new NotFoundException('Deposit not found');
 
       if (deposit.status === DepositStatus.CANCELLED || deposit.status === DepositStatus.REVERSED) {
@@ -203,7 +209,7 @@ export class DepositsService {
         return tx.depositRequest.update({
           where: { id: deposit.id },
           data: { status: DepositStatus.CANCELLED, note: reason ?? deposit.note },
-          include: { user: true },
+          select: depositWithUserSelect,
         });
       }
 
@@ -228,7 +234,7 @@ export class DepositsService {
         return tx.depositRequest.update({
           where: { id: deposit.id },
           data: { status: DepositStatus.REVERSED, note: reason ?? deposit.note },
-          include: { user: true },
+          select: depositWithUserSelect,
         });
       }
 
@@ -236,7 +242,7 @@ export class DepositsService {
     }, { logger: this.logger });
 
     await this.enqueueTahesabDeletionForDeposit(updated.id);
-    return updated;
+    return DepositsMapper.toResponse(updated as DepositWithUser);
   }
 
   private async enqueueTahesabDeletionForDeposit(depositId: string): Promise<void> {

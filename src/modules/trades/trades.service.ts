@@ -31,13 +31,7 @@ import { BuyOrSale, SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { GoldBuySellDto, SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { SettleForwardCashDto } from './dto/settle-forward-cash.dto';
 import { runInTx } from '../../common/db/tx.util';
-
-type TradeWithRelations =
-  | (Awaited<ReturnType<PrismaService['trade']['findUnique']>> & {
-      instrument?: Instrument;
-      client?: { tahesabCustomerCode?: string | null } | null;
-    })
-  | null;
+import { TradesMapper, TradeWithRelations, tradeWithRelationsSelect } from './trades.mapper';
 
 @Injectable()
 export class TradesService {
@@ -162,18 +156,21 @@ export class TradesService {
     });
   }
 
-  findByStatus(status?: TradeStatus) {
-    return this.prisma.trade.findMany({
+  async findByStatus(status?: TradeStatus) {
+    const trades = await this.prisma.trade.findMany({
       where: { status },
       orderBy: { createdAt: 'asc' },
+      select: tradeWithRelationsSelect,
     });
+
+    return trades.map((trade) => TradesMapper.toResponse(trade as TradeWithRelations));
   }
 
   async approve(id: string, dto: ApproveTradeDto, adminId: string) {
-    const updatedTrade = await runInTx(this.prisma, async (tx) => {
+    const updatedTrade = (await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id },
-        include: { instrument: true, client: true },
+        select: tradeWithRelationsSelect,
       });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status !== TradeStatus.PENDING) {
@@ -348,14 +345,14 @@ export class TradesService {
 
       const updatedTrade = await tx.trade.findUnique({
         where: { id: trade.id },
-        include: { instrument: true, client: true },
+        select: tradeWithRelationsSelect,
       });
       this.logger.log(
         `Trade ${trade.id} status ${trade.status} -> ${updatedTrade?.status} by admin ${adminId}`,
       );
 
       return updatedTrade;
-    }, { logger: this.logger });
+    }, { logger: this.logger })) as TradeWithRelations;
 
     await this.enqueueTahesabForWalletTrade(updatedTrade);
     await this.enqueueTahesabForForwardPhysicalSettlement(updatedTrade);
@@ -370,7 +367,7 @@ export class TradesService {
       // entity. Reuse the new TradeType distinctions to avoid mixing SPOT and forward logic.
     }
 
-    return updatedTrade;
+    return TradesMapper.toResponse(updatedTrade);
   }
 
   private resolveAyar(instrumentCode: string): number {
@@ -490,10 +487,10 @@ export class TradesService {
   }
 
   async settleForwardTradeInCash(tradeId: string, dto: SettleForwardCashDto, adminId?: string) {
-    const updated = await runInTx(this.prisma, async (tx) => {
+    const updated = (await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id: tradeId },
-        include: { client: true, instrument: true },
+        select: tradeWithRelationsSelect,
       });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.type !== TradeType.TOMORROW && trade.type !== TradeType.DAY_AFTER) {
@@ -601,21 +598,21 @@ export class TradesService {
           status: TradeStatus.SETTLED,
           approvedById: trade.approvedById ?? adminId,
         },
-        include: { client: true, instrument: true },
+        select: tradeWithRelationsSelect,
       });
 
       return updatedTrade;
-    }, { logger: this.logger });
+    }, { logger: this.logger })) as TradeWithRelations;
 
     await this.enqueueTahesabForForwardCashSettlement(updated);
-    return updated;
+    return TradesMapper.toResponse(updated);
   }
 
   async cancelTrade(tradeId: string, reason?: string) {
-    const updated = await runInTx(this.prisma, async (tx) => {
+    const updated = (await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id: tradeId },
-        include: { client: true, instrument: true },
+        select: tradeWithRelationsSelect,
       });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status === TradeStatus.CANCELLED_BY_ADMIN || trade.status === TradeStatus.CANCELLED_BY_USER) {
@@ -630,21 +627,21 @@ export class TradesService {
       const updatedTrade = await tx.trade.update({
         where: { id: trade.id },
         data: { status: cancelStatus, adminNote: reason ?? trade.adminNote },
-        include: { client: true, instrument: true },
+        select: tradeWithRelationsSelect,
       });
 
       return updatedTrade;
-    }, { logger: this.logger });
+    }, { logger: this.logger })) as TradeWithRelations;
 
     await this.enqueueTahesabDeletionForTrade(tradeId, `spot:cancel:${tradeId}`);
-    return updated;
+    return TradesMapper.toResponse(updated);
   }
 
   async reverseTrade(tradeId: string, adminId?: string, reason?: string) {
-    const reversed = await runInTx(this.prisma, async (tx) => {
+    const reversed = (await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({
         where: { id: tradeId },
-        include: { client: true, instrument: true },
+        select: tradeWithRelationsSelect,
       });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.reversedAt) return trade;
@@ -686,12 +683,12 @@ export class TradesService {
           reversedAt: new Date(),
           adminNote: reason ?? trade.adminNote,
         },
-        include: { client: true, instrument: true },
+        select: tradeWithRelationsSelect,
       });
-    }, { logger: this.logger });
+    }, { logger: this.logger })) as TradeWithRelations;
 
     await this.enqueueTahesabDeletionForTrade(tradeId, `trade:${tradeId}:reverse`);
-    return reversed;
+    return TradesMapper.toResponse(reversed);
   }
 
   private async enqueueTahesabForForwardCashSettlement(trade: TradeWithRelations): Promise<void> {
@@ -744,7 +741,7 @@ export class TradesService {
   }
 
   async reject(id: string, dto: RejectTradeDto, adminId: string) {
-    return runInTx(this.prisma, async (tx) => {
+    const updated = (await runInTx(this.prisma, async (tx) => {
       const trade = await tx.trade.findUnique({ where: { id } });
       if (!trade) throw new NotFoundException('Trade not found');
       if (trade.status !== TradeStatus.PENDING) {
@@ -760,11 +757,14 @@ export class TradesService {
           rejectedAt: new Date(),
           rejectReason: dto.rejectReason,
         },
+        select: tradeWithRelationsSelect,
       });
 
       this.logger.log(`Trade ${trade.id} status ${trade.status} -> ${updated.status} by admin ${adminId}`);
 
       return updated;
-    }, { logger: this.logger });
+    }, { logger: this.logger })) as TradeWithRelations;
+
+    return TradesMapper.toResponse(updated);
   }
 }

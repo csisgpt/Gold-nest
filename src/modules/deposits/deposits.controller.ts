@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { DepositStatus, UserRole } from '@prisma/client';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { CreateDepositDto } from './dto/create-deposit.dto';
 import { DecisionDto } from './dto/decision.dto';
 import { DepositsService } from './deposits.service';
@@ -10,6 +10,7 @@ import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { AdminListDepositsDto } from './dto/admin-list-deposit-dto';
+import { DepositResponseDto } from './dto/response/deposit-response.dto';
 
 @ApiTags('deposits')
 @ApiBearerAuth('access-token')
@@ -39,6 +40,7 @@ export class DepositsController {
   @Get('admin/deposits-all')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: [DepositResponseDto] })
   listAllAdmin() {
     return this.depositsService.findByStatus();
   }
@@ -46,6 +48,7 @@ export class DepositsController {
   @Get('admin/deposits')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: [DepositResponseDto] })
   listAdmin(@Query() query: AdminListDepositsDto) {
     return this.depositsService.findByStatus(query.status);
   }
@@ -54,6 +57,7 @@ export class DepositsController {
   @Post('admin/deposits/:id/approve')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: DepositResponseDto })
   approve(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.depositsService.approve(id, dto, admin.id);
   }
@@ -61,6 +65,7 @@ export class DepositsController {
   @Post('admin/deposits/:id/reject')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: DepositResponseDto })
   reject(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.depositsService.reject(id, dto, admin.id);
   }
