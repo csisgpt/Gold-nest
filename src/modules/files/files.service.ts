@@ -1,10 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
+  InternalServerErrorException,
+  Inject,
   Injectable,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
-import { Inject } from '@nestjs/common';
 import {
   AttachmentEntityType,
   Prisma,
@@ -12,6 +15,8 @@ import {
   UserRole,
 } from '@prisma/client';
 import * as path from 'path';
+import { Request } from 'express';
+import { ConfigService } from '@nestjs/config';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -19,14 +24,23 @@ import {
   StorageObjectStream,
   StorageProvider,
 } from './storage/storage.provider';
+import { ListFilesQueryDto, AdminListFilesQueryDto } from './dto/list-files-query.dto';
+import { DeleteFileQueryDto } from './dto/delete-file-query.dto';
+import { resolveBaseUrl } from '../../common/http/base-url.util';
 
 
 @Injectable()
 export class FilesService {
+  private readonly storageDriver: string;
+  private readonly logger = new Logger(FilesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    this.storageDriver = (this.configService.get<string>('STORAGE_DRIVER') || 'local').toLowerCase();
+  }
 
   async storeFile(
     file: Express.Multer.File,
@@ -53,6 +67,48 @@ export class FilesService {
         label,
       },
     });
+  }
+
+  async listMyFiles(actorId: string, query: ListFilesQueryDto) {
+    const where = this.buildFileWhere(query, { uploadedById: actorId });
+    return this.queryFiles(where, query);
+  }
+
+  async listAdminFiles(query: AdminListFilesQueryDto) {
+    const where = this.buildFileWhere(query, {
+      uploadedById: query.uploadedById,
+      storageKey: query.storageKeyPrefix
+        ? { startsWith: query.storageKeyPrefix }
+        : undefined,
+    });
+
+    return this.queryFiles(where, query);
+  }
+
+  async getFileMetaAuthorized(fileId: string, actor: JwtRequestUser) {
+    const file = await this.getFileAuthorized(fileId, actor);
+    const attachments = file.attachments.map((att) => ({
+      id: att.id,
+      entityType: att.entityType,
+      entityId: att.entityId,
+      createdAt: att.createdAt,
+    }));
+
+    const base = {
+      id: file.id,
+      createdAt: file.createdAt,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+      label: file.label,
+      attachments,
+    };
+
+    if (actor.role === UserRole.ADMIN) {
+      return { ...base, uploadedById: file.uploadedById, storageKey: file.storageKey };
+    }
+
+    return base;
   }
 
   async getFileAuthorized(fileId: string, actor: JwtRequestUser) {
@@ -96,6 +152,136 @@ export class FilesService {
     }
   }
 
+  async getDownloadLinkAuthorized(
+    fileId: string,
+    actor: JwtRequestUser,
+    req: Request,
+  ): Promise<{
+    id: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+    label?: string | null;
+    method: 'presigned' | 'raw';
+    expiresInSeconds?: number;
+    url: string;
+  }> {
+    const file = await this.getFileAuthorized(fileId, actor);
+    const label = file.label ?? null;
+    const expiresIn = Number(
+      this.configService.get<number>('FILE_SIGNED_URL_EXPIRES_SECONDS') ?? 60,
+    );
+
+    if (this.storageDriver === 's3') {
+      if (!this.storage.getPresignedGetUrl) {
+        throw new InternalServerErrorException('S3 presign not supported; check config');
+      }
+      try {
+        const url = await this.storage.getPresignedGetUrl({
+          key: file.storageKey,
+          expiresInSeconds: expiresIn,
+          fileName: file.fileName,
+          contentType: file.mimeType,
+        });
+
+        return {
+          id: file.id,
+          name: file.fileName,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          label,
+          method: 'presigned',
+          expiresInSeconds: expiresIn,
+          url,
+        };
+      } catch (err) {
+        const metadata = (err as any)?.$metadata ?? {};
+        this.logger.error('S3 presign failed', {
+          name: (err as any)?.name,
+          message: (err as any)?.message,
+          statusCode: metadata.httpStatusCode,
+          requestId: metadata.requestId,
+          bucket:
+            this.configService.get<string>('LIARA_BUCKET_NAME') ||
+            this.configService.get<string>('S3_BUCKET'),
+          endpoint:
+            this.configService.get<string>('LIARA_ENDPOINT') ||
+            this.configService.get<string>('S3_ENDPOINT'),
+          key: file.storageKey,
+        });
+
+        const baseMessage = (err as any)?.message || 'check config';
+        const adminMessage = `S3 presign failed: ${(err as any)?.name ?? 'Error'} ${baseMessage}. Check endpoint/bucket/keys.`;
+        throw new InternalServerErrorException(
+          actor.role === UserRole.ADMIN
+            ? adminMessage
+            : 'Download link generation failed',
+        );
+      }
+    }
+
+    const baseUrl = resolveBaseUrl(req, this.configService);
+    return {
+      id: file.id,
+      name: file.fileName,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+      label,
+      method: 'raw',
+      url: `${baseUrl}/files/${file.id}/raw`,
+    };
+  }
+
+  async deleteFileAsUser(fileId: string, actor: JwtRequestUser) {
+    const file = await this.prisma.file.findUnique({
+      where: { id: fileId },
+      include: { _count: { select: { attachments: true } } },
+    });
+
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    if (file.uploadedById !== actor.id) {
+      throw new ForbiddenException('You do not have access to this file');
+    }
+
+    if (file._count.attachments > 0) {
+      throw new ConflictException('File is attached and cannot be deleted');
+    }
+
+    await this.deleteFileAndStorage(file.id, file.storageKey);
+
+    return { id: fileId, deleted: true };
+  }
+
+  async deleteFileAsAdmin(fileId: string, query: DeleteFileQueryDto) {
+    const file = await this.prisma.file.findUnique({
+      where: { id: fileId },
+      include: { _count: { select: { attachments: true } } },
+    });
+
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+
+    if (file._count.attachments > 0 && !query.force) {
+      throw new ConflictException('File is attached and cannot be deleted');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      if (query.force) {
+        await tx.attachment.deleteMany({ where: { fileId } });
+      }
+
+      await tx.file.delete({ where: { id: fileId } });
+    });
+
+    await this.deleteStorageObject(file.storageKey);
+
+    return { id: fileId, deleted: true };
+  }
+
   async createAttachmentsForActor(
     actor: { id: string; role?: UserRole },
     fileIds: string[] | undefined,
@@ -121,6 +307,64 @@ export class FilesService {
     return client.attachment.createMany({
       data: fileIds.map((fileId) => ({ fileId, entityType, entityId })),
     });
+  }
+
+  private async deleteFileAndStorage(fileId: string, storageKey: string) {
+    await this.prisma.file.delete({ where: { id: fileId } });
+    await this.deleteStorageObject(storageKey);
+  }
+
+  private async deleteStorageObject(storageKey: string) {
+    if (!this.storage.deleteObject) return;
+
+    try {
+      await this.storage.deleteObject(storageKey);
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message === 'NOT_FOUND' || err.name === 'NoSuchKey' || err.name === 'NotFound')
+      ) {
+        return;
+      }
+      throw err;
+    }
+  }
+
+  private async queryFiles(where: Prisma.FileWhereInput, query: ListFilesQueryDto) {
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.file.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+      this.prisma.file.count({ where }),
+    ]);
+
+    return { items, total };
+  }
+
+  private buildFileWhere(
+    query: ListFilesQueryDto,
+    overrides: Prisma.FileWhereInput,
+  ): Prisma.FileWhereInput {
+    return {
+      ...overrides,
+      label: query.label
+        ? {
+            contains: query.label,
+            mode: 'insensitive',
+          }
+        : undefined,
+      mimeType: query.mimeType ?? undefined,
+      createdAt:
+        query.createdFrom || query.createdTo
+          ? {
+              gte: query.createdFrom ?? undefined,
+              lte: query.createdTo ?? undefined,
+            }
+          : undefined,
+    };
   }
 
   private async isActorOwnerOfAttachmentEntities(

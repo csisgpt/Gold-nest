@@ -18,9 +18,19 @@ Copy `.env.example` to `.env` and set `DATABASE_URL`, `HOUSE_USER_ID` (default `
   - `LIARA_ENDPOINT` – S3-compatible endpoint URL.
   - `LIARA_BUCKET_NAME` – target bucket name (should be private; access goes through the API for ACL enforcement).
   - `LIARA_ACCESS_KEY` / `LIARA_SECRET_KEY` – credentials for the bucket.
-  - `LIARA_REGION` – Liara region/namespace (default `default`).
-  - `FILE_MAX_SIZE_BYTES` – maximum upload size enforced by Multer (default `5000000`).
-  - `FILE_ALLOWED_MIME` – comma-separated list of allowed MIME types (defaults to `image/jpeg,image/png,application/pdf`).
+- `LIARA_REGION` – Liara region/namespace (default `default`).
+- `FILE_MAX_SIZE_BYTES` – maximum upload size enforced by Multer (default `5000000`).
+- `FILE_ALLOWED_MIME` – comma-separated list of allowed MIME types (defaults to `image/jpeg,image/png,application/pdf`).
+- `FILE_SIGNED_URL_EXPIRES_SECONDS` – expiry for presigned download URLs (default `60`).
+- `PUBLIC_BASE_URL` – optional absolute origin (e.g., `https://api.example.com`) used when constructing raw download URLs.
+- `S3_FORCE_PATH_STYLE` – force path-style access for S3-compatible services (default `true`).
+- `TRUST_PROXY` – set to `true` when running behind a reverse proxy so download URLs honor forwarded protocol/host headers.
+
+## File uploads/downloads
+- Uploads: `POST /files` (multipart form-data: `file` + optional `label`).
+- Download link JSON: `GET /files/:id` returns a short-lived descriptor containing `url`, `method` (`presigned` for S3, `raw` for local), and optional `expiresInSeconds`.
+- Raw binary: `GET /files/:id/raw` streams the file (auth required). Local storage uses this URL directly; S3 setups typically rely on the presigned link returned by `/files/:id`.
+- When using Liara/S3, ensure your `LIARA_ENDPOINT` includes the proper host (with protocol) so presigned links are valid externally, and set `PUBLIC_BASE_URL`/`TRUST_PROXY` appropriately behind reverse proxies.
 
 ## Getting started
 1. Install dependencies: `npm ci`
@@ -33,7 +43,7 @@ Copy `.env.example` to `.env` and set `DATABASE_URL`, `HOUSE_USER_ID` (default `
 - Deposits & Withdrawals with admin approval and wallet debits/credits
 - Trades with WALLET settlement ledger postings (house vs client) and hooks for EXTERNAL/CASH
 - Gold lots with equivalent 750 gram calculation and ledger postings
-- Files & attachments stored on local disk with metadata in Prisma
+- Files & attachments stored via pluggable storage (local disk or S3-compatible)
 
 ## Scripts
 - `npm run start:dev` – run the app via ts-node

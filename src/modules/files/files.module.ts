@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { FilesService } from './files.service';
 import { FilesController } from './files.controller';
+import { AdminFilesController } from './admin-files.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import {
   STORAGE_PROVIDER,
@@ -30,6 +31,9 @@ import { FileUploadInterceptor } from './file-upload.interceptor';
             region: configService.get<string>('LIARA_REGION') || 'default',
             accessKeyId: configService.get<string>('LIARA_ACCESS_KEY'),
             secretAccessKey: configService.get<string>('LIARA_SECRET_KEY'),
+            forcePathStyle:
+              (configService.get<string>('S3_FORCE_PATH_STYLE') ?? 'true').toLowerCase() ===
+              'true',
           });
         }
 
@@ -39,7 +43,7 @@ import { FileUploadInterceptor } from './file-upload.interceptor';
       inject: [ConfigService],
     },
   ],
-  controllers: [FilesController],
+  controllers: [FilesController, AdminFilesController],
   exports: [FilesService],
 })
 export class FilesModule {}

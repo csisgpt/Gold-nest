@@ -90,6 +90,43 @@ function authHeader(user: { id: string; mobile: string; role: UserRole }) {
   return { Authorization: `Bearer ${token}` };
 }
 
+async function createUser(
+  prisma: PrismaService,
+  role: UserRole = UserRole.CLIENT,
+): Promise<{ id: string; mobile: string; role: UserRole }> {
+  const stamp = `${Date.now()}${Math.floor(Math.random() * 10000)}`;
+  return prisma.user.create({
+    data: {
+      fullName: `user-${role}-${stamp}`,
+      mobile: `09${stamp.slice(-9)}`,
+      email: `user-${stamp}@example.com`,
+      password: 'Pass123!@#',
+      role,
+      status: 'ACTIVE',
+    },
+  });
+}
+
+async function uploadTestFile(
+  user: { id: string; mobile: string; role: UserRole },
+  fileName: string,
+  mimeType: string,
+  body: BlobPart,
+): Promise<{ id: string }> {
+  const form = new FormData();
+  form.append('file', new Blob([body], { type: mimeType }), fileName);
+
+  const uploadRes = await fetch(`${baseUrl}/files`, {
+    method: 'POST',
+    headers: authHeader(user),
+    body: form as any,
+  });
+  const uploaded = (await uploadRes.json()) as { id: string };
+  assert.ok(uploadRes.ok, `Upload failed with status ${uploadRes.status}`);
+  assert.ok(uploaded.id);
+  return uploaded;
+}
+
 test('File access is limited to owner/admin and attachments require ownership', async (t) => {
   const app = await bootstrapApp();
   if (!requireApp(app, t)) return;
@@ -118,7 +155,11 @@ test('File access is limited to owner/admin and attachments require ownership', 
   });
 
   const form = new FormData();
-  form.append('file', new Blob(['hello-world'], { type: 'text/plain' }), 'hello.txt');
+  form.append(
+    'file',
+    new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' }),
+    'hello.png',
+  );
 
   const uploadRes = await fetch(`${baseUrl}/files`, {
     method: 'POST',
@@ -136,13 +177,24 @@ test('File access is limited to owner/admin and attachments require ownership', 
   });
   assert.strictEqual(forbiddenView.status, 403);
 
+  const forbiddenRaw = await fetch(`${baseUrl}/files/${uploaded.id}/raw`, {
+    method: 'GET',
+    headers: authHeader(userB),
+  });
+  assert.strictEqual(forbiddenRaw.status, 403);
+
   const allowedView = await fetch(`${baseUrl}/files/${uploaded.id}`, {
     method: 'GET',
     headers: authHeader(userA),
   });
   assert.strictEqual(allowedView.status, 200);
-  const content = await allowedView.text();
-  assert.strictEqual(content, 'hello-world');
+  const download = (await allowedView.json()) as { url: string; method: string };
+  assert.strictEqual(download.method, 'raw');
+
+  const contentRes = await fetch(download.url, { headers: authHeader(userA) });
+  assert.strictEqual(contentRes.status, 200);
+  const contentBuffer = Buffer.from(await contentRes.arrayBuffer());
+  assert.ok(contentBuffer.byteLength > 0);
 
   const depositRes = await fetch(`${baseUrl}/deposits`, {
     method: 'POST',
@@ -782,4 +834,122 @@ test('Trade reverse is idempotent and restores balances', async (t) => {
 
   const updatedTrade = await prisma.trade.findUnique({ where: { id: trade.id } });
   assert.strictEqual(updatedTrade?.status, TradeStatus.CANCELLED_BY_ADMIN);
+});
+
+test('File lifecycle supports download, listing, metadata, and deletion', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma);
+  const uploaded = await uploadTestFile(user, 'image.jpg', 'image/jpeg', new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+
+  const downloadRes = await fetch(`${baseUrl}/files/${uploaded.id}`, {
+    headers: authHeader(user),
+  });
+  assert.strictEqual(downloadRes.status, 200);
+  const downloadPayload = (await downloadRes.json()) as {
+    url: string;
+    method: string;
+  };
+  assert.strictEqual(downloadPayload.method, 'raw');
+
+  const streamRes = await fetch(downloadPayload.url, { headers: authHeader(user) });
+  assert.strictEqual(streamRes.status, 200);
+  assert.strictEqual(streamRes.headers.get('content-type'), 'image/jpeg');
+  const downloadBuffer = Buffer.from(await streamRes.arrayBuffer());
+  assert.ok(downloadBuffer.byteLength > 0);
+
+  const listRes = await fetch(`${baseUrl}/files`, { headers: authHeader(user) });
+  assert.strictEqual(listRes.status, 200);
+  const listBody = (await listRes.json()) as { items: Array<{ id: string }>; meta: { total: number } };
+  assert.ok(listBody.items.some((f) => f.id === uploaded.id));
+  assert.ok(listBody.meta.total >= 1);
+
+  const metaRes = await fetch(`${baseUrl}/files/${uploaded.id}/meta`, { headers: authHeader(user) });
+  assert.strictEqual(metaRes.status, 200);
+  const metaBody = (await metaRes.json()) as { attachments?: unknown[] };
+  assert.ok(Array.isArray(metaBody.attachments));
+  assert.strictEqual(metaBody.attachments?.length, 0);
+
+  const deleteRes = await fetch(`${baseUrl}/files/${uploaded.id}`, {
+    method: 'DELETE',
+    headers: authHeader(user),
+  });
+  assert.strictEqual(deleteRes.status, 200);
+  const deleteBody = (await deleteRes.json()) as { deleted?: boolean };
+  assert.strictEqual(deleteBody.deleted, true);
+
+  const metaAfterDelete = await fetch(`${baseUrl}/files/${uploaded.id}/meta`, { headers: authHeader(user) });
+  assert.strictEqual(metaAfterDelete.status, 404);
+});
+
+test('Attachments endpoint enforces ownership and admin visibility', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const userA = await createUser(prisma);
+  const userB = await createUser(prisma);
+  const admin = await createUser(prisma, UserRole.ADMIN);
+
+  const file = await uploadTestFile(userA, 'receipt.pdf', 'application/pdf', Buffer.from('pdf-body'));
+
+  const depositRes = await fetch(`${baseUrl}/deposits`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(userA) },
+    body: JSON.stringify({ amount: '5000', method: 'bank-transfer', fileIds: [file.id] }),
+  });
+  assert.ok(depositRes.ok, `Deposit failed ${depositRes.status}`);
+  const deposit = (await depositRes.json()) as { id: string };
+  assert.ok(deposit.id);
+
+  const attachmentsRes = await fetch(
+    `${baseUrl}/attachments?entityType=DEPOSIT&entityId=${deposit.id}`,
+    { headers: authHeader(userA) },
+  );
+  assert.strictEqual(attachmentsRes.status, 200);
+  const attachmentsBody = (await attachmentsRes.json()) as { items: Array<{ fileId: string }> };
+  assert.ok(attachmentsBody.items.some((a) => a.fileId === file.id));
+
+  const forbiddenAttachments = await fetch(
+    `${baseUrl}/attachments?entityType=DEPOSIT&entityId=${deposit.id}`,
+    { headers: authHeader(userB) },
+  );
+  assert.strictEqual(forbiddenAttachments.status, 403);
+
+  const adminAttachments = await fetch(
+    `${baseUrl}/admin/attachments?entityType=DEPOSIT&entityId=${deposit.id}`,
+    { headers: authHeader(admin) },
+  );
+  assert.strictEqual(adminAttachments.status, 200);
+  const adminBody = (await adminAttachments.json()) as { items: Array<{ file?: { storageKey?: string } }> };
+  assert.ok(adminBody.items[0]?.file?.storageKey);
+});
+
+test('Admin file listing exposes uploader and storage key', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const owner = await createUser(prisma);
+  const file = await uploadTestFile(
+    owner,
+    'note.pdf',
+    'application/pdf',
+    Buffer.from('hello admin'),
+  );
+
+  const adminListRes = await fetch(`${baseUrl}/admin/files?uploadedById=${owner.id}`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(adminListRes.status, 200);
+  const adminListBody = (await adminListRes.json()) as {
+    items: Array<{ id: string; uploadedById?: string; storageKey?: string }>;
+  };
+  const target = adminListBody.items.find((i) => i.id === file.id);
+  assert.ok(target, 'Uploaded file not found in admin listing');
+  assert.strictEqual(target?.uploadedById, owner.id);
+  assert.ok(target?.storageKey);
 });

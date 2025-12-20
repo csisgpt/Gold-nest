@@ -1,4 +1,4 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -20,7 +20,10 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(new ApiExceptionFilter());
-  app.useGlobalInterceptors(new ApiResponseInterceptor(), new SensitiveFieldsInterceptor());
+  app.useGlobalInterceptors(
+    new ApiResponseInterceptor(app.get(Reflector)),
+    new SensitiveFieldsInterceptor(),
+  );
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Gold Trading API')
@@ -46,6 +49,16 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const corsOrigin = configService.get<string>('CORS_ORIGIN') || 'http://localhost:3000';
+
+  const trustProxy =
+    (configService.get<string>('TRUST_PROXY') ?? 'false').toString().toLowerCase() === 'true';
+  if (trustProxy) {
+    const httpAdapter = app.getHttpAdapter();
+    const instance: any = httpAdapter.getInstance?.();
+    if (instance?.set) {
+      instance.set('trust proxy', 1);
+    }
+  }
 
   app.enableCors({
     origin: corsOrigin,

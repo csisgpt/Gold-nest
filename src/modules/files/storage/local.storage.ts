@@ -29,4 +29,8 @@ export class LocalStorageProvider implements StorageProvider {
     const absolutePath = this.getAbsolutePath(key);
     await fs.rm(absolutePath, { force: true });
   }
+
+  async getPresignedGetUrl(): Promise<string> {
+    throw new Error('PRESIGN_NOT_SUPPORTED');
+  }
 }
