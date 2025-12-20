@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { FilesService } from './files.service';
 import { FilesController } from './files.controller';
+import { AdminFilesController } from './admin-files.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import {
   STORAGE_PROVIDER,
@@ -39,7 +40,7 @@ import { FileUploadInterceptor } from './file-upload.interceptor';
       inject: [ConfigService],
     },
   ],
-  controllers: [FilesController],
+  controllers: [FilesController, AdminFilesController],
   exports: [FilesService],
 })
 export class FilesModule {}

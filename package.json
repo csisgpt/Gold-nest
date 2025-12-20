@@ -14,7 +14,8 @@
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset --force",
     "test": "TS_NODE_TRANSPILE_ONLY=1 node --require ts-node/register --test test/app.e2e.test.ts",
-    "test:ci": "npm run db:reset && npm test"
+    "test:ci": "npm run db:reset && npm test",
+    "test:e2e": "npm test"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

@@ -1,4 +1,4 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -20,7 +20,10 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(new ApiExceptionFilter());
-  app.useGlobalInterceptors(new ApiResponseInterceptor(), new SensitiveFieldsInterceptor());
+  app.useGlobalInterceptors(
+    new ApiResponseInterceptor(app.get(Reflector)),
+    new SensitiveFieldsInterceptor(),
+  );
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Gold Trading API')

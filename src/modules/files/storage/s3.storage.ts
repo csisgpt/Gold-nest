@@ -8,7 +8,7 @@ import {
 import { StorageObjectStream, StorageProvider } from './storage.provider';
 
 export class S3StorageProvider implements StorageProvider {
-  private readonly client: S3Client;
+  private readonly client: any;
 
   constructor(
     private readonly bucket: string,
