@@ -31,6 +31,9 @@ import { FileUploadInterceptor } from './file-upload.interceptor';
             region: configService.get<string>('LIARA_REGION') || 'default',
             accessKeyId: configService.get<string>('LIARA_ACCESS_KEY'),
             secretAccessKey: configService.get<string>('LIARA_SECRET_KEY'),
+            forcePathStyle:
+              (configService.get<string>('S3_FORCE_PATH_STYLE') ?? 'true').toLowerCase() ===
+              'true',
           });
         }
 

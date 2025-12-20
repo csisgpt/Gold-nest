@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  InternalServerErrorException,
   Inject,
   Injectable,
   NotFoundException,
@@ -13,6 +14,8 @@ import {
   UserRole,
 } from '@prisma/client';
 import * as path from 'path';
+import { Request } from 'express';
+import { ConfigService } from '@nestjs/config';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -22,14 +25,20 @@ import {
 } from './storage/storage.provider';
 import { ListFilesQueryDto, AdminListFilesQueryDto } from './dto/list-files-query.dto';
 import { DeleteFileQueryDto } from './dto/delete-file-query.dto';
+import { resolveBaseUrl } from '../../common/http/base-url.util';
 
 
 @Injectable()
 export class FilesService {
+  private readonly storageDriver: string;
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    this.storageDriver = (this.configService.get<string>('STORAGE_DRIVER') || 'local').toLowerCase();
+  }
 
   async storeFile(
     file: Express.Multer.File,
@@ -139,6 +148,65 @@ export class FilesService {
       }
       throw err;
     }
+  }
+
+  async getDownloadLinkAuthorized(
+    fileId: string,
+    actor: JwtRequestUser,
+    req: Request,
+  ): Promise<{
+    id: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+    label?: string | null;
+    method: 'presigned' | 'raw';
+    expiresInSeconds?: number;
+    url: string;
+  }> {
+    const file = await this.getFileAuthorized(fileId, actor);
+    const label = file.label ?? null;
+    const expiresIn = Number(
+      this.configService.get<number>('FILE_SIGNED_URL_EXPIRES_SECONDS') ?? 60,
+    );
+
+    if (this.storageDriver === 's3') {
+      if (!this.storage.getPresignedGetUrl) {
+        throw new InternalServerErrorException('S3 presign not supported; check config');
+      }
+      try {
+        const url = await this.storage.getPresignedGetUrl({
+          key: file.storageKey,
+          expiresInSeconds: expiresIn,
+          fileName: file.fileName,
+          contentType: file.mimeType,
+        });
+
+        return {
+          id: file.id,
+          name: file.fileName,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          label,
+          method: 'presigned',
+          expiresInSeconds: expiresIn,
+          url,
+        };
+      } catch (err) {
+        throw new InternalServerErrorException('S3 presign failed; check config');
+      }
+    }
+
+    const baseUrl = resolveBaseUrl(req, this.configService);
+    return {
+      id: file.id,
+      name: file.fileName,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+      label,
+      method: 'raw',
+      url: `${baseUrl}/files/${file.id}/raw`,
+    };
   }
 
   async deleteFileAsUser(fileId: string, actor: JwtRequestUser) {

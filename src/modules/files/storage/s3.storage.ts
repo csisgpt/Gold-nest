@@ -5,6 +5,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { StorageObjectStream, StorageProvider } from './storage.provider';
 
 export class S3StorageProvider implements StorageProvider {
@@ -17,10 +18,17 @@ export class S3StorageProvider implements StorageProvider {
       region?: string;
       accessKeyId?: string;
       secretAccessKey?: string;
+      forcePathStyle?: boolean;
     },
   ) {
+    const endpoint = options.endpoint
+      ? /^https?:\/\//i.test(options.endpoint)
+        ? options.endpoint
+        : `https://${options.endpoint}`
+      : undefined;
+
     this.client = new S3Client({
-      endpoint: options.endpoint,
+      endpoint,
       region: options.region ?? 'default',
       credentials:
         options.accessKeyId && options.secretAccessKey
@@ -29,7 +37,7 @@ export class S3StorageProvider implements StorageProvider {
               secretAccessKey: options.secretAccessKey,
             }
           : undefined,
-      forcePathStyle: true,
+      forcePathStyle: options.forcePathStyle ?? true,
     });
   }
 
@@ -78,5 +86,23 @@ export class S3StorageProvider implements StorageProvider {
         Key: key,
       }),
     );
+  }
+
+  async getPresignedGetUrl(params: {
+    key: string;
+    expiresInSeconds: number;
+    fileName?: string;
+    contentType?: string;
+  }): Promise<string> {
+    const command = new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: params.key,
+      ResponseContentDisposition: params.fileName
+        ? `attachment; filename="${encodeURIComponent(params.fileName)}"`
+        : undefined,
+      ResponseContentType: params.contentType,
+    });
+
+    return getSignedUrl(this.client, command, { expiresIn: params.expiresInSeconds });
   }
 }

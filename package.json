@@ -33,6 +33,7 @@
     "@nestjs/swagger": "^7.4.2",
     "@nestjs/throttler": "file:vendor/nestjs-throttler",
     "@prisma/client": "^5.19.0",
+    "@aws-sdk/s3-request-presigner": "^3.637.0",
     "axios": "^1.7.7",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",

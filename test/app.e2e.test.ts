@@ -155,7 +155,11 @@ test('File access is limited to owner/admin and attachments require ownership', 
   });
 
   const form = new FormData();
-  form.append('file', new Blob(['hello-world'], { type: 'text/plain' }), 'hello.txt');
+  form.append(
+    'file',
+    new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' }),
+    'hello.png',
+  );
 
   const uploadRes = await fetch(`${baseUrl}/files`, {
     method: 'POST',
@@ -173,13 +177,24 @@ test('File access is limited to owner/admin and attachments require ownership', 
   });
   assert.strictEqual(forbiddenView.status, 403);
 
+  const forbiddenRaw = await fetch(`${baseUrl}/files/${uploaded.id}/raw`, {
+    method: 'GET',
+    headers: authHeader(userB),
+  });
+  assert.strictEqual(forbiddenRaw.status, 403);
+
   const allowedView = await fetch(`${baseUrl}/files/${uploaded.id}`, {
     method: 'GET',
     headers: authHeader(userA),
   });
   assert.strictEqual(allowedView.status, 200);
-  const content = await allowedView.text();
-  assert.strictEqual(content, 'hello-world');
+  const download = (await allowedView.json()) as { url: string; method: string };
+  assert.strictEqual(download.method, 'raw');
+
+  const contentRes = await fetch(download.url, { headers: authHeader(userA) });
+  assert.strictEqual(contentRes.status, 200);
+  const contentBuffer = Buffer.from(await contentRes.arrayBuffer());
+  assert.ok(contentBuffer.byteLength > 0);
 
   const depositRes = await fetch(`${baseUrl}/deposits`, {
     method: 'POST',
@@ -833,8 +848,16 @@ test('File lifecycle supports download, listing, metadata, and deletion', async 
     headers: authHeader(user),
   });
   assert.strictEqual(downloadRes.status, 200);
-  assert.strictEqual(downloadRes.headers.get('content-type'), 'image/jpeg');
-  const downloadBuffer = Buffer.from(await downloadRes.arrayBuffer());
+  const downloadPayload = (await downloadRes.json()) as {
+    url: string;
+    method: string;
+  };
+  assert.strictEqual(downloadPayload.method, 'raw');
+
+  const streamRes = await fetch(downloadPayload.url, { headers: authHeader(user) });
+  assert.strictEqual(streamRes.status, 200);
+  assert.strictEqual(streamRes.headers.get('content-type'), 'image/jpeg');
+  const downloadBuffer = Buffer.from(await streamRes.arrayBuffer());
   assert.ok(downloadBuffer.byteLength > 0);
 
   const listRes = await fetch(`${baseUrl}/files`, { headers: authHeader(user) });
@@ -911,7 +934,12 @@ test('Admin file listing exposes uploader and storage key', async (t) => {
 
   const admin = await createUser(prisma, UserRole.ADMIN);
   const owner = await createUser(prisma);
-  const file = await uploadTestFile(owner, 'note.txt', 'text/plain', Buffer.from('hello admin'));
+  const file = await uploadTestFile(
+    owner,
+    'note.pdf',
+    'application/pdf',
+    Buffer.from('hello admin'),
+  );
 
   const adminListRes = await fetch(`${baseUrl}/admin/files?uploadedById=${owner.id}`, {
     headers: authHeader(admin),

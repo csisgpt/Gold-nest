@@ -18,9 +18,18 @@ Copy `.env.example` to `.env` and set `DATABASE_URL`, `HOUSE_USER_ID` (default `
   - `LIARA_ENDPOINT` – S3-compatible endpoint URL.
   - `LIARA_BUCKET_NAME` – target bucket name (should be private; access goes through the API for ACL enforcement).
   - `LIARA_ACCESS_KEY` / `LIARA_SECRET_KEY` – credentials for the bucket.
-  - `LIARA_REGION` – Liara region/namespace (default `default`).
-  - `FILE_MAX_SIZE_BYTES` – maximum upload size enforced by Multer (default `5000000`).
-  - `FILE_ALLOWED_MIME` – comma-separated list of allowed MIME types (defaults to `image/jpeg,image/png,application/pdf`).
+- `LIARA_REGION` – Liara region/namespace (default `default`).
+- `FILE_MAX_SIZE_BYTES` – maximum upload size enforced by Multer (default `5000000`).
+- `FILE_ALLOWED_MIME` – comma-separated list of allowed MIME types (defaults to `image/jpeg,image/png,application/pdf`).
+- `FILE_SIGNED_URL_EXPIRES_SECONDS` – expiry for presigned download URLs (default `60`).
+- `PUBLIC_BASE_URL` – optional absolute origin (e.g., `https://api.example.com`) used when constructing raw download URLs.
+- `S3_FORCE_PATH_STYLE` – force path-style access for S3-compatible services (default `true`).
+- `TRUST_PROXY` – set to `true` when running behind a reverse proxy so download URLs honor forwarded protocol/host headers.
+
+## File downloads
+- `GET /files/:id` returns a short-lived download descriptor with a `url` and `method` (`presigned` for S3, `raw` for local).
+- `GET /files/:id/raw` streams the binary content (auth required) and is used as the fallback target for local storage or when presigning is unavailable.
+- When using Liara/S3, ensure your `LIARA_ENDPOINT` includes the proper host (with protocol) so presigned links are valid externally.
 
 ## Getting started
 1. Install dependencies: `npm ci`

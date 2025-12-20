@@ -7,16 +7,19 @@ import {
   Query,
   Post,
   Res,
-  StreamableFile,
   UploadedFile,
   UseInterceptors,
   UseGuards,
+  Req,
 } from '@nestjs/common';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import {
   ApiBearerAuth,
   ApiBody,
   ApiConsumes,
+  ApiOkResponse,
+  ApiOperation,
+  ApiProduces,
   ApiTags,
 } from '@nestjs/swagger';
 import { UploadFileDto } from './dto/upload-file.dto';
@@ -76,10 +79,38 @@ export class FilesController {
   }
 
   @Get(':id')
-  @SkipResponseWrap()
-  async serve(
+  @ApiOperation({ summary: 'Get a download link for a file (JSON contract)' })
+  @ApiOkResponse({
+    description: 'Download link payload',
+    schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        mimeType: { type: 'string' },
+        sizeBytes: { type: 'number' },
+        label: { type: 'string', nullable: true },
+        method: { type: 'string', enum: ['presigned', 'raw'] },
+        expiresInSeconds: { type: 'number' },
+        url: { type: 'string' },
+      },
+    },
+  })
+  async getDownloadLink(
     @Param('id') id: string,
-    @Res({ passthrough: true }) res: Response,
+    @CurrentUser() user: JwtRequestUser,
+    @Req() req: Request,
+  ) {
+    return this.filesService.getDownloadLinkAuthorized(id, user, req);
+  }
+
+  @Get(':id/raw')
+  @SkipResponseWrap()
+  @ApiOperation({ summary: 'Raw file download (binary stream)' })
+  @ApiProduces('application/octet-stream')
+  async serveRaw(
+    @Param('id') id: string,
+    @Res() res: Response,
     @CurrentUser() user: JwtRequestUser,
   ) {
     const file = await this.filesService.getFileAuthorized(id, user);
@@ -94,7 +125,21 @@ export class FilesController {
       'Content-Disposition',
       `attachment; filename="${encodeURIComponent(file.fileName)}"`,
     );
-    return new StreamableFile(stream);
+
+    stream.on('error', () => {
+      if (!res.headersSent) {
+        res.status(500);
+      }
+      res.end();
+    });
+
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        stream.destroy();
+      }
+    });
+
+    stream.pipe(res);
   }
 
   @Delete(':id')
