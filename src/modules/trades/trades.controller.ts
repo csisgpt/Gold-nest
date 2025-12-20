@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { TradeStatus, UserRole } from '@prisma/client';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { ApproveTradeDto } from './dto/approve-trade.dto';
@@ -12,6 +12,7 @@ import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { ReverseTradeDto } from './dto/reverse-trade.dto';
+import { TradeResponseDto } from './dto/response/trade-response.dto';
 
 @ApiTags('trades')
 @ApiBearerAuth('access-token')
@@ -47,6 +48,7 @@ export class TradesController {
   @Get('admin/trades')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: [TradeResponseDto] })
   listAdmin(@Query('status') status?: TradeStatus) {
     return this.tradesService.findByStatus(status);
   }
@@ -57,6 +59,7 @@ export class TradesController {
   @Throttle(30, 60)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: TradeResponseDto })
   approve(
     @Param('id') id: string,
     @Body() dto: ApproveTradeDto,
@@ -71,6 +74,7 @@ export class TradesController {
   @Throttle(30, 60)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: TradeResponseDto })
   reject(
     @Param('id') id: string,
     @Body() dto: RejectTradeDto,
@@ -83,6 +87,7 @@ export class TradesController {
   @Throttle(30, 60)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: TradeResponseDto })
   cancel(
     @Param('id') id: string,
     @Body() dto: ReverseTradeDto,
@@ -95,6 +100,7 @@ export class TradesController {
   @Throttle(30, 60)
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: TradeResponseDto })
   reverse(
     @Param('id') id: string,
     @Body() dto: ReverseTradeDto,

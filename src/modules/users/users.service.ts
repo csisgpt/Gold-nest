@@ -16,20 +16,10 @@ import {
   DoEditMoshtariRequestDto,
   DoNewMoshtariRequestDto,
 } from '../tahesab/dto/moshtari.dto';
+import { userSafeSelect } from '../../common/prisma/selects/user.select';
 
 @Injectable()
 export class UsersService {
-  private readonly safeUserSelect: Prisma.UserSelect = {
-    id: true,
-    createdAt: true,
-    updatedAt: true,
-    fullName: true,
-    mobile: true,
-    email: true,
-    role: true,
-    status: true,
-  };
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly tahesabOutbox: TahesabOutboxService,
@@ -39,7 +29,7 @@ export class UsersService {
   async findById(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: this.safeUserSelect,
+      select: userSafeSelect,
     });
     if (!user) {
       throw new NotFoundException('User not found');
@@ -50,7 +40,7 @@ export class UsersService {
   async findByMobile(mobile: string) {
     const user = await this.prisma.user.findUnique({
       where: { mobile },
-      select: this.safeUserSelect,
+      select: userSafeSelect,
     });
     if (!user) {
       throw new NotFoundException('User not found');
@@ -61,7 +51,7 @@ export class UsersService {
   async findAll() {
     return this.prisma.user.findMany({
       orderBy: { createdAt: 'desc' },
-      select: this.safeUserSelect,
+      select: userSafeSelect,
     });
   }
 

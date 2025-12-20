@@ -13,6 +13,7 @@ import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.
 import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { runInTx } from '../../common/db/tx.util';
+import { withdrawalWithUserSelect, WithdrawalWithUser, WithdrawalsMapper } from './withdrawals.mapper';
 
 @Injectable()
 export class WithdrawalsService {
@@ -70,11 +71,14 @@ export class WithdrawalsService {
     });
   }
 
-  findByStatus(status?: WithdrawStatus) {
-    return this.prisma.withdrawRequest.findMany({
+  async findByStatus(status?: WithdrawStatus) {
+    const withdrawals = await this.prisma.withdrawRequest.findMany({
       where: { status },
       orderBy: { createdAt: 'asc' },
+      select: withdrawalWithUserSelect,
     });
+
+    return WithdrawalsMapper.toResponses(withdrawals as WithdrawalWithUser[]);
   }
 
   async approve(id: string, dto: DecisionDto, adminId: string) {
@@ -85,7 +89,7 @@ export class WithdrawalsService {
 
       if (!withdraw) throw new NotFoundException('Withdraw not found');
       if (withdraw.accountTxId) {
-        return tx.withdrawRequest.findUnique({ where: { id }, include: { user: true } });
+        return tx.withdrawRequest.findUnique({ where: { id }, select: withdrawalWithUserSelect });
       }
 
       const statusAllowsRecovery =
@@ -132,17 +136,17 @@ export class WithdrawalsService {
           note: dto.note ?? withdraw.note,
           accountTxId: txResult.txRecord.id,
         },
-        include: { user: true },
+        select: withdrawalWithUserSelect,
       });
     }, { logger: this.logger });
 
     await this.enqueueTahesabCashOutForWithdrawal(updatedWithdrawal);
 
-    return updatedWithdrawal;
+    return WithdrawalsMapper.toResponse(updatedWithdrawal as WithdrawalWithUser);
   }
 
   async reject(id: string, dto: DecisionDto, adminId: string) {
-    return runInTx(this.prisma, async (tx) => {
+    const updated = await runInTx(this.prisma, async (tx) => {
       const withdraw = await tx.withdrawRequest.findUnique({ where: { id } });
       if (!withdraw) throw new NotFoundException('Withdraw not found');
       if (withdraw.status !== WithdrawStatus.PENDING) {
@@ -165,12 +169,17 @@ export class WithdrawalsService {
 
       this.logger.log(`Withdrawal ${id} rejected by ${adminId}`);
 
-      return tx.withdrawRequest.findUnique({ where: { id } });
+      return tx.withdrawRequest.findUnique({ where: { id }, select: withdrawalWithUserSelect });
     }, { logger: this.logger });
+
+    return WithdrawalsMapper.toResponse(updated as WithdrawalWithUser);
   }
 
   private async enqueueTahesabCashOutForWithdrawal(
-    withdrawal: Awaited<ReturnType<typeof this.prisma.withdrawRequest.findUnique>> & {
+    withdrawal: Pick<
+      WithdrawRequest,
+      'status' | 'iban' | 'cardNumber' | 'bankName' | 'amount' | 'processedAt' | 'updatedAt' | 'createdAt' | 'id'
+    > & {
       user?: { tahesabCustomerCode?: string | null } | null;
     },
   ): Promise<void> {
@@ -216,7 +225,7 @@ export class WithdrawalsService {
 
   async cancelWithdrawal(withdrawalId: string, reason?: string) {
     const updated = await runInTx(this.prisma, async (tx) => {
-      const withdrawal = await tx.withdrawRequest.findUnique({ where: { id: withdrawalId }, include: { user: true } });
+      const withdrawal = await tx.withdrawRequest.findUnique({ where: { id: withdrawalId }, select: withdrawalWithUserSelect });
       if (!withdrawal) throw new NotFoundException('Withdraw not found');
 
       if (withdrawal.status === WithdrawStatus.CANCELLED || withdrawal.status === WithdrawStatus.REVERSED) {
@@ -227,7 +236,7 @@ export class WithdrawalsService {
         return tx.withdrawRequest.update({
           where: { id: withdrawal.id },
           data: { status: WithdrawStatus.CANCELLED, note: reason ?? withdrawal.note },
-          include: { user: true },
+          select: withdrawalWithUserSelect,
         });
       }
 
@@ -252,7 +261,7 @@ export class WithdrawalsService {
         return tx.withdrawRequest.update({
           where: { id: withdrawal.id },
           data: { status: WithdrawStatus.REVERSED, note: reason ?? withdrawal.note },
-          include: { user: true },
+          select: withdrawalWithUserSelect,
         });
       }
 
@@ -260,7 +269,7 @@ export class WithdrawalsService {
     }, { logger: this.logger });
 
     await this.enqueueTahesabDeletionForWithdrawal(updated.id);
-    return updated;
+    return WithdrawalsMapper.toResponse(updated as WithdrawalWithUser);
   }
 
   private async enqueueTahesabDeletionForWithdrawal(withdrawalId: string): Promise<void> {
