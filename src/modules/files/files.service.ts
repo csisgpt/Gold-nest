@@ -152,7 +152,7 @@ export class FilesService {
     }
   }
 
-  async getDownloadLinkAuthorized(
+  async getFileLinksAuthorized(
     fileId: string,
     actor: JwtRequestUser,
     req: Request,
@@ -164,7 +164,9 @@ export class FilesService {
     label?: string | null;
     method: 'presigned' | 'raw';
     expiresInSeconds?: number;
-    url: string;
+    previewUrl: string;
+    downloadUrl: string;
+    url?: string;
   }> {
     const file = await this.getFileAuthorized(fileId, actor);
     const label = file.label ?? null;
@@ -177,11 +179,19 @@ export class FilesService {
         throw new InternalServerErrorException('S3 presign not supported; check config');
       }
       try {
-        const url = await this.storage.getPresignedGetUrl({
+        const previewUrl = await this.storage.getPresignedGetUrl({
           key: file.storageKey,
           expiresInSeconds: expiresIn,
           fileName: file.fileName,
           contentType: file.mimeType,
+          disposition: 'inline',
+        });
+        const downloadUrl = await this.storage.getPresignedGetUrl({
+          key: file.storageKey,
+          expiresInSeconds: expiresIn,
+          fileName: file.fileName,
+          contentType: file.mimeType,
+          disposition: 'attachment',
         });
 
         return {
@@ -192,7 +202,9 @@ export class FilesService {
           label,
           method: 'presigned',
           expiresInSeconds: expiresIn,
-          url,
+          previewUrl,
+          downloadUrl,
+          url: downloadUrl,
         };
       } catch (err) {
         const metadata = (err as any)?.$metadata ?? {};
@@ -221,6 +233,9 @@ export class FilesService {
     }
 
     const baseUrl = resolveBaseUrl(req, this.configService);
+    const previewUrl = `${baseUrl}/files/${file.id}/raw?disposition=inline`;
+    const downloadUrl = `${baseUrl}/files/${file.id}/raw?disposition=attachment`;
+
     return {
       id: file.id,
       name: file.fileName,
@@ -228,7 +243,9 @@ export class FilesService {
       sizeBytes: file.sizeBytes,
       label,
       method: 'raw',
-      url: `${baseUrl}/files/${file.id}/raw`,
+      previewUrl,
+      downloadUrl,
+      url: downloadUrl,
     };
   }
 

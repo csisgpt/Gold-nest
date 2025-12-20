@@ -19,8 +19,14 @@ export class FileDownloadLinkDto {
   @ApiProperty({ enum: ['presigned', 'raw'] })
   method: 'presigned' | 'raw';
 
-  @ApiProperty()
-  url: string;
+  @ApiProperty({ description: 'Inline preview URL' })
+  previewUrl: string;
+
+  @ApiProperty({ description: 'Attachment download URL' })
+  downloadUrl: string;
+
+  @ApiPropertyOptional({ description: 'Deprecated alias for downloadUrl' })
+  url?: string;
 
   @ApiPropertyOptional({ description: 'Seconds until expiration for presigned URLs' })
   expiresInSeconds?: number;
