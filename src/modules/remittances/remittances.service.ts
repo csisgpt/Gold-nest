@@ -33,6 +33,8 @@ import { TahesabRemittancesService } from '../tahesab/tahesab-remittances.servic
 import { runInTx } from '../../common/db/tx.util';
 import { userTahesabSelect } from '../../common/prisma/selects/user.select';
 
+type TahesabUser = Pick<User, 'id' | 'fullName' | 'mobile' | 'tahesabCustomerCode'>;
+
 type RemittanceWithListRelations = Remittance & {
   instrument: Pick<Instrument, 'code'>;
   toUser: Pick<User, 'mobile'>;
@@ -45,6 +47,31 @@ type RemittanceGroupWithLegs = RemittanceGroup & {
     toUser: Pick<User, 'mobile'>;
     group?: Pick<RemittanceGroup, 'id' | 'kind' | 'status' | 'createdByUserId'> | null;
   })[];
+};
+
+type RemittanceWithDetails = RemittanceWithListRelations & {
+  fromUser: Pick<User, 'mobile'>;
+  settlementsAsLeg: {
+    id: string;
+    amount: Prisma.Decimal | Decimal;
+    note: string | null;
+    createdAt: Date;
+    sourceRemittance: RemittanceWithListRelations & {
+      fromUser: Pick<User, 'mobile'>;
+      toUser: Pick<User, 'mobile'>;
+    };
+  }[];
+  settlementsAsSource: {
+    id: string;
+    amount: Prisma.Decimal | Decimal;
+    note: string | null;
+    createdAt: Date;
+    leg: RemittanceWithListRelations & {
+      fromUser: Pick<User, 'mobile'>;
+      toUser: Pick<User, 'mobile'>;
+      group?: Pick<RemittanceGroup, 'id' | 'kind' | 'status'> | null;
+    };
+  }[];
 };
 
 type RemittanceLegForTahesab = Remittance & {
@@ -234,17 +261,17 @@ export class RemittancesService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return groups.map((group) => this.mapGroupToDto(group));
+    return (groups as unknown as RemittanceGroupWithLegs[]).map((group) => this.mapGroupToDto(group));
   }
 
   async findOneWithSettlementsForUser(
     remittanceId: string,
     userId: string,
   ): Promise<RemittanceDetailsResponseDto> {
-    const remittance = await this.prisma.remittance.findUnique({
+    const remittance = (await this.prisma.remittance.findUnique({
       where: { id: remittanceId },
       select: this.remittanceDetailsSelect,
-    });
+    })) as unknown as RemittanceWithDetails | null;
 
     if (!remittance) {
       throw new NotFoundException('Remittance not found');
@@ -454,7 +481,7 @@ export class RemittancesService {
       .map((l) => l.onBehalfOfMobile)
       .filter((m): m is string => Boolean(m));
     const uniqueOnBehalfMobiles = Array.from(new Set(onBehalfMobiles));
-    let onBehalfUsersByMobile = new Map<string, User>();
+    let onBehalfUsersByMobile = new Map<string, TahesabUser>();
     if (uniqueOnBehalfMobiles.length) {
       const onBehalfUsers = await this.prisma.user.findMany({
         where: { mobile: { in: uniqueOnBehalfMobiles } },
@@ -726,6 +753,8 @@ export class RemittancesService {
           note: true,
           createdAt: true,
           status: true,
+          fromAccountTxId: true,
+          toAccountTxId: true,
           channel: true,
           iban: true,
           cardLast4: true,
