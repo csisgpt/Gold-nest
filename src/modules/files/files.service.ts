@@ -7,6 +7,7 @@ import {
 import { Inject } from '@nestjs/common';
 import {
   AttachmentEntityType,
+  Prisma,
   PrismaClient,
   UserRole,
 } from '@prisma/client';
@@ -100,7 +101,7 @@ export class FilesService {
     fileIds: string[] | undefined,
     entityType: AttachmentEntityType,
     entityId: string,
-    tx?: PrismaClient,
+    tx?: PrismaClient | Prisma.TransactionClient,
   ) {
     if (!fileIds || fileIds.length === 0) return [];
     const client = tx ?? this.prisma;

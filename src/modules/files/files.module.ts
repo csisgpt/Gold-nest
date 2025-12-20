@@ -7,11 +7,13 @@ import {
   STORAGE_PROVIDER,
 } from './storage/storage.provider';
 import { LocalStorageProvider } from './storage/local.storage';
+import { FileUploadInterceptor } from './file-upload.interceptor';
   
 @Module({
   imports: [PrismaModule, ConfigModule],
   providers: [
     FilesService,
+    FileUploadInterceptor,
     {
       provide: STORAGE_PROVIDER,
       useFactory: async (configService: ConfigService) => {

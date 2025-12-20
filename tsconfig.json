@@ -15,7 +15,7 @@
     "strict": false,
     "skipLibCheck": true,
     "moduleResolution": "node",
-    "types": ["node"],
+    "types": ["node", "express", "multer"],
     "paths": {
       "*": ["node_modules/*"],
       "src/*": ["src/*"]

@@ -9,7 +9,7 @@ export class LocalStorageProvider implements StorageProvider {
     return path.join(this.uploadRoot, key);
   }
 
-  async putObject(key: string, body: Buffer): Promise<void> {
+  async putObject(key: string, body: Buffer, _contentType: string): Promise<void> {
     const absolutePath = this.getAbsolutePath(key);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, body);
