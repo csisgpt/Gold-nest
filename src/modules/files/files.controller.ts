@@ -17,6 +17,7 @@ import {
   ApiBearerAuth,
   ApiBody,
   ApiConsumes,
+  ApiExtraModels,
   ApiOkResponse,
   ApiOperation,
   ApiProduces,
@@ -32,11 +33,13 @@ import { FileUploadInterceptor } from './file-upload.interceptor';
 import { SkipResponseWrap } from '../../common/decorators/skip-wrap.decorator';
 import { ListFilesQueryDto } from './dto/list-files-query.dto';
 import { UserRole } from '@prisma/client';
+import { FileDownloadLinkDto } from './dto/file-download-link.dto';
 
 @ApiTags('files')
 @ApiBearerAuth('access-token')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('files')
+@ApiExtraModels(FileDownloadLinkDto)
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
 
@@ -82,17 +85,36 @@ export class FilesController {
   @ApiOperation({ summary: 'Get a download link for a file (JSON contract)' })
   @ApiOkResponse({
     description: 'Download link payload',
-    schema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string' },
-        name: { type: 'string' },
-        mimeType: { type: 'string' },
-        sizeBytes: { type: 'number' },
-        label: { type: 'string', nullable: true },
-        method: { type: 'string', enum: ['presigned', 'raw'] },
-        expiresInSeconds: { type: 'number' },
-        url: { type: 'string' },
+    type: FileDownloadLinkDto,
+    content: {
+      'application/json': {
+        examples: {
+          raw: {
+            summary: 'Raw local download',
+            value: {
+              id: 'file-id',
+              name: 'document.pdf',
+              mimeType: 'application/pdf',
+              sizeBytes: 1024,
+              label: 'Invoice',
+              method: 'raw',
+              url: 'https://api.example.com/files/file-id/raw',
+            },
+          },
+          presigned: {
+            summary: 'S3 presigned URL',
+            value: {
+              id: 'file-id',
+              name: 'photo.jpg',
+              mimeType: 'image/jpeg',
+              sizeBytes: 2048,
+              label: null,
+              method: 'presigned',
+              expiresInSeconds: 60,
+              url: 'https://storage.example.com/presigned-url',
+            },
+          },
+        },
       },
     },
   })

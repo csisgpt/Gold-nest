@@ -9,7 +9,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { StorageObjectStream, StorageProvider } from './storage.provider';
 
 export class S3StorageProvider implements StorageProvider {
-  private readonly client: any;
+  private readonly client: S3Client;
 
   constructor(
     private readonly bucket: string,

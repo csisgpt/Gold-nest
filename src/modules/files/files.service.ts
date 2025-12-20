@@ -6,6 +6,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import {
   AttachmentEntityType,
@@ -31,6 +32,7 @@ import { resolveBaseUrl } from '../../common/http/base-url.util';
 @Injectable()
 export class FilesService {
   private readonly storageDriver: string;
+  private readonly logger = new Logger(FilesService.name);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -193,7 +195,28 @@ export class FilesService {
           url,
         };
       } catch (err) {
-        throw new InternalServerErrorException('S3 presign failed; check config');
+        const metadata = (err as any)?.$metadata ?? {};
+        this.logger.error('S3 presign failed', {
+          name: (err as any)?.name,
+          message: (err as any)?.message,
+          statusCode: metadata.httpStatusCode,
+          requestId: metadata.requestId,
+          bucket:
+            this.configService.get<string>('LIARA_BUCKET_NAME') ||
+            this.configService.get<string>('S3_BUCKET'),
+          endpoint:
+            this.configService.get<string>('LIARA_ENDPOINT') ||
+            this.configService.get<string>('S3_ENDPOINT'),
+          key: file.storageKey,
+        });
+
+        const baseMessage = (err as any)?.message || 'check config';
+        const adminMessage = `S3 presign failed: ${(err as any)?.name ?? 'Error'} ${baseMessage}. Check endpoint/bucket/keys.`;
+        throw new InternalServerErrorException(
+          actor.role === UserRole.ADMIN
+            ? adminMessage
+            : 'Download link generation failed',
+        );
       }
     }
 
