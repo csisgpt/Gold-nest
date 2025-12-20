@@ -23,6 +23,7 @@ import {
   ApiProduces,
   ApiTags,
 } from '@nestjs/swagger';
+import { Response } from 'express';
 import { UploadFileDto } from './dto/upload-file.dto';
 import { FilesService } from './files.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -41,7 +42,7 @@ import { FileDownloadLinkDto } from './dto/file-download-link.dto';
 @Controller('files')
 @ApiExtraModels(FileDownloadLinkDto)
 export class FilesController {
-  constructor(private readonly filesService: FilesService) {}
+  constructor(private readonly filesService: FilesService) { }
 
   @Get()
   async listMyFiles(@Query() query: ListFilesQueryDto, @CurrentUser() user: JwtRequestUser) {

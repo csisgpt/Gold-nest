@@ -33,24 +33,36 @@ export class S3StorageProvider implements StorageProvider {
       credentials:
         options.accessKeyId && options.secretAccessKey
           ? {
-              accessKeyId: options.accessKeyId,
-              secretAccessKey: options.secretAccessKey,
-            }
+            accessKeyId: options.accessKeyId,
+            secretAccessKey: options.secretAccessKey,
+          }
           : undefined,
-      forcePathStyle: options.forcePathStyle ?? true,
     });
   }
 
   async putObject(key: string, body: Buffer, contentType: string): Promise<void> {
-    await this.client.send(
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Body: body,
-        ContentType: contentType,
-      }),
-    );
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        }),
+      );
+    } catch (e: any) {
+      console.error('[S3 PUT ERROR]', {
+        name: e?.name,
+        message: e?.message,
+        code: e?.Code,
+        status: e?.$metadata?.httpStatusCode,
+        requestId: e?.$metadata?.requestId,
+        cfId: e?.$metadata?.cfId,
+      });
+      throw e; // مهم: حتماً throw کن
+    }
   }
+
 
   async getObjectStream(key: string): Promise<StorageObjectStream> {
     const result = await this.client.send(
