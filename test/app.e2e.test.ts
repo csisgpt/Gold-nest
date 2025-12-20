@@ -188,10 +188,23 @@ test('File access is limited to owner/admin and attachments require ownership', 
     headers: authHeader(userA),
   });
   assert.strictEqual(allowedView.status, 200);
-  const download = (await allowedView.json()) as { url: string; method: string };
+  const download = (await allowedView.json()) as {
+    previewUrl: string;
+    downloadUrl: string;
+    url?: string;
+    method: string;
+  };
   assert.strictEqual(download.method, 'raw');
+  assert.ok(download.previewUrl.includes('disposition=inline'));
+  assert.ok(download.downloadUrl.includes('disposition=attachment'));
+  assert.strictEqual(download.url, download.downloadUrl);
 
-  const contentRes = await fetch(download.url, { headers: authHeader(userA) });
+  const previewRes = await fetch(download.previewUrl, { headers: authHeader(userA) });
+  assert.strictEqual(previewRes.status, 200);
+  const previewBuffer = Buffer.from(await previewRes.arrayBuffer());
+  assert.ok(previewBuffer.byteLength > 0);
+
+  const contentRes = await fetch(download.downloadUrl, { headers: authHeader(userA) });
   assert.strictEqual(contentRes.status, 200);
   const contentBuffer = Buffer.from(await contentRes.arrayBuffer());
   assert.ok(contentBuffer.byteLength > 0);

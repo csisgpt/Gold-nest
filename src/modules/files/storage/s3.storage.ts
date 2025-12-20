@@ -105,13 +105,15 @@ export class S3StorageProvider implements StorageProvider {
     expiresInSeconds: number;
     fileName?: string;
     contentType?: string;
+    disposition?: 'inline' | 'attachment';
   }): Promise<string> {
+    const disposition = params.disposition ?? 'attachment';
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: params.key,
       ResponseContentDisposition: params.fileName
-        ? `attachment; filename="${encodeURIComponent(params.fileName)}"`
-        : undefined,
+        ? `${disposition}; filename="${encodeURIComponent(params.fileName)}"`
+        : disposition,
       ResponseContentType: params.contentType,
     });
 

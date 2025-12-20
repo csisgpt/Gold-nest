@@ -23,7 +23,6 @@ import {
   ApiProduces,
   ApiTags,
 } from '@nestjs/swagger';
-import { Response } from 'express';
 import { UploadFileDto } from './dto/upload-file.dto';
 import { FilesService } from './files.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -42,7 +41,7 @@ import { FileDownloadLinkDto } from './dto/file-download-link.dto';
 @Controller('files')
 @ApiExtraModels(FileDownloadLinkDto)
 export class FilesController {
-  constructor(private readonly filesService: FilesService) { }
+  constructor(private readonly filesService: FilesService) {}
 
   @Get()
   async listMyFiles(@Query() query: ListFilesQueryDto, @CurrentUser() user: JwtRequestUser) {
@@ -99,7 +98,11 @@ export class FilesController {
               sizeBytes: 1024,
               label: 'Invoice',
               method: 'raw',
-              url: 'https://api.example.com/files/file-id/raw',
+              previewUrl:
+                'https://api.example.com/files/file-id/raw?disposition=inline',
+              downloadUrl:
+                'https://api.example.com/files/file-id/raw?disposition=attachment',
+              url: 'https://api.example.com/files/file-id/raw?disposition=attachment',
             },
           },
           presigned: {
@@ -112,19 +115,21 @@ export class FilesController {
               label: null,
               method: 'presigned',
               expiresInSeconds: 60,
-              url: 'https://storage.example.com/presigned-url',
+              previewUrl: 'https://storage.example.com/presigned-inline-url',
+              downloadUrl: 'https://storage.example.com/presigned-attachment-url',
+              url: 'https://storage.example.com/presigned-attachment-url',
             },
           },
         },
       },
     },
   })
-  async getDownloadLink(
+  async getFileLinks(
     @Param('id') id: string,
     @CurrentUser() user: JwtRequestUser,
     @Req() req: Request,
   ) {
-    return this.filesService.getDownloadLinkAuthorized(id, user, req);
+    return this.filesService.getFileLinksAuthorized(id, user, req);
   }
 
   @Get(':id/raw')
@@ -135,6 +140,7 @@ export class FilesController {
     @Param('id') id: string,
     @Res() res: Response,
     @CurrentUser() user: JwtRequestUser,
+    @Query('disposition') disposition?: 'inline' | 'attachment',
   ) {
     const file = await this.filesService.getFileAuthorized(id, user);
     const { stream, contentLength } = await this.filesService.getFileStream(
@@ -144,9 +150,13 @@ export class FilesController {
     if (contentLength !== undefined) {
       res.setHeader('Content-Length', contentLength.toString());
     }
+    const resolvedDisposition =
+      disposition === 'inline' || disposition === 'attachment'
+        ? disposition
+        : 'attachment';
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="${encodeURIComponent(file.fileName)}"`,
+      `${resolvedDisposition}; filename="${encodeURIComponent(file.fileName)}"`,
     );
 
     stream.on('error', () => {

@@ -14,6 +14,7 @@ export interface StorageProvider {
     expiresInSeconds: number;
     fileName?: string;
     contentType?: string;
+    disposition?: 'inline' | 'attachment';
   }): Promise<string>;
 }
 
