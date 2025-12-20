@@ -10,6 +10,18 @@ Initial NestJS backend skeleton for an Iranian gold/abshodeh trading platform wi
 ## Environment
 Copy `.env.example` to `.env` and set `DATABASE_URL`, `HOUSE_USER_ID` (default `house-system-user`), and optional `UPLOAD_ROOT` (defaults to `uploads`).
 
+## File storage (Liara Object Storage / S3)
+- Local disk storage is intended for development; production deployments should use an S3-compatible object store such as Liara Object Storage.
+- Required environment variables:
+  - `STORAGE_DRIVER` – `local` for disk or `s3` for Liara/Object Storage.
+  - `UPLOAD_ROOT` – local disk folder for the `local` driver (ignored for S3).
+  - `LIARA_ENDPOINT` – S3-compatible endpoint URL.
+  - `LIARA_BUCKET_NAME` – target bucket name (should be private; access goes through the API for ACL enforcement).
+  - `LIARA_ACCESS_KEY` / `LIARA_SECRET_KEY` – credentials for the bucket.
+  - `LIARA_REGION` – Liara region/namespace (default `default`).
+  - `FILE_MAX_SIZE_BYTES` – maximum upload size enforced by Multer (default `5000000`).
+  - `FILE_ALLOWED_MIME` – comma-separated list of allowed MIME types (defaults to `image/jpeg,image/png,application/pdf`).
+
 ## Getting started
 1. Install dependencies: `npm ci`
 2. Apply migrations on a fresh database: `npx prisma migrate reset --force`
