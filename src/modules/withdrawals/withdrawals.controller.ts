@@ -21,7 +21,7 @@ export class WithdrawalsController {
   @Post('withdrawals')
   @UseGuards(JwtAuthGuard)
   create(@Body() dto: CreateWithdrawalDto, @CurrentUser() user: JwtRequestUser) {
-    return this.withdrawalsService.createForUser(user.id, dto);
+    return this.withdrawalsService.createForUser(user, dto);
   }
 
   @Get('withdrawals/my/:userId')

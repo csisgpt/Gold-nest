@@ -6,6 +6,8 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CreateGoldLotDto } from './dto/create-gold-lot.dto';
 import { GoldService } from './gold.service';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 
 @ApiTags('gold')
 @ApiBearerAuth('access-token')
@@ -16,8 +18,8 @@ export class GoldController {
 
   @Post('gold/lots')
   @Roles(UserRole.ADMIN)
-  create(@Body() dto: CreateGoldLotDto) {
-    return this.goldService.createLot(dto);
+  create(@Body() dto: CreateGoldLotDto, @CurrentUser() admin: JwtRequestUser) {
+    return this.goldService.createLot(dto, admin);
   }
 
   @Get('gold/lots/user/:userId')

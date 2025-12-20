@@ -32,6 +32,7 @@ import { GoldBuySellDto, SimpleVoucherDto } from '../tahesab/tahesab-documents.s
 import { SettleForwardCashDto } from './dto/settle-forward-cash.dto';
 import { runInTx } from '../../common/db/tx.util';
 import { TradesMapper, TradeWithRelations, tradeWithRelationsSelect } from './trades.mapper';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 
 @Injectable()
 export class TradesService {
@@ -81,7 +82,7 @@ export class TradesService {
     }
   }
 
-  async createForUser(userId: string, dto: CreateTradeDto) {
+  async createForUser(user: JwtRequestUser, dto: CreateTradeDto) {
     const instrument = await this.instrumentsService.findByCode(dto.instrumentCode);
     const quantity = new Decimal(dto.quantity);
     const pricePerUnit = await this.resolvePricePerUnit(dto, instrument);
@@ -98,7 +99,7 @@ export class TradesService {
     if (dto.settlementMethod === SettlementMethod.WALLET && dto.side === TradeSide.BUY) {
       // Wallet funded buys require sufficient IRR capacity
       const irrAccount = await this.accountsService.getOrCreateAccount(
-        userId,
+        user.id,
         IRR_INSTRUMENT_CODE,
       );
       const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
@@ -109,7 +110,7 @@ export class TradesService {
 
     if (dto.settlementMethod === SettlementMethod.WALLET && dto.side === TradeSide.SELL) {
       const assetAccount = await this.accountsService.getOrCreateAccount(
-        userId,
+        user.id,
         instrument.code,
       );
 
@@ -124,7 +125,7 @@ export class TradesService {
     const trade = await runInTx(this.prisma, async (tx) => {
       const record = await tx.trade.create({
         data: {
-          clientId: userId,
+          clientId: user.id,
           instrumentId: instrument.id,
           side: dto.side,
           settlementMethod: dto.settlementMethod,
@@ -136,7 +137,8 @@ export class TradesService {
         },
       });
 
-      await this.filesService.createAttachments(
+      await this.filesService.createAttachmentsForActor(
+        { id: user.id, role: user.role },
         dto.fileIds,
         AttachmentEntityType.TRADE,
         record.id,

@@ -14,6 +14,7 @@ import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { runInTx } from '../../common/db/tx.util';
 import { withdrawalWithUserSelect, WithdrawalWithUser, WithdrawalsMapper } from './withdrawals.mapper';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 
 @Injectable()
 export class WithdrawalsService {
@@ -27,11 +28,11 @@ export class WithdrawalsService {
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
   ) {}
 
-  async createForUser(userId: string, dto: CreateWithdrawalDto) {
+  async createForUser(user: JwtRequestUser, dto: CreateWithdrawalDto) {
     // Check usable capacity before creating request to give fast feedback
     const amountDecimal = new Decimal(dto.amount);
     const account = await this.accountsService.getOrCreateAccount(
-      userId,
+      user.id,
       IRR_INSTRUMENT_CODE,
     );
     const balance = new Decimal(account.balance);
@@ -44,7 +45,7 @@ export class WithdrawalsService {
     return runInTx(this.prisma, async (tx) => {
       const withdraw = await tx.withdrawRequest.create({
         data: {
-          userId,
+          userId: user.id,
           amount: amountDecimal,
           bankName: dto.bankName,
           iban: dto.iban,
@@ -53,7 +54,8 @@ export class WithdrawalsService {
         },
       });
 
-      await this.filesService.createAttachments(
+      await this.filesService.createAttachmentsForActor(
+        { id: user.id, role: user.role },
         dto.fileIds,
         AttachmentEntityType.WITHDRAW,
         withdraw.id,

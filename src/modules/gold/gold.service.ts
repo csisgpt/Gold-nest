@@ -8,6 +8,7 @@ import { GOLD_750_INSTRUMENT_CODE, HOUSE_USER_ID } from '../accounts/constants';
 import { CreateGoldLotDto } from './dto/create-gold-lot.dto';
 import { InstrumentsService } from '../instruments/instruments.service';
 import { runInTx } from '../../common/db/tx.util';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 
 @Injectable()
 export class GoldService {
@@ -18,7 +19,7 @@ export class GoldService {
     private readonly instrumentsService: InstrumentsService,
   ) {}
 
-  async createLot(dto: CreateGoldLotDto) {
+  async createLot(dto: CreateGoldLotDto, actor: JwtRequestUser) {
     const grossWeight = new Decimal(dto.grossWeight);
     const equivGram750 = grossWeight.mul(dto.karat).div(1000).div(0.75);
 
@@ -37,7 +38,8 @@ export class GoldService {
         },
       });
 
-      await this.filesService.createAttachments(
+      await this.filesService.createAttachmentsForActor(
+        { id: actor.id, role: actor.role },
         dto.fileIds,
         AttachmentEntityType.GOLD_LOT,
         lot.id,
