@@ -1,5 +1,14 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { AccountTxType, AttachmentEntityType, TxRefType, WithdrawRequest, WithdrawStatus } from '@prisma/client';
+import {
+  AccountTxType,
+  AttachmentEntityType,
+  PolicyAction,
+  PolicyMetric,
+  PolicyPeriod,
+  TxRefType,
+  WithdrawRequest,
+  WithdrawStatus,
+} from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountsService } from '../accounts/accounts.service';
@@ -23,6 +32,7 @@ import {
   adminWithdrawalAttachmentWhere,
 } from './withdrawals.admin.mapper';
 import { AdminWithdrawalDetailDto } from './dto/response/admin-withdrawal-detail.dto';
+import { LimitsService } from '../policy/limits.service';
 
 @Injectable()
 export class WithdrawalsService {
@@ -31,46 +41,103 @@ export class WithdrawalsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
+    private readonly limitsService: LimitsService,
     private readonly filesService: FilesService,
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
     private readonly paginationService: PaginationService,
   ) {}
 
-  async createForUser(user: JwtRequestUser, dto: CreateWithdrawalDto) {
-    // Check usable capacity before creating request to give fast feedback
+  async createForUser(user: JwtRequestUser, dto: CreateWithdrawalDto, idempotencyKey?: string) {
     const amountDecimal = new Decimal(dto.amount);
-    const account = await this.accountsService.getOrCreateAccount(
-      user.id,
-      IRR_INSTRUMENT_CODE,
-    );
-    const usable = this.accountsService.getUsableCapacity(account);
-    if (usable.lt(amountDecimal)) {
-      throw new BadRequestException('Insufficient capacity for withdrawal');
+    if (amountDecimal.lte(0)) {
+      throw new BadRequestException('Withdrawal amount must be positive');
     }
 
-    return runInTx(this.prisma, async (tx) => {
-      const withdraw = await tx.withdrawRequest.create({
-        data: {
+    return runInTx(
+      this.prisma,
+      async (tx) => {
+        const account = await this.accountsService.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE, tx);
+
+        if (idempotencyKey) {
+          const existing = await tx.withdrawRequest.findFirst({
+            where: { userId: user.id, idempotencyKey },
+            select: withdrawalWithUserSelect,
+          });
+          if (existing) {
+            this.logger.debug(`Reusing idempotent withdrawal request ${existing.id} for user ${user.id}`);
+            return existing as WithdrawalWithUser;
+          }
+        }
+
+        const usable = this.accountsService.getUsableCapacity(account);
+        if (usable.lt(amountDecimal)) {
+          throw new BadRequestException('Insufficient capacity for withdrawal');
+        }
+
+        const withdraw = await tx.withdrawRequest.create({
+          data: {
+            userId: user.id,
+            amount: amountDecimal,
+            bankName: dto.bankName,
+            iban: dto.iban,
+            cardNumber: dto.cardNumber,
+            note: dto.note,
+            idempotencyKey,
+          },
+        });
+
+        await this.limitsService.reserve(
+          {
+            userId: user.id,
+            action: PolicyAction.WITHDRAW_IRR,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.DAILY,
+            amount: amountDecimal,
+            instrumentKey: 'ALL',
+            refType: TxRefType.WITHDRAW,
+            refId: withdraw.id,
+          },
+          tx,
+        );
+
+        await this.limitsService.reserve(
+          {
+            userId: user.id,
+            action: PolicyAction.WITHDRAW_IRR,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.MONTHLY,
+            amount: amountDecimal,
+            instrumentKey: 'ALL',
+            refType: TxRefType.WITHDRAW,
+            refId: withdraw.id,
+          },
+          tx,
+        );
+
+        await this.accountsService.reserveFunds({
           userId: user.id,
+          instrumentCode: IRR_INSTRUMENT_CODE,
           amount: amountDecimal,
-          bankName: dto.bankName,
-          iban: dto.iban,
-          cardNumber: dto.cardNumber,
-          note: dto.note,
-        },
-      });
+          refType: TxRefType.WITHDRAW,
+          refId: withdraw.id,
+          tx,
+        });
 
-      await this.filesService.createAttachmentsForActor(
-        { id: user.id, role: user.role },
-        dto.fileIds,
-        AttachmentEntityType.WITHDRAW,
-        withdraw.id,
-        tx,
-      );
+        await this.filesService.createAttachmentsForActor(
+          { id: user.id, role: user.role },
+          dto.fileIds,
+          AttachmentEntityType.WITHDRAW,
+          withdraw.id,
+          tx,
+        );
 
-      return withdraw;
-    }, { logger: this.logger });
+        this.logger.log(`Withdrawal ${withdraw.id} created for user ${user.id}`);
+
+        return tx.withdrawRequest.findUnique({ where: { id: withdraw.id }, select: withdrawalWithUserSelect });
+      },
+      { logger: this.logger },
+    );
   }
 
   findMy(userId: string) {
@@ -184,23 +251,31 @@ export class WithdrawalsService {
         tx,
       );
 
+      const consumedReservation = await this.accountsService.consumeFunds({
+        userId: withdraw.userId,
+        instrumentCode: IRR_INSTRUMENT_CODE,
+        refType: TxRefType.WITHDRAW,
+        refId: withdraw.id,
+        tx,
+      });
+
       const total = new Decimal(withdraw.amount);
-      const usable = this.accountsService.getUsableCapacity(account);
+      const usable = this.accountsService.getUsableCapacity(consumedReservation?.account ?? account);
       if (usable.lt(total)) {
         throw new InsufficientCreditException('Insufficient IRR balance for withdrawal');
       }
 
-      await this.accountsService.lockAccounts(tx, [account.id]);
-
       const txResult = await this.accountsService.applyTransaction(
         tx,
-        account,
+        consumedReservation?.account ?? account,
         total.negated(),
         AccountTxType.WITHDRAW,
         TxRefType.WITHDRAW,
         withdraw.id,
         adminId,
       );
+
+      await this.limitsService.consume({ refType: TxRefType.WITHDRAW, refId: withdraw.id }, tx);
 
       this.logger.log(`Withdrawal ${id} approved by ${adminId}`);
 
@@ -226,29 +301,40 @@ export class WithdrawalsService {
 
   async reject(id: string, dto: DecisionDto, adminId: string) {
     const updated = await runInTx(this.prisma, async (tx) => {
-      const withdraw = await tx.withdrawRequest.findUnique({ where: { id } });
+      const [withdraw] = await tx.$queryRaw<WithdrawRequest[]>`
+        SELECT * FROM "WithdrawRequest" WHERE id = ${id} FOR UPDATE
+      `;
       if (!withdraw) throw new NotFoundException('Withdraw not found');
-      if (withdraw.status !== WithdrawStatus.PENDING) {
+
+      if (withdraw.status === WithdrawStatus.REJECTED) {
+        return tx.withdrawRequest.findUnique({ where: { id }, select: withdrawalWithUserSelect });
+      }
+
+      if (withdraw.accountTxId || withdraw.status !== WithdrawStatus.PENDING) {
         throw new BadRequestException('Withdrawal already processed');
       }
 
-      const { count } = await tx.withdrawRequest.updateMany({
-        where: { id, status: WithdrawStatus.PENDING },
+      await this.limitsService.release({ refType: TxRefType.WITHDRAW, refId: withdraw.id }, tx);
+      await this.accountsService.releaseFunds({
+        userId: withdraw.userId,
+        instrumentCode: IRR_INSTRUMENT_CODE,
+        refType: TxRefType.WITHDRAW,
+        refId: withdraw.id,
+        tx,
+      });
+
+      this.logger.log(`Withdrawal ${id} rejected by ${adminId}`);
+
+      return tx.withdrawRequest.update({
+        where: { id },
         data: {
           status: WithdrawStatus.REJECTED,
           processedAt: new Date(),
           processedById: adminId,
           note: dto.note,
         },
+        select: withdrawalWithUserSelect,
       });
-
-      if (count === 0) {
-        throw new BadRequestException('Withdrawal already processed');
-      }
-
-      this.logger.log(`Withdrawal ${id} rejected by ${adminId}`);
-
-      return tx.withdrawRequest.findUnique({ where: { id }, select: withdrawalWithUserSelect });
     }, { logger: this.logger });
 
     return WithdrawalsMapper.toResponse(updated as WithdrawalWithUser);
@@ -304,47 +390,39 @@ export class WithdrawalsService {
 
   async cancelWithdrawal(withdrawalId: string, reason?: string) {
     const updated = await runInTx(this.prisma, async (tx) => {
-      const withdrawal = await tx.withdrawRequest.findUnique({ where: { id: withdrawalId }, select: withdrawalWithUserSelect });
+      const [withdrawal] = await tx.$queryRaw<WithdrawRequest[]>`
+        SELECT * FROM "WithdrawRequest" WHERE id = ${withdrawalId} FOR UPDATE
+      `;
       if (!withdrawal) throw new NotFoundException('Withdraw not found');
 
       if (withdrawal.status === WithdrawStatus.CANCELLED || withdrawal.status === WithdrawStatus.REVERSED) {
-        return withdrawal;
+        return tx.withdrawRequest.findUnique({ where: { id: withdrawal.id }, select: withdrawalWithUserSelect });
       }
 
-      if (withdrawal.status === WithdrawStatus.PENDING || withdrawal.status === WithdrawStatus.REJECTED) {
-        return tx.withdrawRequest.update({
-          where: { id: withdrawal.id },
-          data: { status: WithdrawStatus.CANCELLED, note: reason ?? withdrawal.note },
-          select: withdrawalWithUserSelect,
-        });
+      if (withdrawal.accountTxId || withdrawal.status === WithdrawStatus.APPROVED) {
+        throw new BadRequestException('Withdrawal already processed');
       }
 
-      if (withdrawal.status === WithdrawStatus.APPROVED) {
-        const accountTx = withdrawal.accountTxId
-          ? await tx.accountTx.findUnique({ where: { id: withdrawal.accountTxId }, include: { account: true } })
-          : null;
-
-        if (accountTx?.account) {
-          await this.accountsService.lockAccounts(tx, [accountTx.account.id]);
-          await this.accountsService.applyTransaction(
-            tx,
-            accountTx.account,
-            new Decimal(withdrawal.amount),
-            AccountTxType.ADJUSTMENT,
-            TxRefType.WITHDRAW,
-            withdrawal.id,
-            undefined,
-          );
-        }
-
-        return tx.withdrawRequest.update({
-          where: { id: withdrawal.id },
-          data: { status: WithdrawStatus.REVERSED, note: reason ?? withdrawal.note },
-          select: withdrawalWithUserSelect,
-        });
+      if (withdrawal.status !== WithdrawStatus.PENDING && withdrawal.status !== WithdrawStatus.REJECTED) {
+        return tx.withdrawRequest.findUnique({ where: { id: withdrawal.id }, select: withdrawalWithUserSelect });
       }
 
-      return withdrawal;
+      await this.limitsService.release({ refType: TxRefType.WITHDRAW, refId: withdrawal.id }, tx);
+      await this.accountsService.releaseFunds({
+        userId: withdrawal.userId,
+        instrumentCode: IRR_INSTRUMENT_CODE,
+        refType: TxRefType.WITHDRAW,
+        refId: withdrawal.id,
+        tx,
+      });
+
+      this.logger.log(`Withdrawal ${withdrawalId} cancelled`);
+
+      return tx.withdrawRequest.update({
+        where: { id: withdrawal.id },
+        data: { status: WithdrawStatus.CANCELLED, note: reason ?? withdrawal.note },
+        select: withdrawalWithUserSelect,
+      });
     }, { logger: this.logger });
 
     await this.enqueueTahesabDeletionForWithdrawal(updated.id);

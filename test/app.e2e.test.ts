@@ -12,6 +12,8 @@ import {
   TxRefType,
   UserRole,
   WithdrawStatus,
+  AccountReservationStatus,
+  LimitReservationStatus,
   PhysicalCustodyMovementStatus,
   PhysicalCustodyMovementType,
 } from '@prisma/client';
@@ -986,6 +988,162 @@ test('Withdrawal approval is idempotent and recoverable', async (t) => {
     where: { refId: recoverable.id, refType: TxRefType.WITHDRAW },
   });
   assert.strictEqual(postRecovery, preRecovery + 1);
+});
+
+test('Withdrawal creation reserves funds and limits with idempotency', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const withdrawalsService = app.get(WithdrawalsService);
+  const accountsService = app.get(AccountsService);
+
+  const user = await createUser(prisma);
+  await ensureInstrument(prisma, IRR_INSTRUMENT_CODE, InstrumentUnit.CURRENCY, InstrumentType.FIAT);
+  const account = await accountsService.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE);
+  await prisma.account.update({ where: { id: account.id }, data: { balance: new Decimal(1_000) } });
+
+  const idempotencyKey = `wd-${Date.now()}`;
+  const first = await withdrawalsService.createForUser(
+    user as any,
+    { amount: '500', note: 'reserve', fileIds: [] } as any,
+    idempotencyKey,
+  );
+  const second = await withdrawalsService.createForUser(
+    user as any,
+    { amount: '500', note: 'reserve-duplicate', fileIds: [] } as any,
+    idempotencyKey,
+  );
+
+  assert.strictEqual(first?.id, second?.id);
+
+  const reservations = await prisma.accountReservation.findMany({
+    where: { refType: TxRefType.WITHDRAW, refId: first.id },
+  });
+  assert.strictEqual(reservations.length, 1);
+  assert.strictEqual(reservations[0]?.status, AccountReservationStatus.RESERVED);
+
+  const accountAfter = await prisma.account.findUnique({ where: { id: account.id } });
+  assert.strictEqual(decimalString(accountAfter?.blockedBalance), decimalString(new Decimal(500)));
+
+  const limitReservations = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.WITHDRAW, refId: first.id },
+  });
+  assert.strictEqual(limitReservations.length, 2);
+  limitReservations.forEach((reservation) =>
+    assert.strictEqual(reservation.status, LimitReservationStatus.RESERVED),
+  );
+
+  const limitUsages = await prisma.limitUsage.findMany({
+    where: { userId: user.id, action: 'WITHDRAW_IRR', metric: 'NOTIONAL_IRR' },
+  });
+  const reservedSum = limitUsages.reduce((sum, usage) => sum.add(usage.reservedAmount), new Decimal(0));
+  assert.strictEqual(decimalString(reservedSum), decimalString(new Decimal(500)));
+});
+
+test('Withdrawal approval consumes reservations and remains idempotent', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const withdrawalsService = app.get(WithdrawalsService);
+  const accountsService = app.get(AccountsService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const client = await createUser(prisma);
+  await ensureInstrument(prisma, IRR_INSTRUMENT_CODE, InstrumentUnit.CURRENCY, InstrumentType.FIAT);
+  const account = await accountsService.getOrCreateAccount(client.id, IRR_INSTRUMENT_CODE);
+  await prisma.account.update({ where: { id: account.id }, data: { balance: new Decimal(2_000) } });
+
+  const withdrawal = await withdrawalsService.createForUser(
+    client as any,
+    { amount: '700', note: 'approve-me', fileIds: [] } as any,
+    `wd-approve-${Date.now()}`,
+  );
+
+  const approved = await withdrawalsService.approve(withdrawal.id, { note: 'approve' }, admin.id);
+  const again = await withdrawalsService.approve(withdrawal.id, { note: 'approve-again' }, admin.id);
+
+  assert.strictEqual(approved.accountTxId, again.accountTxId);
+  assert.strictEqual(approved.status, WithdrawStatus.APPROVED);
+
+  const accountAfter = await prisma.account.findUnique({ where: { id: account.id } });
+  assert.strictEqual(decimalString(accountAfter?.blockedBalance), decimalString(new Decimal(0)));
+  assert.strictEqual(decimalString(accountAfter?.balance), decimalString(new Decimal(1_300)));
+
+  const accountReservations = await prisma.accountReservation.findMany({
+    where: { refType: TxRefType.WITHDRAW, refId: withdrawal.id },
+  });
+  accountReservations.forEach((reservation) =>
+    assert.strictEqual(reservation.status, AccountReservationStatus.CONSUMED),
+  );
+
+  const limitReservations = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.WITHDRAW, refId: withdrawal.id },
+  });
+  limitReservations.forEach((reservation) =>
+    assert.strictEqual(reservation.status, LimitReservationStatus.CONSUMED),
+  );
+
+  const limitUsages = await prisma.limitUsage.findMany({
+    where: { userId: client.id, action: 'WITHDRAW_IRR', metric: 'NOTIONAL_IRR' },
+  });
+  limitUsages.forEach((usage) => {
+    assert.strictEqual(decimalString(usage.reservedAmount), decimalString(new Decimal(0)));
+    assert.strictEqual(decimalString(usage.usedAmount), decimalString(new Decimal(700)));
+  });
+});
+
+test('Withdrawal rejection releases reservations and blocks approval', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const withdrawalsService = app.get(WithdrawalsService);
+  const accountsService = app.get(AccountsService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const client = await createUser(prisma);
+  await ensureInstrument(prisma, IRR_INSTRUMENT_CODE, InstrumentUnit.CURRENCY, InstrumentType.FIAT);
+  const account = await accountsService.getOrCreateAccount(client.id, IRR_INSTRUMENT_CODE);
+  await prisma.account.update({ where: { id: account.id }, data: { balance: new Decimal(900) } });
+
+  const withdrawal = await withdrawalsService.createForUser(
+    client as any,
+    { amount: '400', note: 'reject-me', fileIds: [] } as any,
+    `wd-reject-${Date.now()}`,
+  );
+
+  const rejected = await withdrawalsService.reject(withdrawal.id, { note: 'reject' }, admin.id);
+  const rejectedAgain = await withdrawalsService.reject(withdrawal.id, { note: 'reject-again' }, admin.id);
+
+  assert.strictEqual(rejected.status, WithdrawStatus.REJECTED);
+  assert.strictEqual(rejectedAgain.status, WithdrawStatus.REJECTED);
+
+  const accountAfter = await prisma.account.findUnique({ where: { id: account.id } });
+  assert.strictEqual(decimalString(accountAfter?.blockedBalance), decimalString(new Decimal(0)));
+  assert.strictEqual(decimalString(accountAfter?.balance), decimalString(new Decimal(900)));
+
+  const accountReservations = await prisma.accountReservation.findMany({
+    where: { refType: TxRefType.WITHDRAW, refId: withdrawal.id },
+  });
+  accountReservations.forEach((reservation) =>
+    assert.strictEqual(reservation.status, AccountReservationStatus.RELEASED),
+  );
+
+  const limitReservations = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.WITHDRAW, refId: withdrawal.id },
+  });
+  limitReservations.forEach((reservation) =>
+    assert.strictEqual(reservation.status, LimitReservationStatus.RELEASED),
+  );
+
+  const limitUsages = await prisma.limitUsage.findMany({
+    where: { userId: client.id, action: 'WITHDRAW_IRR', metric: 'NOTIONAL_IRR' },
+  });
+  limitUsages.forEach((usage) => {
+    assert.strictEqual(decimalString(usage.reservedAmount), decimalString(new Decimal(0)));
+    assert.strictEqual(decimalString(usage.usedAmount), decimalString(new Decimal(0)));
+  });
+
+  await assert.rejects(() => withdrawalsService.approve(withdrawal.id, { note: 'too-late' }, admin.id));
 });
 
 test('Trade reverse is idempotent and restores balances', async (t) => {

@@ -240,6 +240,62 @@ export class AccountsService {
     return runInTx(this.prisma, (trx) => executor(trx));
   }
 
+  async consumeFunds(params: {
+    userId: string;
+    instrumentCode: string;
+    refType: TxRefType;
+    refId: string;
+    tx?: PrismaClientOrTx;
+  }) {
+    const executor = async (trx: Prisma.TransactionClient) => {
+      const account = await this.getOrCreateAccount(params.userId, params.instrumentCode, trx);
+      const reservation = await trx.accountReservation.findUnique({
+        where: {
+          refType_refId_accountId: {
+            accountId: account.id,
+            refId: params.refId,
+            refType: params.refType,
+          },
+        },
+      });
+
+      if (!reservation) return null;
+
+      if (reservation.status === AccountReservationStatusEnum.CONSUMED) {
+        return { account, reservation };
+      }
+
+      if (reservation.status === AccountReservationStatusEnum.RELEASED) {
+        throw new BadRequestException('Reservation already released');
+      }
+
+      await this.lockAccountRow(trx, account.id);
+      const freshAccount = await trx.account.findUnique({ where: { id: account.id } });
+      if (!freshAccount) throw new NotFoundException('Account not found');
+
+      const newBlocked = new Decimal(freshAccount.blockedBalance).minus(reservation.amount);
+      if (newBlocked.lt(0)) {
+        throw new BadRequestException('Blocked balance cannot be negative');
+      }
+
+      const [updatedReservation, updatedAccount] = await trx.$transaction([
+        trx.accountReservation.update({
+          where: { id: reservation.id },
+          data: { status: AccountReservationStatusEnum.CONSUMED as any },
+        }),
+        trx.account.update({
+          where: { id: freshAccount.id },
+          data: { blockedBalance: newBlocked },
+        }),
+      ]);
+
+      return { account: updatedAccount, reservation: updatedReservation };
+    };
+
+    if (params.tx) return executor(params.tx as Prisma.TransactionClient);
+    return runInTx(this.prisma, (trx) => executor(trx));
+  }
+
   async applyTransaction(
     inputOrTx: ApplyTransactionInput | PrismaClientOrTx,
     accountOrInput?: any,
