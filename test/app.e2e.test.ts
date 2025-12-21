@@ -1660,6 +1660,10 @@ test('Remittance lifecycle reserves, settles, and releases correctly', async (t)
   const approved = (await approveRes.json()) as any;
   assert.strictEqual(approved.status, RemittanceStatus.COMPLETED);
 
+  const txCountAfterApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.REMITTANCE, refId: created.id },
+  });
+
   const senderAfterApprove = await prisma.account.findUnique({ where: { id: senderAccount.id } });
   const receiverAfterApprove = await prisma.account.findUnique({ where: { id: receiverAccount.id } });
   assert.strictEqual(decimalString(senderAfterApprove?.blockedBalance ?? 0), '0');
@@ -1676,6 +1680,18 @@ test('Remittance lifecycle reserves, settles, and releases correctly', async (t)
     headers: { ...authHeader(admin) },
   });
   assert.ok(approveAgain.ok, `second approve failed ${approveAgain.status}`);
+  const approveAgainBody = (await approveAgain.json()) as any;
+  assert.strictEqual(approveAgainBody.status, RemittanceStatus.COMPLETED);
+
+  const senderAfterSecondApprove = await prisma.account.findUnique({ where: { id: senderAccount.id } });
+  const receiverAfterSecondApprove = await prisma.account.findUnique({ where: { id: receiverAccount.id } });
+  const txCountAfterSecondApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.REMITTANCE, refId: created.id },
+  });
+  assert.strictEqual(decimalString(senderAfterSecondApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(decimalString(senderAfterSecondApprove?.balance ?? 0), decimalString(senderAfterApprove?.balance ?? 0));
+  assert.strictEqual(decimalString(receiverAfterSecondApprove?.balance ?? 0), decimalString(receiverAfterApprove?.balance ?? 0));
+  assert.strictEqual(txCountAfterSecondApprove, txCountAfterApprove);
 
   const rejectRemitRes = await fetch(`${baseUrl}/remittances`, {
     method: 'POST',
@@ -1755,6 +1771,10 @@ test('Physical custody lifecycle reserves, settles, and releases', async (t) => 
   const approvedOut = (await approveOut.json()) as any;
   assert.strictEqual(approvedOut.status, PhysicalCustodyMovementStatus.APPROVED);
 
+  const txCountOutAfterApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: outMovement.id },
+  });
+
   const goldAfterApprove = await prisma.account.findUnique({ where: { id: goldAccount.id } });
   assert.strictEqual(decimalString(goldAfterApprove?.blockedBalance ?? 0), '0');
   assert.strictEqual(decimalString(goldAfterApprove?.balance ?? 0), '40');
@@ -1763,6 +1783,24 @@ test('Physical custody lifecycle reserves, settles, and releases', async (t) => 
     where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: outMovement.id },
   });
   assert.ok(consumedOutLimits.every((r) => r.status === LimitReservationStatus.CONSUMED));
+
+  const approveOutAgain = await fetch(`${baseUrl}/physical-custody/movements/${outMovement.id}/approve`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+  });
+  assert.ok(approveOutAgain.ok, `second approve out failed ${approveOutAgain.status}`);
+  const approvedOutAgain = (await approveOutAgain.json()) as any;
+  assert.strictEqual(approvedOutAgain.status, PhysicalCustodyMovementStatus.APPROVED);
+  assert.strictEqual(approvedOutAgain.userGoldAccountTxId, approvedOut.userGoldAccountTxId);
+  assert.strictEqual(approvedOutAgain.houseGoldAccountTxId, approvedOut.houseGoldAccountTxId);
+
+  const goldAfterSecondApprove = await prisma.account.findUnique({ where: { id: goldAccount.id } });
+  const txCountOutAfterSecondApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: outMovement.id },
+  });
+  assert.strictEqual(decimalString(goldAfterSecondApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(decimalString(goldAfterSecondApprove?.balance ?? 0), decimalString(goldAfterApprove?.balance ?? 0));
+  assert.strictEqual(txCountOutAfterSecondApprove, txCountOutAfterApprove);
 
   const rejectOutCreate = await fetch(`${baseUrl}/physical-custody/movements`, {
     method: 'POST',

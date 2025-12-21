@@ -39,8 +39,8 @@ export class PhysicalCustodyController {
   @Roles(UserRole.ADMIN)
   @Post('physical-custody/movements/:id/approve')
   @ApiOkResponse({ type: PhysicalCustodyMovementResponseDto })
-  approve(@Param('id') id: string) {
-    return this.service.approveMovement(id);
+  approve(@Param('id') id: string, @CurrentUser() admin: JwtRequestUser) {
+    return this.service.approveMovement(id, admin.id);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
