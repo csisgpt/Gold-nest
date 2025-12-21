@@ -15,6 +15,14 @@ import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { runInTx } from '../../common/db/tx.util';
 import { withdrawalWithUserSelect, WithdrawalWithUser, WithdrawalsMapper } from './withdrawals.mapper';
 import { JwtRequestUser } from '../auth/jwt.strategy';
+import { PaginationService } from '../../common/pagination/pagination.service';
+import { AdminListWithdrawalsDto } from './dto/admin-list-withdrawals.dto';
+import {
+  AdminWithdrawalsMapper,
+  adminWithdrawalSelect,
+  adminWithdrawalAttachmentWhere,
+} from './withdrawals.admin.mapper';
+import { AdminWithdrawalDetailDto } from './dto/response/admin-withdrawal-detail.dto';
 
 @Injectable()
 export class WithdrawalsService {
@@ -26,6 +34,7 @@ export class WithdrawalsService {
     private readonly filesService: FilesService,
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
+    private readonly paginationService: PaginationService,
   ) {}
 
   async createForUser(user: JwtRequestUser, dto: CreateWithdrawalDto) {
@@ -81,6 +90,76 @@ export class WithdrawalsService {
     });
 
     return WithdrawalsMapper.toResponses(withdrawals as WithdrawalWithUser[]);
+  }
+
+  async listAdmin(query: AdminListWithdrawalsDto) {
+    const { skip, take, page, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+
+    const where = {
+      status: query.status,
+      userId: query.userId,
+      amount: {
+        gte: query.amountFrom ? new Decimal(query.amountFrom) : undefined,
+        lte: query.amountTo ? new Decimal(query.amountTo) : undefined,
+      },
+      createdAt:
+        query.createdFrom || query.createdTo
+          ? { gte: query.createdFrom ? new Date(query.createdFrom) : undefined, lte: query.createdTo ? new Date(query.createdTo) : undefined }
+          : undefined,
+      user: query.mobile
+        ? { mobile: { contains: query.mobile, mode: 'insensitive' } }
+        : undefined,
+      OR: query.q ? [{ id: query.q }] : undefined,
+    } as const;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.withdrawRequest.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+        select: withdrawalWithUserSelect,
+      }),
+      this.prisma.withdrawRequest.count({ where }),
+    ]);
+
+    return this.paginationService.wrap(
+      WithdrawalsMapper.toResponses(items as WithdrawalWithUser[]),
+      total,
+      page,
+      limit,
+    );
+  }
+
+  async findAdminDetail(id: string): Promise<AdminWithdrawalDetailDto> {
+    const withdrawal = await this.prisma.withdrawRequest.findUnique({ where: { id }, select: adminWithdrawalSelect });
+    if (!withdrawal) {
+      throw new NotFoundException('Withdraw not found');
+    }
+
+    const [attachments, outbox] = await this.prisma.$transaction([
+      this.prisma.attachment.findMany({
+        where: adminWithdrawalAttachmentWhere(id),
+        orderBy: { createdAt: 'asc' },
+        include: { file: { select: { id: true, fileName: true, mimeType: true, sizeBytes: true, label: true, createdAt: true } } },
+      }),
+      this.prisma.tahesabOutbox.findFirst({
+        where: { correlationId: id },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    return AdminWithdrawalsMapper.toDetail(
+      withdrawal,
+      attachments.map((att) => ({
+        id: att.id,
+        fileId: att.fileId,
+        purpose: att.purpose ?? null,
+        createdAt: att.createdAt,
+        file: att.file,
+      })),
+      outbox ?? undefined,
+    );
   }
 
   async approve(id: string, dto: DecisionDto, adminId: string) {

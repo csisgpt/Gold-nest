@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { UserRole, WithdrawStatus } from '@prisma/client';
-import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
+import { ApiBearerAuth, ApiOkResponse, ApiTags, ApiProperty } from '@nestjs/swagger';
 import { DecisionDto } from '../deposits/dto/decision.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
 import { WithdrawalsService } from './withdrawals.service';
@@ -10,6 +10,18 @@ import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { WithdrawalResponseDto } from './dto/response/withdrawal-response.dto';
+import { CancelRequestDto } from '../deposits/dto/cancel-request.dto';
+import { AdminListWithdrawalsDto } from './dto/admin-list-withdrawals.dto';
+import { AdminWithdrawalDetailDto } from './dto/response/admin-withdrawal-detail.dto';
+import { PaginatedResponseDto, PaginationMetaDto } from '../../common/pagination/dto/pagination-meta.dto';
+
+class PaginatedWithdrawalResponseDto extends PaginatedResponseDto<WithdrawalResponseDto> {
+  @ApiProperty({ type: [WithdrawalResponseDto] })
+  items!: WithdrawalResponseDto[];
+
+  @ApiProperty({ type: () => PaginationMetaDto })
+  meta!: PaginationMetaDto;
+}
 
 @ApiTags('withdrawals')
 @ApiBearerAuth('access-token')
@@ -39,9 +51,17 @@ export class WithdrawalsController {
   @Get('admin/withdrawals')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: [WithdrawalResponseDto] })
-  listAdmin(@Query('status') status?: WithdrawStatus) {
-    return this.withdrawalsService.findByStatus(status);
+  @ApiOkResponse({ type: PaginatedWithdrawalResponseDto })
+  listAdmin(@Query() query: AdminListWithdrawalsDto) {
+    return this.withdrawalsService.listAdmin(query);
+  }
+
+  @Get('admin/withdrawals/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminWithdrawalDetailDto })
+  getAdminDetail(@Param('id') id: string) {
+    return this.withdrawalsService.findAdminDetail(id);
   }
 
   @Post('admin/withdrawals/:id/approve')
@@ -58,5 +78,13 @@ export class WithdrawalsController {
   @ApiOkResponse({ type: WithdrawalResponseDto })
   reject(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.withdrawalsService.reject(id, dto, admin.id);
+  }
+
+  @Post('admin/withdrawals/:id/cancel')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: WithdrawalResponseDto })
+  cancel(@Param('id') id: string, @Body() dto: CancelRequestDto) {
+    return this.withdrawalsService.cancelWithdrawal(id, dto?.reason);
   }
 }

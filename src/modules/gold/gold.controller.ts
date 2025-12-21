@@ -22,7 +22,13 @@ export class GoldController {
     return this.goldService.createLot(dto, admin);
   }
 
+  @Get('gold/lots/my')
+  listMy(@CurrentUser() user: JwtRequestUser) {
+    return this.goldService.findByUser(user.id);
+  }
+
   @Get('gold/lots/user/:userId')
+  @Roles(UserRole.ADMIN)
   listByUser(@Param('userId') userId: string) {
     return this.goldService.findByUser(userId);
   }
