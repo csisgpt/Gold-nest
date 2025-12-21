@@ -25,7 +25,7 @@ export class ListPolicyRulesDto {
 
   @IsOptional()
   @IsEnum(InstrumentType)
-  instrumentType?: InstrumentType;
+  instrumentType?: InstrumentType | null;
 
   @IsOptional()
   @IsEnum(PolicyAction)

@@ -168,7 +168,9 @@ export class PolicyResolutionService {
         enabled: true,
         OR: [
           { scopeType: PolicyScopeType.USER, scopeUserId: context.userId },
-          { scopeType: PolicyScopeType.GROUP, scopeGroupId: context.customerGroupId ?? undefined },
+          ...(context.customerGroupId
+            ? [{ scopeType: PolicyScopeType.GROUP, scopeGroupId: context.customerGroupId }]
+            : []),
           { scopeType: PolicyScopeType.GLOBAL },
         ],
       },

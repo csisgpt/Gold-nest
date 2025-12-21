@@ -2142,6 +2142,12 @@ test('Admin product limits grid and apply flow', async (t) => {
   const applyJson = (await applyRes.json()) as any;
   assert.strictEqual(applyJson.created, 4);
 
+  const appliedRules = await prisma.policyRule.findMany({
+    where: { scopeType: 'USER', scopeUserId: user.id, productId: product.id },
+  });
+  assert.ok(appliedRules.length >= 4);
+  assert.ok(appliedRules.every((r) => r.productId === product.id && !r.instrumentId && !r.instrumentType));
+
   const postApplyGridRes = await fetch(`${baseUrl}/admin/users/${user.id}/product-limits`, {
     headers: authHeader(admin),
   });
@@ -2180,4 +2186,74 @@ test('Admin product limits grid and apply flow', async (t) => {
   assert.strictEqual(finalRow.limits.sellDaily.source, 'GROUP');
   assert.strictEqual(finalRow.limits.buyDaily.source, 'GLOBAL');
   assert.strictEqual(finalRow.limits.buyDaily.selectorUsed, 'TYPE');
+});
+
+test('Group rules are not applied when user has no customer group', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma, UserRole.CLIENT);
+  const customerGroup = await prisma.customerGroup.create({
+    data: { code: `cg-${Date.now()}`, name: 'Unassigned', isDefault: false },
+  });
+
+  const instrument = await prisma.instrument.create({
+    data: { code: `INST-${Date.now()}`, name: 'Leak Test', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
+  });
+
+  const product = await prisma.marketProduct.create({
+    data: {
+      code: `MP-${Date.now()}`,
+      displayName: 'Leak Test Product',
+      productType: MarketProductType.GOLD,
+      tradeType: TradeType.SPOT,
+      baseInstrumentId: instrument.id,
+      unitType: PolicyMetric.WEIGHT_750_G,
+      groupKey: 'LEAK',
+      sortOrder: 1,
+      isActive: true,
+    },
+  });
+
+  await prisma.policyRule.create({
+    data: {
+      scopeType: PolicyScopeType.GROUP,
+      scopeGroupId: customerGroup.id,
+      productId: product.id,
+      action: PolicyAction.TRADE_BUY,
+      metric: PolicyMetric.WEIGHT_750_G,
+      period: PolicyPeriod.DAILY,
+      limit: new Decimal(123),
+    },
+  });
+
+  await prisma.policyRule.create({
+    data: {
+      scopeType: PolicyScopeType.GLOBAL,
+      instrumentType: instrument.type,
+      action: PolicyAction.TRADE_BUY,
+      metric: PolicyMetric.WEIGHT_750_G,
+      period: PolicyPeriod.DAILY,
+      limit: new Decimal(50),
+    },
+  });
+
+  const gridRes = await fetch(`${baseUrl}/admin/users/${user.id}/product-limits`, {
+    headers: authHeader(admin),
+  });
+  assert.ok(gridRes.ok);
+  const grid = (await gridRes.json()) as any;
+  const findRow = (pid: string, result: any) => {
+    for (const group of result.groups as any[]) {
+      const found = (group.items as any[]).find((i) => i.productId === pid);
+      if (found) return found;
+    }
+    return null;
+  };
+  const row = findRow(product.id, grid);
+  assert.ok(row, 'product row missing');
+  assert.strictEqual(row.limits.buyDaily.source, 'GLOBAL');
+  assert.strictEqual(row.limits.buyDaily.selectorUsed, 'TYPE');
 });

@@ -1,9 +1,9 @@
 import { Type } from 'class-transformer';
-import { IsArray, IsEnum, IsNotEmpty, IsOptional, IsString, ValidateNested, IsNumber, IsPositive } from 'class-validator';
+import { IsArray, IsIn, IsNotEmpty, IsOptional, IsString, ValidateNested, IsNumber, IsPositive } from 'class-validator';
 import { MarketProductType, PolicyMetric, TradeType } from '@prisma/client';
 
 export class LimitCellChangeDto {
-  @IsEnum(['SET', 'CLEAR'] as any)
+  @IsIn(['SET', 'CLEAR'])
   mode!: 'SET' | 'CLEAR';
 
   @IsOptional()

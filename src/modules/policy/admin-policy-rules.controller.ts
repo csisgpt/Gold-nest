@@ -8,6 +8,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { BulkUpsertPolicyRuleDto, CreatePolicyRuleDto, ListPolicyRulesDto, UpdatePolicyRuleDto } from './dto/policy-rule.dto';
+import { normalizeSelector } from './policy-selector.util';
 
 @ApiTags('admin-policy-rules')
 @ApiBearerAuth('access-token')
@@ -45,7 +46,8 @@ export class AdminPolicyRulesController {
   @Post()
   async create(@Body() dto: CreatePolicyRuleDto) {
     this.validateScope(dto.scopeType, dto.scopeUserId, dto.scopeGroupId);
-    this.validateSelector(dto.productId, dto.instrumentId, dto.instrumentType);
+    const selector = normalizeSelector(dto);
+    this.validateSelector(selector.productId, selector.instrumentId, selector.instrumentType);
     this.validateValue(dto.limit);
 
     return this.prisma.policyRule.create({
@@ -57,9 +59,7 @@ export class AdminPolicyRulesController {
         metric: dto.metric,
         period: dto.period,
         limit: dec(dto.limit),
-        instrumentId: dto.instrumentId,
-        instrumentType: dto.instrumentType,
-        productId: dto.productId,
+        ...selector,
         note: dto.note,
       },
     });
@@ -73,8 +73,9 @@ export class AdminPolicyRulesController {
     }
 
     const merged = { ...existing, ...dto } as CreatePolicyRuleDto;
+    const selector = normalizeSelector(merged);
     this.validateScope(merged.scopeType, merged.scopeUserId, merged.scopeGroupId);
-    this.validateSelector(merged.productId, merged.instrumentId, merged.instrumentType);
+    this.validateSelector(selector.productId, selector.instrumentId, selector.instrumentType);
     if (merged.limit !== undefined) this.validateValue(merged.limit);
 
     return this.prisma.policyRule.update({
@@ -87,9 +88,7 @@ export class AdminPolicyRulesController {
         metric: merged.metric,
         period: merged.period,
         limit: merged.limit !== undefined ? dec(merged.limit) : undefined,
-        instrumentId: merged.instrumentId,
-        instrumentType: merged.instrumentType,
-        productId: merged.productId,
+        ...selector,
         note: merged.note,
       },
     });
@@ -108,8 +107,9 @@ export class AdminPolicyRulesController {
 
     await runInTx(this.prisma, async (tx) => {
       for (const item of dto.items) {
+        const selector = normalizeSelector(item);
         this.validateScope(item.scopeType, item.scopeUserId, item.scopeGroupId);
-        this.validateSelector(item.productId, item.instrumentId, item.instrumentType);
+        this.validateSelector(selector.productId, selector.instrumentId, selector.instrumentType);
         this.validateValue(item.limit);
 
         const where: Prisma.PolicyRuleWhereInput = {
@@ -121,9 +121,9 @@ export class AdminPolicyRulesController {
           period: item.period,
         };
 
-        if (item.productId) where.productId = item.productId;
-        else if (item.instrumentId) where.instrumentId = item.instrumentId;
-        else if (item.instrumentType) where.instrumentType = item.instrumentType;
+        if (selector.productId) where.productId = selector.productId;
+        else if (selector.instrumentId) where.instrumentId = selector.instrumentId;
+        else if (selector.instrumentType) where.instrumentType = selector.instrumentType;
         else {
           where.productId = null;
           where.instrumentId = null;
@@ -138,9 +138,7 @@ export class AdminPolicyRulesController {
             data: {
               limit: dec(item.limit),
               note: item.note,
-              instrumentId: item.instrumentId,
-              instrumentType: item.instrumentType,
-              productId: item.productId,
+              ...selector,
             },
           });
           updated += 1;
@@ -154,9 +152,7 @@ export class AdminPolicyRulesController {
               metric: item.metric,
               period: item.period,
               limit: dec(item.limit),
-              instrumentId: item.instrumentId,
-              instrumentType: item.instrumentType,
-              productId: item.productId,
+              ...selector,
               note: item.note,
             },
           });

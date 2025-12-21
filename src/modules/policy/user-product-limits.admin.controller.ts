@@ -16,6 +16,7 @@ import {
   ProductLimitsQueryDto,
 } from './dto/user-product-limits.dto';
 import { PolicyContext } from './policy-resolution.service';
+import { normalizeSelector } from './policy-selector.util';
 
 @ApiTags('admin-product-limits')
 @ApiBearerAuth('access-token')
@@ -70,7 +71,7 @@ export class UserProductLimitsAdminController {
 
       const metric = product.unitType as PolicyMetric;
 
-      const buildCell = async (action: PolicyAction, period: PolicyPeriod): Promise<ProductLimitCell> => {
+      const buildCell = (action: PolicyAction, period: PolicyPeriod): ProductLimitCell => {
         const trace = this.resolution.resolveFromRules({ action, metric, period, context, rules });
         return {
           effectiveValue: trace.selected ? Number(dec(trace.selected.value)) : null,
@@ -92,10 +93,10 @@ export class UserProductLimitsAdminController {
         tradeType: product.tradeType,
         productType: product.productType,
         limits: {
-          buyDaily: await buildCell(PolicyAction.TRADE_BUY, PolicyPeriod.DAILY),
-          buyMonthly: await buildCell(PolicyAction.TRADE_BUY, PolicyPeriod.MONTHLY),
-          sellDaily: await buildCell(PolicyAction.TRADE_SELL, PolicyPeriod.DAILY),
-          sellMonthly: await buildCell(PolicyAction.TRADE_SELL, PolicyPeriod.MONTHLY),
+          buyDaily: buildCell(PolicyAction.TRADE_BUY, PolicyPeriod.DAILY),
+          buyMonthly: buildCell(PolicyAction.TRADE_BUY, PolicyPeriod.MONTHLY),
+          sellDaily: buildCell(PolicyAction.TRADE_SELL, PolicyPeriod.DAILY),
+          sellMonthly: buildCell(PolicyAction.TRADE_SELL, PolicyPeriod.MONTHLY),
         },
       });
     }
@@ -138,18 +139,17 @@ export class UserProductLimitsAdminController {
       for (const change of dto.changes) {
         const product = productMap.get(change.productId)!;
         const metric = product.unitType as PolicyMetric;
-        const instrumentId = product.baseInstrumentId;
-        const instrumentType = product.baseInstrument.type;
 
         const applyCell = async (cell: LimitCellChangeDto | undefined, action: PolicyAction, period: PolicyPeriod) => {
           if (!cell) return;
           if (cell.mode === 'SET') {
             if (!cell.value || cell.value <= 0) throw new BadRequestException('INVALID_VALUE');
+            const selector = normalizeSelector({ productId: product.id });
             const existing = await tx.policyRule.findFirst({
               where: {
                 scopeType: PolicyScopeType.USER,
                 scopeUserId: userId,
-                productId: product.id,
+                ...selector,
                 action,
                 metric,
                 period,
@@ -164,13 +164,11 @@ export class UserProductLimitsAdminController {
                 data: {
                   scopeType: PolicyScopeType.USER,
                   scopeUserId: userId,
-                  productId: product.id,
+                  ...selector,
                   action,
                   metric,
                   period,
                   limit: dec(cell.value),
-                  instrumentId,
-                  instrumentType,
                 },
               });
               created += 1;
