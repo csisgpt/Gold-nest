@@ -6,9 +6,10 @@ import { AccountsModule } from '../accounts/accounts.module';
 import { FilesModule } from '../files/files.module';
 import { InstrumentsModule } from '../instruments/instruments.module';
 import { TahesabModule } from '../tahesab/tahesab.module';
+import { PaginationModule } from '../../common/pagination/pagination.module';
 
 @Module({
-  imports: [PrismaModule, AccountsModule, FilesModule, InstrumentsModule, TahesabModule],
+  imports: [PrismaModule, AccountsModule, FilesModule, InstrumentsModule, TahesabModule, PaginationModule],
   providers: [TradesService],
   controllers: [TradesController],
 })

@@ -33,6 +33,10 @@ import { SettleForwardCashDto } from './dto/settle-forward-cash.dto';
 import { runInTx } from '../../common/db/tx.util';
 import { TradesMapper, TradeWithRelations, tradeWithRelationsSelect } from './trades.mapper';
 import { JwtRequestUser } from '../auth/jwt.strategy';
+import { PaginationService } from '../../common/pagination/pagination.service';
+import { AdminListTradesDto } from './dto/admin-list-trades.dto';
+import { AdminTradeDetailDto } from './dto/response/admin-trade-detail.dto';
+import { AdminTradesMapper, adminTradeAttachmentWhere, adminTradeSelect } from './trades.admin.mapper';
 
 @Injectable()
 export class TradesService {
@@ -45,6 +49,7 @@ export class TradesService {
     private readonly instrumentsService: InstrumentsService,
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
+    private readonly paginationService: PaginationService,
   ) {}
 
   /**
@@ -166,6 +171,83 @@ export class TradesService {
     });
 
     return trades.map((trade) => TradesMapper.toResponse(trade as TradeWithRelations));
+  }
+
+  async listAdmin(query: AdminListTradesDto) {
+    const { skip, take, page, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+
+    const where = {
+      status: query.status,
+      clientId: query.userId,
+      totalAmount: {
+        gte: query.amountFrom ? new Decimal(query.amountFrom) : undefined,
+        lte: query.amountTo ? new Decimal(query.amountTo) : undefined,
+      },
+      createdAt:
+        query.createdFrom || query.createdTo
+          ? { gte: query.createdFrom ? new Date(query.createdFrom) : undefined, lte: query.createdTo ? new Date(query.createdTo) : undefined }
+          : undefined,
+      client: query.mobile
+        ? {
+            mobile: { contains: query.mobile, mode: 'insensitive' },
+          }
+        : undefined,
+      OR: query.q
+        ? [
+            { id: query.q },
+            { clientNote: { contains: query.q, mode: 'insensitive' } },
+          ]
+        : undefined,
+    } as const;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.trade.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+        select: tradeWithRelationsSelect,
+      }),
+      this.prisma.trade.count({ where }),
+    ]);
+
+    return this.paginationService.wrap(
+      items.map((trade) => TradesMapper.toResponse(trade as TradeWithRelations)),
+      total,
+      page,
+      limit,
+    );
+  }
+
+  async findAdminDetail(id: string): Promise<AdminTradeDetailDto> {
+    const trade = await this.prisma.trade.findUnique({ where: { id }, select: adminTradeSelect });
+    if (!trade) {
+      throw new NotFoundException('Trade not found');
+    }
+
+    const [attachments, outbox] = await this.prisma.$transaction([
+      this.prisma.attachment.findMany({
+        where: adminTradeAttachmentWhere(id),
+        orderBy: { createdAt: 'asc' },
+        include: { file: { select: { id: true, fileName: true, mimeType: true, sizeBytes: true, label: true, createdAt: true } } },
+      }),
+      this.prisma.tahesabOutbox.findFirst({
+        where: { correlationId: id },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    return AdminTradesMapper.toDetail(
+      trade,
+      attachments.map((att) => ({
+        id: att.id,
+        fileId: att.fileId,
+        purpose: att.purpose ?? null,
+        createdAt: att.createdAt,
+        file: att.file,
+      })),
+      outbox ?? undefined,
+    );
   }
 
   async approve(id: string, dto: ApproveTradeDto, adminId: string) {

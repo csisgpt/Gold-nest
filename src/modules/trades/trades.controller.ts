@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { TradeStatus, UserRole } from '@prisma/client';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiResponse, ApiTags, ApiProperty } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { CreateTradeDto } from './dto/create-trade.dto';
 import { ApproveTradeDto } from './dto/approve-trade.dto';
@@ -14,6 +14,17 @@ import { JwtRequestUser } from '../auth/jwt.strategy';
 import { ReverseTradeDto } from './dto/reverse-trade.dto';
 import { TradeResponseDto } from './dto/response/trade-response.dto';
 import { SettleForwardCashDto } from './dto/settle-forward-cash.dto';
+import { AdminListTradesDto } from './dto/admin-list-trades.dto';
+import { PaginatedResponseDto, PaginationMetaDto } from '../../common/pagination/dto/pagination-meta.dto';
+import { AdminTradeDetailDto } from './dto/response/admin-trade-detail.dto';
+
+class PaginatedTradeResponseDto extends PaginatedResponseDto<TradeResponseDto> {
+  @ApiProperty({ type: [TradeResponseDto] })
+  items!: TradeResponseDto[];
+
+  @ApiProperty({ type: () => PaginationMetaDto })
+  meta!: PaginationMetaDto;
+}
 
 @ApiTags('trades')
 @ApiBearerAuth('access-token')
@@ -49,9 +60,17 @@ export class TradesController {
   @Get('admin/trades')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: [TradeResponseDto] })
-  listAdmin(@Query('status') status?: TradeStatus) {
-    return this.tradesService.findByStatus(status);
+  @ApiOkResponse({ type: PaginatedTradeResponseDto })
+  listAdmin(@Query() query: AdminListTradesDto) {
+    return this.tradesService.listAdmin(query);
+  }
+
+  @Get('admin/trades/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminTradeDetailDto })
+  getAdminDetail(@Param('id') id: string) {
+    return this.tradesService.findAdminDetail(id);
   }
 
   @ApiOperation({ summary: 'Approve a trade' })

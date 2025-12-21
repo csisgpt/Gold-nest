@@ -14,6 +14,16 @@ import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { runInTx } from '../../common/db/tx.util';
 import { DepositsMapper, DepositWithUser, depositWithUserSelect } from './deposits.mapper';
 import { JwtRequestUser } from '../auth/jwt.strategy';
+import { PaginationService } from '../../common/pagination/pagination.service';
+import { AdminListDepositsDto } from './dto/admin-list-deposits.dto';
+import {
+  AdminDepositsMapper,
+  adminDepositSelect,
+  adminDepositAttachmentWhere,
+  mapAdminAttachment,
+  attachmentSelect,
+} from './deposits.admin.mapper';
+import { AdminDepositDetailDto } from './dto/response/admin-deposit-detail.dto';
 
 @Injectable()
 export class DepositsService {
@@ -25,6 +35,7 @@ export class DepositsService {
     private readonly filesService: FilesService,
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
+    private readonly paginationService: PaginationService,
   ) {}
 
   async createForUser(user: JwtRequestUser, dto: CreateDepositDto) {
@@ -66,6 +77,77 @@ export class DepositsService {
     });
 
     return DepositsMapper.toResponses(deposits as DepositWithUser[]);
+  }
+
+  async listAdmin(query: AdminListDepositsDto) {
+    const { skip, take, page, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+
+    const where = {
+      status: query.status,
+      userId: query.userId,
+      amount: {
+        gte: query.amountFrom ? new Decimal(query.amountFrom) : undefined,
+        lte: query.amountTo ? new Decimal(query.amountTo) : undefined,
+      },
+      createdAt:
+        query.createdFrom || query.createdTo
+          ? { gte: query.createdFrom ? new Date(query.createdFrom) : undefined, lte: query.createdTo ? new Date(query.createdTo) : undefined }
+          : undefined,
+      user: query.mobile
+        ? {
+            mobile: { contains: query.mobile, mode: 'insensitive' },
+          }
+        : undefined,
+      OR: query.q
+        ? [
+            { refNo: { contains: query.q, mode: 'insensitive' } },
+            { id: query.q },
+          ]
+        : undefined,
+    } as const;
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.depositRequest.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+        select: depositWithUserSelect,
+      }),
+      this.prisma.depositRequest.count({ where }),
+    ]);
+
+    return this.paginationService.wrap(
+      DepositsMapper.toResponses(items as DepositWithUser[]),
+      total,
+      page,
+      limit,
+    );
+  }
+
+  async findAdminDetail(id: string): Promise<AdminDepositDetailDto> {
+    const deposit = await this.prisma.depositRequest.findUnique({ where: { id }, select: adminDepositSelect });
+    if (!deposit) {
+      throw new NotFoundException('Deposit not found');
+    }
+
+    const [attachments, outbox] = await this.prisma.$transaction([
+      this.prisma.attachment.findMany({
+        where: adminDepositAttachmentWhere(id),
+        select: attachmentSelect,
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.tahesabOutbox.findFirst({
+        where: { correlationId: id },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    return AdminDepositsMapper.toDetail(
+      deposit,
+      attachments.map(mapAdminAttachment),
+      outbox ?? undefined,
+    );
   }
 
   async approve(id: string, dto: DecisionDto, adminId: string) {

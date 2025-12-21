@@ -27,6 +27,18 @@ import { CreateTradeDto } from '../src/modules/trades/dto/create-trade.dto';
 import { JwtService } from '@nestjs/jwt';
 import { PhysicalCustodyService } from '../src/modules/physical-custody/physical-custody.service';
 
+async function createStoredFile(prisma: PrismaService, uploadedById: string) {
+  return prisma.file.create({
+    data: {
+      uploadedById,
+      storageKey: `test-${Date.now()}`,
+      fileName: 'test.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 4,
+    },
+  });
+}
+
 let appPromise: Promise<INestApplication | null> | null = null;
 let baseUrl: string | null = null;
 let jwtService: JwtService | null = null;
@@ -197,6 +209,136 @@ test('Admin can cancel pending deposit request', async (t) => {
   const cancelled = (await cancelRes.json()) as { status: string; note?: string };
   assert.strictEqual(cancelled.status, 'CANCELLED');
   assert.ok(cancelled.note?.includes('no longer needed') || cancelled.note === 'for-cancel');
+});
+
+test('Admin deposit list is paginated and detail exposes attachments', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma);
+
+  const [depositA, depositB] = await Promise.all([
+    prisma.depositRequest.create({
+      data: { userId: user.id, amount: new Decimal(1000), method: 'wallet', status: DepositStatus.PENDING },
+    }),
+    prisma.depositRequest.create({
+      data: { userId: user.id, amount: new Decimal(2000), method: 'wallet', status: DepositStatus.APPROVED },
+    }),
+  ]);
+
+  const file = await createStoredFile(prisma, admin.id);
+  await prisma.attachment.create({
+    data: {
+      entityId: depositA.id,
+      entityType: 'DEPOSIT',
+      fileId: file.id,
+    },
+  });
+
+  const listRes = await fetch(`${baseUrl}/admin/deposits?page=1&limit=1`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(listRes.status, 200);
+  const listJson = (await listRes.json()) as any;
+  assert.ok(listJson.meta?.total >= 2);
+  assert.strictEqual(listJson.items.length, 1);
+
+  const detailRes = await fetch(`${baseUrl}/admin/deposits/${depositA.id}`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(detailRes.status, 200);
+  const detailJson = (await detailRes.json()) as any;
+  assert.ok(Array.isArray(detailJson.attachments));
+  assert.strictEqual(detailJson.attachments[0]?.fileId, file.id);
+});
+
+test('Admin withdrawal list and detail include pagination and attachments', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma);
+
+  const [withdrawA, withdrawB] = await Promise.all([
+    prisma.withdrawRequest.create({
+      data: { userId: user.id, amount: new Decimal(3000), bankName: 'bank', status: WithdrawStatus.PENDING },
+    }),
+    prisma.withdrawRequest.create({
+      data: { userId: user.id, amount: new Decimal(4000), bankName: 'bank', status: WithdrawStatus.REJECTED },
+    }),
+  ]);
+
+  const file = await createStoredFile(prisma, admin.id);
+  await prisma.attachment.create({
+    data: {
+      entityId: withdrawA.id,
+      entityType: 'WITHDRAW',
+      fileId: file.id,
+    },
+  });
+
+  const listRes = await fetch(`${baseUrl}/admin/withdrawals?page=1&limit=1&status=${WithdrawStatus.PENDING}`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(listRes.status, 200);
+  const listJson = (await listRes.json()) as any;
+  assert.ok(listJson.meta?.total >= 1);
+  assert.strictEqual(listJson.items.length, 1);
+
+  const detailRes = await fetch(`${baseUrl}/admin/withdrawals/${withdrawA.id}`, { headers: authHeader(admin) });
+  assert.strictEqual(detailRes.status, 200);
+  const detailJson = (await detailRes.json()) as any;
+  assert.ok(Array.isArray(detailJson.attachments));
+});
+
+test('Admin can fetch trade detail with attachments and paginated list', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma);
+
+  const instrument = await prisma.instrument.create({
+    data: { code: `T-${Date.now()}`, name: 'Test', type: InstrumentType.CURRENCY, unit: InstrumentUnit.KILOGRAM },
+  });
+
+  const trade = await prisma.trade.create({
+    data: {
+      clientId: user.id,
+      instrumentId: instrument.id,
+      side: TradeSide.BUY,
+      status: TradeStatus.PENDING,
+      type: 'SPOT',
+      settlementMethod: SettlementMethod.CASH,
+      quantity: new Decimal(1),
+      pricePerUnit: new Decimal(10),
+      totalAmount: new Decimal(10),
+    },
+  });
+
+  const file = await createStoredFile(prisma, admin.id);
+  await prisma.attachment.create({
+    data: {
+      entityId: trade.id,
+      entityType: 'TRADE',
+      fileId: file.id,
+    },
+  });
+
+  const listRes = await fetch(`${baseUrl}/admin/trades?page=1&limit=1`, { headers: authHeader(admin) });
+  assert.strictEqual(listRes.status, 200);
+  const listJson = (await listRes.json()) as any;
+  assert.ok(listJson.meta?.total >= 1);
+  assert.strictEqual(listJson.items.length, 1);
+
+  const detailRes = await fetch(`${baseUrl}/admin/trades/${trade.id}`, { headers: authHeader(admin) });
+  assert.strictEqual(detailRes.status, 200);
+  const detailJson = (await detailRes.json()) as any;
+  assert.ok(Array.isArray(detailJson.attachments));
 });
 
 test('File access is limited to owner/admin and attachments require ownership', async (t) => {
