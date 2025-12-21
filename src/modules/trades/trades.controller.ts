@@ -13,6 +13,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { ReverseTradeDto } from './dto/reverse-trade.dto';
 import { TradeResponseDto } from './dto/response/trade-response.dto';
+import { SettleForwardCashDto } from './dto/settle-forward-cash.dto';
 
 @ApiTags('trades')
 @ApiBearerAuth('access-token')
@@ -107,5 +108,18 @@ export class TradesController {
     @CurrentUser() admin: JwtRequestUser,
   ) {
     return this.tradesService.reverseTrade(id, admin.id, dto?.reason);
+  }
+
+  @Post('admin/trades/:id/settle-cash')
+  @Throttle(30, 60)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: TradeResponseDto })
+  settleCash(
+    @Param('id') id: string,
+    @Body() dto: SettleForwardCashDto,
+    @CurrentUser() admin: JwtRequestUser,
+  ) {
+    return this.tradesService.settleForwardTradeInCash(id, dto, admin.id);
   }
 }

@@ -10,6 +10,7 @@ import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { WithdrawalResponseDto } from './dto/response/withdrawal-response.dto';
+import { CancelRequestDto } from '../deposits/dto/cancel-request.dto';
 
 @ApiTags('withdrawals')
 @ApiBearerAuth('access-token')
@@ -58,5 +59,13 @@ export class WithdrawalsController {
   @ApiOkResponse({ type: WithdrawalResponseDto })
   reject(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.withdrawalsService.reject(id, dto, admin.id);
+  }
+
+  @Post('admin/withdrawals/:id/cancel')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: WithdrawalResponseDto })
+  cancel(@Param('id') id: string, @Body() dto: CancelRequestDto) {
+    return this.withdrawalsService.cancelWithdrawal(id, dto?.reason);
   }
 }

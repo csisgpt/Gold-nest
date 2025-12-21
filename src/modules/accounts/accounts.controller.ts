@@ -21,7 +21,16 @@ export class AccountsController {
     private readonly accountsService: AccountsService,
   ) {}
 
+  @Get('accounts/my')
+  async listMy(@CurrentUser() user: JwtRequestUser) {
+    return this.prisma.account.findMany({
+      where: { userId: user.id },
+      include: { instrument: true },
+    });
+  }
+
   @Get('accounts/user/:userId')
+  @Roles(UserRole.ADMIN)
   async listByUser(@Param('userId') userId: string) {
     // Simple read-only endpoint to inspect balances per user. House accounts can be queried with userId set to 'house'.
     if (userId === 'house') {

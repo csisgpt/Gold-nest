@@ -11,6 +11,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { AdminListDepositsDto } from './dto/admin-list-deposit-dto';
 import { DepositResponseDto } from './dto/response/deposit-response.dto';
+import { CancelRequestDto } from './dto/cancel-request.dto';
 
 @ApiTags('deposits')
 @ApiBearerAuth('access-token')
@@ -68,5 +69,13 @@ export class DepositsController {
   @ApiOkResponse({ type: DepositResponseDto })
   reject(@Param('id') id: string, @Body() dto: DecisionDto, @CurrentUser() admin: JwtRequestUser) {
     return this.depositsService.reject(id, dto, admin.id);
+  }
+
+  @Post('admin/deposits/:id/cancel')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: DepositResponseDto })
+  cancel(@Param('id') id: string, @Body() dto: CancelRequestDto) {
+    return this.depositsService.cancelDeposit(id, dto?.reason);
   }
 }

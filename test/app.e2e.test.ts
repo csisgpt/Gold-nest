@@ -127,6 +127,78 @@ async function uploadTestFile(
   return uploaded;
 }
 
+test('Users cannot access other users\' accounts or gold lots', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const userA = await createUser(prisma);
+  const userB = await createUser(prisma);
+
+  await prisma.goldLot.create({
+    data: {
+      userId: userA.id,
+      grossWeight: new Decimal(1),
+      karat: 750,
+      equivGram750: toEquivGram750(1, 750),
+      note: 'lot-a',
+    },
+  });
+
+  const forbiddenAccounts = await fetch(`${baseUrl}/accounts/user/${userA.id}`, {
+    method: 'GET',
+    headers: authHeader(userB),
+  });
+  assert.strictEqual(forbiddenAccounts.status, 403);
+
+  const forbiddenLots = await fetch(`${baseUrl}/gold/lots/user/${userA.id}`, {
+    method: 'GET',
+    headers: authHeader(userB),
+  });
+  assert.strictEqual(forbiddenLots.status, 403);
+
+  const myLots = await fetch(`${baseUrl}/gold/lots/my`, { headers: authHeader(userA) });
+  assert.strictEqual(myLots.status, 200);
+  const myLotsJson = (await myLots.json()) as any[];
+  assert.ok(Array.isArray(myLotsJson));
+  assert.ok(myLotsJson.length >= 1);
+
+  const adminLots = await fetch(`${baseUrl}/gold/lots/user/${userA.id}`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(adminLots.status, 200);
+});
+
+test('Admin can cancel pending deposit request', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma);
+
+  const deposit = await prisma.depositRequest.create({
+    data: {
+      userId: user.id,
+      amount: new Decimal(5000),
+      method: 'bank',
+      note: 'for-cancel',
+    },
+  });
+
+  const cancelRes = await fetch(`${baseUrl}/admin/deposits/${deposit.id}/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({ reason: 'no longer needed' }),
+  });
+
+  assert.strictEqual(cancelRes.status, 200);
+  const cancelled = (await cancelRes.json()) as { status: string; note?: string };
+  assert.strictEqual(cancelled.status, 'CANCELLED');
+  assert.ok(cancelled.note?.includes('no longer needed') || cancelled.note === 'for-cancel');
+});
+
 test('File access is limited to owner/admin and attachments require ownership', async (t) => {
   const app = await bootstrapApp();
   if (!requireApp(app, t)) return;
