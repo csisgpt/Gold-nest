@@ -98,6 +98,17 @@ function toEquivGram750(weightGram: Decimal | string | number, ayar: number): De
   return new Decimal(weightGram).mul(ayar).div(750);
 }
 
+async function setAccountBalance(
+  prisma: PrismaService,
+  accountId: string,
+  balance: Decimal.Value,
+): Promise<void> {
+  await prisma.account.update({
+    where: { id: accountId },
+    data: { balance: new Decimal(balance), blockedBalance: new Decimal(0) },
+  });
+}
+
 function authHeader(user: { id: string; mobile: string; role: UserRole }) {
   if (!jwtService) return {};
   const token = jwtService.sign({ sub: user.id, mobile: user.mobile, role: user.role });
@@ -1337,4 +1348,189 @@ test('Admin file listing exposes uploader and storage key', async (t) => {
   assert.ok(target, 'Uploaded file not found in admin listing');
   assert.strictEqual(target?.uploadedById, owner.id);
   assert.ok(target?.storageKey);
+});
+
+test('Wallet BUY trade reserves limits/funds and approves idempotently', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+
+  const prisma = app.get(PrismaService);
+  const accounts = app.get(AccountsService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma);
+
+  const instrument = await prisma.instrument.create({
+    data: {
+      code: `GOLD-${Date.now()}`,
+      name: 'Test Gold',
+      type: InstrumentType.GOLD,
+      unit: InstrumentUnit.GRAM_750_EQ,
+    },
+  });
+
+  const userIrr = await accounts.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE);
+  const userAsset = await accounts.getOrCreateAccount(user.id, instrument.code);
+  const houseIrr = await accounts.getOrCreateAccount(HOUSE_USER_ID, IRR_INSTRUMENT_CODE);
+  const houseAsset = await accounts.getOrCreateAccount(HOUSE_USER_ID, instrument.code);
+
+  await setAccountBalance(prisma, userIrr.id, new Decimal(100000));
+  await setAccountBalance(prisma, userAsset.id, new Decimal(0));
+  await setAccountBalance(prisma, houseIrr.id, new Decimal(500000));
+  await setAccountBalance(prisma, houseAsset.id, new Decimal(50));
+
+  const quantity = new Decimal(2);
+  const pricePerUnit = new Decimal(1000);
+  const total = quantity.mul(pricePerUnit);
+  const idempotencyKey = `trade-${Date.now()}`;
+
+  const createRes = await fetch(`${baseUrl}/trades`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(user),
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify({
+      instrumentCode: instrument.code,
+      side: TradeSide.BUY,
+      quantity: quantity.toString(),
+      pricePerUnit: pricePerUnit.toString(),
+      settlementMethod: SettlementMethod.WALLET,
+    } satisfies CreateTradeDto),
+  });
+  assert.ok(createRes.ok, `Create trade failed ${createRes.status}`);
+  const created = (await createRes.json()) as any;
+
+  const reservations = await prisma.accountReservation.findMany({
+    where: { refType: TxRefType.TRADE, refId: created.id },
+  });
+  assert.strictEqual(reservations.length, 1);
+  const irrAfterCreate = await prisma.account.findUnique({ where: { id: userIrr.id } });
+  assert.strictEqual(decimalString(irrAfterCreate?.blockedBalance ?? 0), total.toString());
+
+  const limitReservations = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.TRADE, refId: created.id },
+  });
+  assert.ok(limitReservations.length >= 2);
+  assert.ok(limitReservations.every((lr) => lr.status === LimitReservationStatus.RESERVED));
+
+  const createAgain = await fetch(`${baseUrl}/trades`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(user),
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify({
+      instrumentCode: instrument.code,
+      side: TradeSide.BUY,
+      quantity: quantity.toString(),
+      pricePerUnit: pricePerUnit.toString(),
+      settlementMethod: SettlementMethod.WALLET,
+    } satisfies CreateTradeDto),
+  });
+  const createAgainBody = (await createAgain.json()) as any;
+  assert.strictEqual(createAgainBody.id, created.id, 'Idempotent create should reuse trade');
+
+  const approveRes = await fetch(`${baseUrl}/admin/trades/${created.id}/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(admin),
+    },
+    body: JSON.stringify({}),
+  });
+  assert.ok(approveRes.ok, `Approve failed ${approveRes.status}`);
+  const approved = (await approveRes.json()) as any;
+  assert.strictEqual(approved.status, TradeStatus.APPROVED);
+
+  const irrAfterApprove = await prisma.account.findUnique({ where: { id: userIrr.id } });
+  const assetAfterApprove = await prisma.account.findUnique({ where: { id: userAsset.id } });
+  assert.strictEqual(decimalString(irrAfterApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(
+    decimalString(irrAfterApprove?.balance ?? 0),
+    decimalString(new Decimal(100000).minus(total)),
+  );
+  assert.strictEqual(decimalString(assetAfterApprove?.balance ?? 0), quantity.toString());
+
+  const consumedLimits = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.TRADE, refId: created.id },
+  });
+  assert.ok(consumedLimits.every((lr) => lr.status === LimitReservationStatus.CONSUMED));
+});
+
+test('Wallet SELL trade cancellation releases reservations', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+
+  const prisma = app.get(PrismaService);
+  const accounts = app.get(AccountsService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma);
+
+  const instrument = await prisma.instrument.create({
+    data: {
+      code: `COIN-${Date.now()}`,
+      name: 'Test Coin',
+      type: InstrumentType.COIN,
+      unit: InstrumentUnit.PIECE,
+    },
+  });
+
+  const userAsset = await accounts.getOrCreateAccount(user.id, instrument.code);
+  const houseIrr = await accounts.getOrCreateAccount(HOUSE_USER_ID, IRR_INSTRUMENT_CODE);
+  const houseAsset = await accounts.getOrCreateAccount(HOUSE_USER_ID, instrument.code);
+
+  await setAccountBalance(prisma, userAsset.id, new Decimal(10));
+  await setAccountBalance(prisma, houseIrr.id, new Decimal(500000));
+  await setAccountBalance(prisma, houseAsset.id, new Decimal(0));
+
+  const quantity = new Decimal(3);
+  const pricePerUnit = new Decimal(1500);
+
+  const createRes = await fetch(`${baseUrl}/trades`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(user),
+    },
+    body: JSON.stringify({
+      instrumentCode: instrument.code,
+      side: TradeSide.SELL,
+      quantity: quantity.toString(),
+      pricePerUnit: pricePerUnit.toString(),
+      settlementMethod: SettlementMethod.WALLET,
+    } satisfies CreateTradeDto),
+  });
+  assert.ok(createRes.ok, `Create sell failed ${createRes.status}`);
+  const created = (await createRes.json()) as any;
+
+  const reservation = await prisma.accountReservation.findMany({
+    where: { refType: TxRefType.TRADE, refId: created.id },
+  });
+  assert.strictEqual(reservation.length, 1);
+  const assetAfterCreate = await prisma.account.findUnique({ where: { id: userAsset.id } });
+  assert.strictEqual(decimalString(assetAfterCreate?.blockedBalance ?? 0), quantity.toString());
+
+  const cancelRes = await fetch(`${baseUrl}/admin/trades/${created.id}/cancel`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(admin),
+    },
+    body: JSON.stringify({ reason: 'no longer needed' }),
+  });
+  assert.ok(cancelRes.ok, `Cancel failed ${cancelRes.status}`);
+  const cancelled = (await cancelRes.json()) as any;
+  assert.strictEqual(cancelled.status, TradeStatus.CANCELLED_BY_ADMIN);
+
+  const assetAfterCancel = await prisma.account.findUnique({ where: { id: userAsset.id } });
+  assert.strictEqual(decimalString(assetAfterCancel?.blockedBalance ?? 0), '0');
+
+  const releasedLimits = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.TRADE, refId: created.id },
+  });
+  assert.ok(releasedLimits.every((lr) => lr.status === LimitReservationStatus.RELEASED));
 });

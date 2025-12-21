@@ -438,6 +438,8 @@ model Trade {
   pricePerUnit Decimal @db.Decimal(24, 6)
   totalAmount  Decimal @db.Decimal(24, 6)
 
+  idempotencyKey String?
+
   entryPrice       Decimal? @db.Decimal(24, 8)
   settlementPrice  Decimal? @db.Decimal(24, 8)
   settlementAmount Decimal? @db.Decimal(24, 2)
@@ -454,6 +456,10 @@ model Trade {
   rejectReason String?
 
   reversedAt DateTime?
+
+  cancelledAt DateTime?
+
+  @@unique([clientId, idempotencyKey])
 }
 
 model PhysicalCustodyPosition {

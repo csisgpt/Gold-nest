@@ -8,7 +8,12 @@ import {
 import {
   AccountTxType,
   AttachmentEntityType,
+  Prisma,
+  InstrumentType,
   Instrument,
+  PolicyAction,
+  PolicyMetric,
+  PolicyPeriod,
   SettlementMethod,
   TradeSide,
   TradeStatus,
@@ -37,6 +42,7 @@ import { PaginationService } from '../../common/pagination/pagination.service';
 import { AdminListTradesDto } from './dto/admin-list-trades.dto';
 import { AdminTradeDetailDto } from './dto/response/admin-trade-detail.dto';
 import { AdminTradesMapper, adminTradeAttachmentWhere, adminTradeSelect } from './trades.admin.mapper';
+import { LimitsService } from '../policy/limits.service';
 
 @Injectable()
 export class TradesService {
@@ -45,6 +51,7 @@ export class TradesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
+    private readonly limitsService: LimitsService,
     private readonly filesService: FilesService,
     private readonly instrumentsService: InstrumentsService,
     private readonly tahesabOutbox: TahesabOutboxService,
@@ -60,100 +67,186 @@ export class TradesService {
    */
 
   private validateTypeAndSettlementMethod(type: TradeType, method: SettlementMethod): void {
-    const allowedByType: Record<TradeType, SettlementMethod[]> = {
-      [TradeType.SPOT]: [
-        SettlementMethod.WALLET,
-        SettlementMethod.CASH,
-        SettlementMethod.EXTERNAL,
-        SettlementMethod.PHYSICAL,
-      ],
-      [TradeType.TOMORROW]: [
-        SettlementMethod.CASH,
-        SettlementMethod.PHYSICAL,
-        SettlementMethod.MIXED,
-      ],
-      [TradeType.DAY_AFTER]: [
-        SettlementMethod.CASH,
-        SettlementMethod.PHYSICAL,
-        SettlementMethod.MIXED,
-      ],
-    };
+    if (method !== SettlementMethod.WALLET) {
+      throw new BadRequestException({
+        code: 'NOT_IMPLEMENTED',
+        message: `Settlement method ${method} is not implemented for trades`,
+      });
+    }
 
-    const allowed = allowedByType[type];
-    if (!allowed?.includes(method)) {
-      throw new BadRequestException(
-        `Settlement method ${method} is not allowed for trade type ${type}`,
-      );
+    if (type !== TradeType.SPOT) {
+      throw new BadRequestException({
+        code: 'NOT_IMPLEMENTED',
+        message: `Trade type ${type} is not implemented for wallet settlement`,
+      });
     }
   }
 
-  async createForUser(user: JwtRequestUser, dto: CreateTradeDto) {
-    const instrument = await this.instrumentsService.findByCode(dto.instrumentCode);
+  async createForUser(user: JwtRequestUser, dto: CreateTradeDto, idempotencyKey?: string) {
     const quantity = new Decimal(dto.quantity);
-    const pricePerUnit = await this.resolvePricePerUnit(dto, instrument);
+    const pricePerUnit = new Decimal(dto.pricePerUnit);
     const totalAmount = quantity.mul(pricePerUnit);
-    // Default to SPOT to preserve existing behavior until clients explicitly pass forward types.
     const tradeType = dto.type ?? TradeType.SPOT;
-
-    this.validateTypeAndSettlementMethod(tradeType, dto.settlementMethod);
 
     if (quantity.lte(0) || pricePerUnit.lte(0)) {
       throw new BadRequestException('Quantity and pricePerUnit must be positive');
     }
 
-    if (dto.settlementMethod === SettlementMethod.WALLET && dto.side === TradeSide.BUY) {
-      // Wallet funded buys require sufficient IRR capacity
-      const irrAccount = await this.accountsService.getOrCreateAccount(
-        user.id,
-        IRR_INSTRUMENT_CODE,
-      );
-      const usable = this.accountsService.getUsableCapacity(irrAccount);
-      if (usable.lt(totalAmount)) {
-        throw new InsufficientCreditException('Not enough IRR usable balance to open BUY trade');
-      }
-    }
+    this.validateTypeAndSettlementMethod(tradeType, dto.settlementMethod);
 
-    if (dto.settlementMethod === SettlementMethod.WALLET && dto.side === TradeSide.SELL) {
-      const assetAccount = await this.accountsService.getOrCreateAccount(
-        user.id,
-        instrument.code,
-      );
+    return runInTx(
+      this.prisma,
+      async (tx) => {
+        const instrument = await tx.instrument.findUnique({ where: { code: dto.instrumentCode } });
+        if (!instrument) {
+          throw new NotFoundException('Instrument not found');
+        }
 
-      const usable = this.accountsService.getUsableCapacity(assetAccount);
-      if (usable.lt(quantity)) {
-        throw new InsufficientCreditException(
-          'Not enough asset balance to sell with WALLET settlement',
-        );
-      }
-    }
+        if (idempotencyKey) {
+          const existing = await tx.trade.findFirst({
+            where: { clientId: user.id, idempotencyKey },
+            select: tradeWithRelationsSelect,
+          });
+          if (existing) {
+            this.logger.debug(`Reusing idempotent trade ${existing.id} for user ${user.id}`);
+            return existing as TradeWithRelations;
+          }
+        }
 
-    const trade = await runInTx(this.prisma, async (tx) => {
-      const record = await tx.trade.create({
-        data: {
-          clientId: user.id,
-          instrumentId: instrument.id,
-          side: dto.side,
-          settlementMethod: dto.settlementMethod,
-          type: tradeType,
+        const trade = await tx.trade.create({
+          data: {
+            clientId: user.id,
+            instrumentId: instrument.id,
+            side: dto.side,
+            settlementMethod: dto.settlementMethod,
+            type: tradeType,
+            quantity,
+            pricePerUnit,
+            totalAmount,
+            clientNote: dto.clientNote,
+            idempotencyKey,
+          },
+        });
+
+        await this.reserveLimitsForTrade({
+          action: dto.side === TradeSide.BUY ? PolicyAction.TRADE_BUY : PolicyAction.TRADE_SELL,
+          instrument,
           quantity,
-          pricePerUnit,
           totalAmount,
-          clientNote: dto.clientNote,
-        },
-      });
+          trade,
+          tx,
+        });
 
-      await this.filesService.createAttachmentsForActor(
-        { id: user.id, role: user.role },
-        dto.fileIds,
-        AttachmentEntityType.TRADE,
-        record.id,
-        tx,
+        await this.reserveFundsForTrade({
+          trade: { ...trade, instrument } as TradeWithRelations,
+          instrument,
+          quantity,
+          totalAmount,
+          tx,
+        });
+
+        await this.filesService.createAttachmentsForActor(
+          { id: user.id, role: user.role },
+          dto.fileIds,
+          AttachmentEntityType.TRADE,
+          trade.id,
+          tx,
+        );
+
+        this.logger.log(`Trade ${trade.id} created for user ${user.id}`);
+
+        return tx.trade.findUnique({ where: { id: trade.id }, select: tradeWithRelationsSelect });
+      },
+      { logger: this.logger },
+    );
+  }
+
+  private async reserveLimitsForTrade(params: {
+    action: PolicyAction;
+    instrument: Instrument;
+    quantity: Decimal;
+    totalAmount: Decimal;
+    trade: { id: string; clientId: string };
+    tx: Prisma.TransactionClient;
+  }) {
+    const reserveMetric = async (
+      metric: PolicyMetric,
+      amount: Decimal,
+      instrumentKey: string,
+    ) => {
+      await this.limitsService.reserve(
+        {
+          userId: params.trade.clientId,
+          action: params.action,
+          metric,
+          period: PolicyPeriod.DAILY,
+          amount,
+          instrumentKey,
+          instrumentId: params.instrument.id,
+          instrumentType: params.instrument.type,
+          refType: TxRefType.TRADE,
+          refId: params.trade.id,
+        },
+        params.tx,
       );
 
-      return record;
-    }, { logger: this.logger });
+      await this.limitsService.reserve(
+        {
+          userId: params.trade.clientId,
+          action: params.action,
+          metric,
+          period: PolicyPeriod.MONTHLY,
+          amount,
+          instrumentKey,
+          instrumentId: params.instrument.id,
+          instrumentType: params.instrument.type,
+          refType: TxRefType.TRADE,
+          refId: params.trade.id,
+        },
+        params.tx,
+      );
+    };
 
-    return trade;
+    await reserveMetric(PolicyMetric.NOTIONAL_IRR, params.totalAmount, 'ALL');
+
+    if (params.instrument.type === InstrumentType.GOLD) {
+      await reserveMetric(PolicyMetric.WEIGHT_750_G, params.quantity, params.instrument.id);
+    }
+
+    if (params.instrument.type === InstrumentType.COIN) {
+      await reserveMetric(PolicyMetric.COUNT, params.quantity, params.instrument.id);
+    }
+  }
+
+  private async reserveFundsForTrade(params: {
+    trade: TradeWithRelations;
+    instrument: Instrument;
+    quantity: Decimal;
+    totalAmount: Decimal;
+    tx: Prisma.TransactionClient;
+  }) {
+    if (params.trade.settlementMethod !== SettlementMethod.WALLET) return;
+
+    if (params.trade.side === TradeSide.BUY) {
+      await this.accountsService.reserveFunds({
+        userId: params.trade.clientId,
+        instrumentCode: IRR_INSTRUMENT_CODE,
+        amount: params.totalAmount,
+        refType: TxRefType.TRADE,
+        refId: params.trade.id,
+        tx: params.tx,
+      });
+      return;
+    }
+
+    await this.accountsService.reserveFunds({
+      userId: params.trade.clientId,
+      instrumentCode: params.instrument.code,
+      amount: params.quantity,
+      refType: TxRefType.TRADE,
+      refId: params.trade.id,
+      tx: params.tx,
+    });
   }
 
   findMy(userId: string) {
@@ -179,6 +272,8 @@ export class TradesService {
     const where = {
       status: query.status,
       clientId: query.userId,
+      instrumentId: query.instrumentId,
+      side: query.side,
       totalAmount: {
         gte: query.amountFrom ? new Decimal(query.amountFrom) : undefined,
         lte: query.amountTo ? new Decimal(query.amountTo) : undefined,
@@ -252,37 +347,41 @@ export class TradesService {
 
   async approve(id: string, dto: ApproveTradeDto, adminId: string) {
     const updatedTrade = (await runInTx(this.prisma, async (tx) => {
-      const trade = await tx.trade.findUnique({
-        where: { id },
-        select: tradeWithRelationsSelect,
-      });
+      const [locked] = await tx.$queryRaw<TradeWithRelations[]>`
+        SELECT * FROM "Trade" WHERE id = ${id} FOR UPDATE
+      `;
+      if (!locked) throw new NotFoundException('Trade not found');
+
+      const trade = await tx.trade.findUnique({ where: { id }, select: tradeWithRelationsSelect });
       if (!trade) throw new NotFoundException('Trade not found');
+
       if (trade.status !== TradeStatus.PENDING) {
-        throw new BadRequestException(
-          `Only PENDING trades can be approved (current status: ${trade.status})`,
-        );
+        return trade as TradeWithRelations;
       }
 
-      const { count: updatedCount } = await tx.trade.updateMany({
-        where: { id: trade.id, status: TradeStatus.PENDING },
-        data: {
-          status: TradeStatus.APPROVED,
-          approvedAt: new Date(),
-          approvedById: adminId,
-          adminNote: dto.adminNote,
-        },
-      });
-
-      if (updatedCount === 0) {
-        throw new BadRequestException(
-          `Only PENDING trades can be approved (current status: ${trade.status})`,
-        );
+      if (trade.settlementMethod !== SettlementMethod.WALLET) {
+        throw new BadRequestException({
+          code: 'NOT_IMPLEMENTED',
+          message: 'Only wallet settlement is supported for trades',
+        });
       }
 
       const quantity = new Decimal(trade.quantity);
       const total = new Decimal(trade.totalAmount);
 
-      if (trade.settlementMethod === SettlementMethod.WALLET) {
+      if (trade.side === TradeSide.BUY) {
+        const consumedReservation = await this.accountsService.consumeFunds({
+          userId: trade.clientId,
+          instrumentCode: IRR_INSTRUMENT_CODE,
+          refType: TxRefType.TRADE,
+          refId: trade.id,
+          tx,
+        });
+
+        const userIrrAccount =
+          consumedReservation?.account ??
+          (await this.accountsService.getOrCreateAccount(trade.clientId, IRR_INSTRUMENT_CODE, tx));
+
         const houseIrr = await this.accountsService.getOrCreateAccount(
           HOUSE_USER_ID,
           IRR_INSTRUMENT_CODE,
@@ -299,156 +398,137 @@ export class TradesService {
           tx,
         );
 
-        const irrAccount = await this.accountsService.getOrCreateAccount(
+        const usable = this.accountsService.getUsableCapacity(userIrrAccount);
+        if (usable.lt(total)) {
+          throw new InsufficientCreditException('Insufficient IRR balance for trade approval');
+        }
+
+        await this.accountsService.applyTransaction(
+          tx,
+          userIrrAccount,
+          total.negated(),
+          AccountTxType.TRADE_DEBIT,
+          TxRefType.TRADE,
+          trade.id,
+          adminId,
+        );
+        await this.accountsService.applyTransaction(
+          tx,
+          houseIrr,
+          total,
+          AccountTxType.TRADE_CREDIT,
+          TxRefType.TRADE,
+          trade.id,
+          adminId,
+        );
+        await this.accountsService.applyTransaction(
+          tx,
+          userAsset,
+          quantity,
+          AccountTxType.TRADE_CREDIT,
+          TxRefType.TRADE,
+          trade.id,
+          adminId,
+        );
+        await this.accountsService.applyTransaction(
+          tx,
+          houseAsset,
+          quantity.negated(),
+          AccountTxType.TRADE_DEBIT,
+          TxRefType.TRADE,
+          trade.id,
+          adminId,
+        );
+      } else {
+        const consumedReservation = await this.accountsService.consumeFunds({
+          userId: trade.clientId,
+          instrumentCode: trade.instrument.code,
+          refType: TxRefType.TRADE,
+          refId: trade.id,
+          tx,
+        });
+
+        const userAsset =
+          consumedReservation?.account ??
+          (await this.accountsService.getOrCreateAccount(
+            trade.clientId,
+            trade.instrument.code,
+            tx,
+          ));
+        const houseAsset = await this.accountsService.getOrCreateAccount(
+          HOUSE_USER_ID,
+          trade.instrument.code,
+          tx,
+        );
+        const userIrr = await this.accountsService.getOrCreateAccount(
           trade.clientId,
           IRR_INSTRUMENT_CODE,
           tx,
         );
+        const houseIrr = await this.accountsService.getOrCreateAccount(
+          HOUSE_USER_ID,
+          IRR_INSTRUMENT_CODE,
+          tx,
+        );
 
-        await this.accountsService.lockAccounts(tx, [
-          irrAccount.id,
-          houseIrr.id,
-          userAsset.id,
-          houseAsset.id,
-        ]);
-
-        if (trade.side === TradeSide.BUY) {
-          const usable = this.accountsService.getUsableCapacity(irrAccount);
-          if (usable.lt(total)) {
-            throw new InsufficientCreditException('Insufficient IRR for settlement');
-          }
+        const usableAsset = this.accountsService.getUsableCapacity(userAsset);
+        if (usableAsset.lt(quantity)) {
+          throw new InsufficientCreditException('Not enough asset to approve sell trade');
         }
 
-        if (trade.side === TradeSide.SELL) {
-          const usableAssetBalance = this.accountsService.getUsableCapacity(userAsset);
-          if (usableAssetBalance.lt(quantity)) {
-            throw new InsufficientCreditException('Not enough asset to approve sell trade');
-          }
-        }
-
-        if (trade.side === TradeSide.BUY) {
-          await this.accountsService.applyTransaction(
-            {
-              accountId: irrAccount.id,
-              delta: total.negated(),
-              type: AccountTxType.TRADE_DEBIT,
-              refType: TxRefType.TRADE,
-              refId: trade.id,
-              createdById: adminId,
-            },
-            tx,
-          );
-          await this.accountsService.applyTransaction(
-            {
-              accountId: houseIrr.id,
-              delta: total,
-              type: AccountTxType.TRADE_CREDIT,
-              refType: TxRefType.TRADE,
-              refId: trade.id,
-              createdById: adminId,
-            },
-            tx,
-          );
-          await this.accountsService.applyTransaction(
-            {
-              accountId: userAsset.id,
-              delta: quantity,
-              type: AccountTxType.TRADE_CREDIT,
-              refType: TxRefType.TRADE,
-              refId: trade.id,
-              createdById: adminId,
-            },
-            tx,
-          );
-          await this.accountsService.applyTransaction(
-            {
-              accountId: houseAsset.id,
-              delta: quantity.negated(),
-              type: AccountTxType.TRADE_DEBIT,
-              refType: TxRefType.TRADE,
-              refId: trade.id,
-              createdById: adminId,
-            },
-            tx,
-          );
-        } else {
-          await this.accountsService.applyTransaction(
-            {
-              accountId: irrAccount.id,
-              delta: total,
-              type: AccountTxType.TRADE_CREDIT,
-              refType: TxRefType.TRADE,
-              refId: trade.id,
-              createdById: adminId,
-            },
-            tx,
-          );
-          await this.accountsService.applyTransaction(
-            {
-              accountId: houseIrr.id,
-              delta: total.negated(),
-              type: AccountTxType.TRADE_DEBIT,
-              refType: TxRefType.TRADE,
-              refId: trade.id,
-              createdById: adminId,
-            },
-            tx,
-          );
-          await this.accountsService.applyTransaction(
-            {
-              accountId: userAsset.id,
-              delta: quantity.negated(),
-              type: AccountTxType.TRADE_DEBIT,
-              refType: TxRefType.TRADE,
-              refId: trade.id,
-              createdById: adminId,
-            },
-            tx,
-          );
-          await this.accountsService.applyTransaction(
-            {
-              accountId: houseAsset.id,
-              delta: quantity,
-              type: AccountTxType.TRADE_CREDIT,
-              refType: TxRefType.TRADE,
-              refId: trade.id,
-              createdById: adminId,
-            },
-            tx,
-          );
-        }
-      } else {
-        // For external, cash, or physical settlement we only mark the trade approved for now.
-        // Tahesab enqueueing for physical settlement (and optional cash PnL legs) is handled
-        // after the transaction using the outbox to stay asynchronous.
-        // TODO: Post receivables/payables or cash ledgers for forward/T+1 settlements when
-        // those flows are formalized in the domain model.
+        await this.accountsService.applyTransaction(
+          tx,
+          userAsset,
+          quantity.negated(),
+          AccountTxType.TRADE_DEBIT,
+          TxRefType.TRADE,
+          trade.id,
+          adminId,
+        );
+        await this.accountsService.applyTransaction(
+          tx,
+          houseAsset,
+          quantity,
+          AccountTxType.TRADE_CREDIT,
+          TxRefType.TRADE,
+          trade.id,
+          adminId,
+        );
+        await this.accountsService.applyTransaction(
+          tx,
+          userIrr,
+          total,
+          AccountTxType.TRADE_CREDIT,
+          TxRefType.TRADE,
+          trade.id,
+          adminId,
+        );
+        await this.accountsService.applyTransaction(
+          tx,
+          houseIrr,
+          total.negated(),
+          AccountTxType.TRADE_DEBIT,
+          TxRefType.TRADE,
+          trade.id,
+          adminId,
+        );
       }
 
-      const updatedTrade = await tx.trade.findUnique({
+      await this.limitsService.consume({ refType: TxRefType.TRADE, refId: trade.id }, tx);
+
+      return tx.trade.update({
         where: { id: trade.id },
+        data: {
+          status: TradeStatus.APPROVED,
+          approvedAt: new Date(),
+          approvedById: adminId,
+          adminNote: dto.adminNote ?? trade.adminNote,
+        },
         select: tradeWithRelationsSelect,
       });
-      this.logger.log(
-        `Trade ${trade.id} status ${trade.status} -> ${updatedTrade?.status} by admin ${adminId}`,
-      );
-
-      return updatedTrade;
     }, { logger: this.logger })) as TradeWithRelations;
 
     await this.enqueueTahesabForWalletTrade(updatedTrade);
-    await this.enqueueTahesabForForwardPhysicalSettlement(updatedTrade);
-
-    if (
-      updatedTrade &&
-      (updatedTrade.type === TradeType.TOMORROW || updatedTrade.type === TradeType.DAY_AFTER) &&
-      updatedTrade.settlementMethod === SettlementMethod.CASH
-    ) {
-      // TODO: enqueue forward cash settlement voucher (DoNewSanadVKHVaghNaghd/VKHBank) using
-      // SimpleVoucherDto once forward settlement amounts/PnL fields are formalized on the Trade
-      // entity. Reuse the new TradeType distinctions to avoid mixing SPOT and forward logic.
-    }
-
     return TradesMapper.toResponse(updatedTrade);
   }
 
@@ -692,27 +772,48 @@ export class TradesService {
 
   async cancelTrade(tradeId: string, reason?: string) {
     const updated = (await runInTx(this.prisma, async (tx) => {
+      const [locked] = await tx.$queryRaw<TradeWithRelations[]>`
+        SELECT * FROM "Trade" WHERE id = ${tradeId} FOR UPDATE
+      `;
+      if (!locked) throw new NotFoundException('Trade not found');
+
       const trade = await tx.trade.findUnique({
         where: { id: tradeId },
         select: tradeWithRelationsSelect,
       });
       if (!trade) throw new NotFoundException('Trade not found');
-      if (trade.status === TradeStatus.CANCELLED_BY_ADMIN || trade.status === TradeStatus.CANCELLED_BY_USER) {
-        return trade;
+
+      if (
+        trade.status === TradeStatus.CANCELLED_BY_ADMIN ||
+        trade.status === TradeStatus.CANCELLED_BY_USER
+      ) {
+        return trade as TradeWithRelations;
       }
       if (trade.status !== TradeStatus.PENDING) {
         throw new ConflictException('Only PENDING trades can be cancelled');
       }
 
-      const cancelStatus = TradeStatus.CANCELLED_BY_ADMIN;
+      await this.limitsService.release({ refType: TxRefType.TRADE, refId: trade.id }, tx);
+      if (trade.settlementMethod === SettlementMethod.WALLET) {
+        const instrumentCode = trade.side === TradeSide.BUY ? IRR_INSTRUMENT_CODE : trade.instrument.code;
+        await this.accountsService.releaseFunds({
+          userId: trade.clientId,
+          instrumentCode,
+          refType: TxRefType.TRADE,
+          refId: trade.id,
+          tx,
+        });
+      }
 
-      const updatedTrade = await tx.trade.update({
+      return tx.trade.update({
         where: { id: trade.id },
-        data: { status: cancelStatus, adminNote: reason ?? trade.adminNote },
+        data: {
+          status: TradeStatus.CANCELLED_BY_ADMIN,
+          adminNote: reason ?? trade.adminNote,
+          cancelledAt: new Date(),
+        },
         select: tradeWithRelationsSelect,
       });
-
-      return updatedTrade;
     }, { logger: this.logger })) as TradeWithRelations;
 
     await this.enqueueTahesabDeletionForTrade(tradeId, `spot:cancel:${tradeId}`);
@@ -824,29 +925,46 @@ export class TradesService {
 
   async reject(id: string, dto: RejectTradeDto, adminId: string) {
     const updated = (await runInTx(this.prisma, async (tx) => {
-      const trade = await tx.trade.findUnique({ where: { id } });
+      const [locked] = await tx.$queryRaw<TradeWithRelations[]>`
+        SELECT * FROM "Trade" WHERE id = ${id} FOR UPDATE
+      `;
+      if (!locked) throw new NotFoundException('Trade not found');
+
+      const trade = await tx.trade.findUnique({ where: { id }, select: tradeWithRelationsSelect });
       if (!trade) throw new NotFoundException('Trade not found');
+
+      if (trade.status === TradeStatus.REJECTED) {
+        return trade as TradeWithRelations;
+      }
       if (trade.status !== TradeStatus.PENDING) {
-        throw new BadRequestException(
-          `Only PENDING trades can be rejected (current status: ${trade.status})`,
-        );
+        throw new BadRequestException('Only PENDING trades can be rejected');
       }
 
-      const updated = await tx.trade.update({
+      await this.limitsService.release({ refType: TxRefType.TRADE, refId: trade.id }, tx);
+
+      if (trade.settlementMethod === SettlementMethod.WALLET) {
+        const instrumentCode = trade.side === TradeSide.BUY ? IRR_INSTRUMENT_CODE : trade.instrument.code;
+        await this.accountsService.releaseFunds({
+          userId: trade.clientId,
+          instrumentCode,
+          refType: TxRefType.TRADE,
+          refId: trade.id,
+          tx,
+        });
+      }
+
+      return tx.trade.update({
         where: { id },
         data: {
           status: TradeStatus.REJECTED,
           rejectedAt: new Date(),
           rejectReason: dto.rejectReason,
+          adminNote: dto.rejectReason ?? undefined,
         },
         select: tradeWithRelationsSelect,
       });
-
-      this.logger.log(`Trade ${trade.id} status ${trade.status} -> ${updated.status} by admin ${adminId}`);
-
-      return updated;
     }, { logger: this.logger })) as TradeWithRelations;
 
-    return TradesMapper.toResponse(updated);
+    return TradesMapper.toResponse(updated as TradeWithRelations);
   }
 }
