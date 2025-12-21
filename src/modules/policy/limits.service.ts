@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
+  Prisma,
   InstrumentType,
   LimitReservationStatus,
   PolicyAction,
@@ -26,18 +27,21 @@ export class LimitsService {
     private readonly policyResolver: PolicyResolverService,
   ) {}
 
-  async reserve(params: {
-    userId: string;
-    action: PolicyAction;
-    metric: PolicyMetric;
-    period: PolicyPeriod;
-    amount: Decimal.Value;
-    instrumentKey?: string;
-    instrumentId?: string;
-    instrumentType?: InstrumentType | null;
-    refType: string;
-    refId: string;
-  }) {
+  async reserve(
+    params: {
+      userId: string;
+      action: PolicyAction;
+      metric: PolicyMetric;
+      period: PolicyPeriod;
+      amount: Decimal.Value;
+      instrumentKey?: string;
+      instrumentId?: string;
+      instrumentType?: InstrumentType | null;
+      refType: string;
+      refId: string;
+    },
+    tx?: Prisma.TransactionClient,
+  ) {
     const amount = dec(params.amount);
     const instrumentKey = params.instrumentKey ?? params.instrumentId ?? DEFAULT_INSTRUMENT_KEY;
     const periodKey =
@@ -45,10 +49,10 @@ export class LimitsService {
         ? this.periodKeyService.getMonthlyKey()
         : this.periodKeyService.getDailyKey();
 
-    return this.prisma.$transaction(async (tx) => {
+    const executor = async (db: Prisma.TransactionClient) => {
       let instrumentType = params.instrumentType ?? null;
       if (!instrumentType && params.instrumentId) {
-        const instrument = await tx.instrument.findUnique({ where: { id: params.instrumentId } });
+        const instrument = await db.instrument.findUnique({ where: { id: params.instrumentId } });
         instrumentType = instrument?.type ?? null;
       }
 
@@ -61,14 +65,14 @@ export class LimitsService {
           instrumentId: params.instrumentId,
           instrumentType: instrumentType,
         },
-        tx,
+        db,
       );
 
       if (!applicable.effectiveLimit && applicable.kycRequiredLevel) {
         throw new PolicyViolationException('KYC_REQUIRED', 'User KYC level insufficient for limit');
       }
 
-      const usage = await tx.limitUsage.upsert({
+      const usage = await db.limitUsage.upsert({
         where: {
           userId_action_metric_period_periodKey_instrumentKey: {
             userId: params.userId,
@@ -90,8 +94,8 @@ export class LimitsService {
         update: {},
       });
 
-      await tx.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, usage.id);
-      const lockedUsage = await tx.limitUsage.findUnique({ where: { id: usage.id } });
+      await db.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, usage.id);
+      const lockedUsage = await db.limitUsage.findUnique({ where: { id: usage.id } });
       if (!lockedUsage) throw new NotFoundException('Limit usage not found');
 
       const projected = dec(lockedUsage.usedAmount).add(lockedUsage.reservedAmount).add(amount);
@@ -100,7 +104,7 @@ export class LimitsService {
         throw new PolicyViolationException('LIMIT_EXCEEDED', 'Policy limit exceeded');
       }
 
-      const existingReservation = await tx.limitReservation.findUnique({
+      const existingReservation = await db.limitReservation.findUnique({
         where: {
           refType_refId_usageId: {
             refId: params.refId,
@@ -114,7 +118,7 @@ export class LimitsService {
         return { usage: lockedUsage, reservation: existingReservation };
       }
 
-      const reservation = await tx.limitReservation.create({
+      const reservation = await db.limitReservation.create({
         data: {
           usageId: lockedUsage.id,
           userId: params.userId,
@@ -125,69 +129,78 @@ export class LimitsService {
         },
       });
 
-      const updatedUsage = await tx.limitUsage.update({
+      const updatedUsage = await db.limitUsage.update({
         where: { id: lockedUsage.id },
         data: { reservedAmount: addDec(lockedUsage.reservedAmount, amount) },
       });
 
       return { usage: updatedUsage, reservation };
-    });
+    };
+
+    if (tx) return executor(tx);
+    return this.prisma.$transaction((client) => executor(client));
   }
 
-  async consume(params: { refType: string; refId: string }) {
-    return this.prisma.$transaction(async (tx) => {
-      const reservations = await tx.limitReservation.findMany({
+  async consume(params: { refType: string; refId: string }, tx?: Prisma.TransactionClient) {
+    const executor = async (db: Prisma.TransactionClient) => {
+      const reservations = await db.limitReservation.findMany({
         where: { refType: params.refType, refId: params.refId },
       });
 
       for (const reservation of reservations) {
         if (reservation.status === LimitReservationStatusEnum.CONSUMED) continue;
 
-        await tx.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, reservation.usageId);
-        const usage = await tx.limitUsage.findUnique({ where: { id: reservation.usageId } });
+        await db.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, reservation.usageId);
+        const usage = await db.limitUsage.findUnique({ where: { id: reservation.usageId } });
         if (!usage) continue;
 
         const newReserved = subDec(usage.reservedAmount, reservation.amount);
         const newUsed = addDec(usage.usedAmount, reservation.amount);
 
-        await tx.limitUsage.update({
+        await db.limitUsage.update({
           where: { id: usage.id },
           data: { reservedAmount: newReserved, usedAmount: newUsed },
         });
 
-        await tx.limitReservation.update({
+        await db.limitReservation.update({
           where: { id: reservation.id },
           data: { status: LimitReservationStatusEnum.CONSUMED as any },
         });
       }
-    });
+    };
+
+    if (tx) return executor(tx);
+    return this.prisma.$transaction((client) => executor(client));
   }
 
-  async release(params: { refType: string; refId: string }) {
-    return this.prisma.$transaction(async (tx) => {
-      const reservations = await tx.limitReservation.findMany({
+  async release(params: { refType: string; refId: string }, tx?: Prisma.TransactionClient) {
+    const executor = async (db: Prisma.TransactionClient) => {
+      const reservations = await db.limitReservation.findMany({
         where: { refType: params.refType, refId: params.refId },
       });
 
       for (const reservation of reservations) {
         if (reservation.status !== LimitReservationStatusEnum.RESERVED) continue;
 
-        await tx.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, reservation.usageId);
-        const usage = await tx.limitUsage.findUnique({ where: { id: reservation.usageId } });
+        await db.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, reservation.usageId);
+        const usage = await db.limitUsage.findUnique({ where: { id: reservation.usageId } });
         if (!usage) continue;
 
         const newReserved = subDec(usage.reservedAmount, reservation.amount);
 
-        await tx.limitUsage.update({
+        await db.limitUsage.update({
           where: { id: usage.id },
           data: { reservedAmount: newReserved },
         });
 
-        await tx.limitReservation.update({
+        await db.limitReservation.update({
           where: { id: reservation.id },
           data: { status: LimitReservationStatusEnum.RELEASED as any },
         });
       }
-    });
+    };
+
+    if (tx) return executor(tx);
+    return this.prisma.$transaction((client) => executor(client));
   }
 }

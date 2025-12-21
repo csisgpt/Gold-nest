@@ -544,6 +544,11 @@ model WithdrawRequest {
 
   accountTx   AccountTx? @relation("WithdrawAccountTx", fields: [accountTxId], references: [id])
   accountTxId String?    @unique
+
+  /// Optional idempotency key scoped to the user to make create requests safe to retry
+  idempotencyKey String?
+
+  @@unique([userId, idempotencyKey])
 }
 
 model RemittanceGroup {
