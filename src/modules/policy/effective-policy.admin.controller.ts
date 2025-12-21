@@ -27,8 +27,9 @@ export class EffectivePolicyAdminController {
       groupsMap.get(key)!.rules.push(rule);
     }
 
-    const order = [KycLevel.NONE, KycLevel.BASIC, KycLevel.FULL];
-    const userLevel = effective.userKyc?.level ?? KycLevel.NONE;
+    const kycEnum = (KycLevel as any) ?? { NONE: 'NONE', BASIC: 'BASIC', FULL: 'FULL' };
+    const order = [kycEnum.NONE, kycEnum.BASIC, kycEnum.FULL];
+    const userLevel = (effective.userKyc?.level as any) ?? kycEnum.NONE;
 
     const grouped = Array.from(groupsMap.values()).map((group) => {
       const applicable = this.policyResolver.findApplicableRules({
@@ -40,23 +41,21 @@ export class EffectivePolicyAdminController {
         instrumentType: undefined,
       });
 
-      const kycRequiredLevel = applicable.reduce<KycLevel | null>((required, rule) => {
-        const ruleIdx = order.indexOf(rule.minKycLevel);
-        const currentIdx = order.indexOf(required ?? KycLevel.NONE);
-        const userIdx = order.indexOf(userLevel);
-        if (ruleIdx > userIdx && ruleIdx > currentIdx) {
+      const eligible = applicable.filter((rule) => order.indexOf(rule.minKycLevel) <= order.indexOf(userLevel));
+      const blockedByKyc = applicable.filter((rule) => order.indexOf(rule.minKycLevel) > order.indexOf(userLevel));
+      const kycRequiredLevel = blockedByKyc.reduce<KycLevel | null>((required, rule) => {
+        if (!required || order.indexOf(rule.minKycLevel) < order.indexOf(required)) {
           return rule.minKycLevel;
         }
         return required;
       }, null);
 
-      const eligible = applicable.filter((rule) => order.indexOf(rule.minKycLevel) <= order.indexOf(userLevel));
-
       return {
         action: group.action,
         metric: group.metric,
         period: group.period,
-        rules: applicable,
+        eligibleRules: eligible,
+        upgradeRules: blockedByKyc,
         effectiveLimit: this.policyResolver.computeEffectiveLimit(eligible),
         kycRequiredLevel,
       };

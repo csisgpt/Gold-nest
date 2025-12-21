@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
+  InstrumentType,
   LimitReservationStatus,
   PolicyAction,
   PolicyMetric,
@@ -13,6 +14,9 @@ import { PeriodKeyService } from './period-key.service';
 import { PolicyResolverService } from './policy-resolver.service';
 
 const DEFAULT_INSTRUMENT_KEY = 'ALL';
+const LimitReservationStatusEnum =
+  (LimitReservationStatus as any) ?? ({ RESERVED: 'RESERVED', CONSUMED: 'CONSUMED', RELEASED: 'RELEASED' } as const);
+const PolicyPeriodEnum = (PolicyPeriod as any) ?? ({ DAILY: 'DAILY', MONTHLY: 'MONTHLY' } as const);
 
 @Injectable()
 export class LimitsService {
@@ -29,30 +33,38 @@ export class LimitsService {
     period: PolicyPeriod;
     amount: Decimal.Value;
     instrumentKey?: string;
+    instrumentId?: string;
+    instrumentType?: InstrumentType | null;
     refType: string;
     refId: string;
   }) {
     const amount = dec(params.amount);
-    const instrumentKey = params.instrumentKey ?? DEFAULT_INSTRUMENT_KEY;
+    const instrumentKey = params.instrumentKey ?? params.instrumentId ?? DEFAULT_INSTRUMENT_KEY;
     const periodKey =
-      params.period === PolicyPeriod.MONTHLY
+      params.period === PolicyPeriodEnum.MONTHLY
         ? this.periodKeyService.getMonthlyKey()
         : this.periodKeyService.getDailyKey();
 
     return this.prisma.$transaction(async (tx) => {
+      let instrumentType = params.instrumentType ?? null;
+      if (!instrumentType && params.instrumentId) {
+        const instrument = await tx.instrument.findUnique({ where: { id: params.instrumentId } });
+        instrumentType = instrument?.type ?? null;
+      }
+
       const applicable = await this.policyResolver.getApplicableRulesForRequest(
         {
           userId: params.userId,
           action: params.action as any,
           metric: params.metric as any,
           period: params.period,
-          instrumentId: instrumentKey !== DEFAULT_INSTRUMENT_KEY ? instrumentKey : undefined,
-          instrumentType: null,
+          instrumentId: params.instrumentId,
+          instrumentType: instrumentType,
         },
         tx,
       );
 
-      if (applicable.kycRequiredLevel) {
+      if (!applicable.effectiveLimit && applicable.kycRequiredLevel) {
         throw new PolicyViolationException('KYC_REQUIRED', 'User KYC level insufficient for limit');
       }
 
@@ -109,7 +121,7 @@ export class LimitsService {
           amount,
           refId: params.refId,
           refType: params.refType,
-          status: LimitReservationStatus.RESERVED,
+          status: LimitReservationStatusEnum.RESERVED as any,
         },
       });
 
@@ -129,7 +141,7 @@ export class LimitsService {
       });
 
       for (const reservation of reservations) {
-        if (reservation.status === LimitReservationStatus.CONSUMED) continue;
+        if (reservation.status === LimitReservationStatusEnum.CONSUMED) continue;
 
         await tx.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, reservation.usageId);
         const usage = await tx.limitUsage.findUnique({ where: { id: reservation.usageId } });
@@ -145,7 +157,7 @@ export class LimitsService {
 
         await tx.limitReservation.update({
           where: { id: reservation.id },
-          data: { status: LimitReservationStatus.CONSUMED },
+          data: { status: LimitReservationStatusEnum.CONSUMED as any },
         });
       }
     });
@@ -158,7 +170,7 @@ export class LimitsService {
       });
 
       for (const reservation of reservations) {
-        if (reservation.status !== LimitReservationStatus.RESERVED) continue;
+        if (reservation.status !== LimitReservationStatusEnum.RESERVED) continue;
 
         await tx.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, reservation.usageId);
         const usage = await tx.limitUsage.findUnique({ where: { id: reservation.usageId } });
@@ -173,7 +185,7 @@ export class LimitsService {
 
         await tx.limitReservation.update({
           where: { id: reservation.id },
-          data: { status: LimitReservationStatus.RELEASED },
+          data: { status: LimitReservationStatusEnum.RELEASED as any },
         });
       }
     });

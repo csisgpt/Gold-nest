@@ -24,10 +24,32 @@ enum PolicyPeriod {
   MONTHLY = 'MONTHLY',
 }
 
+enum InstrumentType {
+  COIN = 'COIN',
+  GOLD = 'GOLD',
+}
+
 class StubPolicyResolver {
-  constructor(private readonly limit: Decimal | null = new Decimal(100)) {}
-  async getApplicableRulesForRequest() {
-    return { effectiveLimit: this.limit, kycRequiredLevel: null, rulesApplied: [], kycLevel: null };
+  constructor(private readonly behavior: any = { limit: new Decimal(100) }) {}
+
+  async getApplicableRulesForRequest(params: any) {
+    if (typeof this.behavior === 'function') {
+      return this.behavior(params);
+    }
+
+    const effectiveLimit = this.behavior.limit ?? null;
+    const kycRequiredLevel = this.behavior.kycRequiredLevel ?? null;
+    const eligibleRules = this.behavior.eligibleRules ?? [];
+    const blockedByKycRules = this.behavior.blockedByKycRules ?? [];
+
+    return {
+      effectiveLimit,
+      kycRequiredLevel,
+      eligibleRules,
+      blockedByKycRules,
+      rulesApplied: eligibleRules,
+      kycLevel: null,
+    };
   }
 }
 
@@ -56,12 +78,15 @@ type Reservation = {
 class InMemoryPrisma {
   private usageData: Usage[];
   private reservationData: Reservation[];
+  private instrumentData: any[];
   limitUsage: any;
   limitReservation: any;
+  instrument: any;
 
   constructor() {
     this.usageData = [];
     this.reservationData = [];
+    this.instrumentData = [];
     this.limitUsage = {
       data: this.usageData,
       upsert: async (params: any): Promise<Usage> => {
@@ -124,6 +149,12 @@ class InMemoryPrisma {
         return found;
       },
     };
+
+    this.instrument = {
+      data: this.instrumentData,
+      findUnique: async (params: any) =>
+        this.instrumentData.find((i) => i.id === params.where.id) ?? null,
+    };
   }
 
   async $executeRawUnsafe() {
@@ -151,7 +182,15 @@ class StubPeriodKeyService extends PeriodKeyService {
 function createService(limit: Decimal | null = new Decimal(100)) {
   const prisma = new InMemoryPrisma() as any;
   return {
-    service: new LimitsService(prisma, new StubPeriodKeyService(), new StubPolicyResolver(limit) as any),
+    service: new LimitsService(prisma, new StubPeriodKeyService(), new StubPolicyResolver({ limit }) as any),
+    prisma,
+  };
+}
+
+function createServiceWithResolverBehavior(behavior: any) {
+  const prisma = new InMemoryPrisma() as any;
+  return {
+    service: new LimitsService(prisma, new StubPeriodKeyService(), new StubPolicyResolver(behavior) as any),
     prisma,
   };
 }
@@ -250,4 +289,87 @@ test('reserve fails when projected exceeds limit', async () => {
       }),
     PolicyViolationException,
   );
+});
+
+test('reserve uses eligible rules even when higher KYC rules exist', async () => {
+  const { service } = createServiceWithResolverBehavior({
+    limit: new Decimal(50),
+    kycRequiredLevel: 'BASIC',
+    eligibleRules: [{}],
+  });
+
+  const result = await service.reserve({
+    userId: 'u1',
+    action: PolicyAction.TRADE_BUY,
+    metric: PolicyMetric.COUNT,
+    period: PolicyPeriod.DAILY,
+    amount: new Decimal(10),
+    refId: 'kyc-ok',
+    refType: 'TEST',
+  });
+
+  assert.strictEqual(result.usage.reservedAmount.toString(), '10');
+});
+
+test('reserve throws KYC_REQUIRED when only blocked rules exist', async () => {
+  const { service } = createServiceWithResolverBehavior({
+    limit: null,
+    kycRequiredLevel: 'BASIC',
+    eligibleRules: [],
+    blockedByKycRules: [{}],
+  });
+
+  await assert.rejects(
+    () =>
+      service.reserve({
+        userId: 'u1',
+        action: PolicyAction.TRADE_BUY,
+        metric: PolicyMetric.COUNT,
+        period: PolicyPeriod.DAILY,
+        amount: new Decimal(10),
+        refId: 'kyc-block',
+        refType: 'TEST',
+      }),
+    PolicyViolationException,
+  );
+});
+
+test('reserve applies instrumentType rules when provided via instrument lookup', async () => {
+  const behavior = (params: any) => {
+    if (params.instrumentType === InstrumentType.COIN) {
+      return {
+        effectiveLimit: new Decimal(20),
+        kycRequiredLevel: null,
+        eligibleRules: [{}],
+        blockedByKycRules: [],
+        rulesApplied: [{}],
+        kycLevel: null,
+      };
+    }
+    return {
+      effectiveLimit: new Decimal(100),
+      kycRequiredLevel: null,
+      eligibleRules: [{}],
+      blockedByKycRules: [],
+      rulesApplied: [{}],
+      kycLevel: null,
+    };
+  };
+
+  const { service, prisma } = createServiceWithResolverBehavior(behavior);
+  prisma.instrument.data.push({ id: 'coin-1', type: InstrumentType.COIN });
+
+  const result = await service.reserve({
+    userId: 'u1',
+    action: PolicyAction.TRADE_BUY,
+    metric: PolicyMetric.COUNT,
+    period: PolicyPeriod.DAILY,
+    amount: new Decimal(15),
+    refId: 'coin-ref',
+    refType: 'TEST',
+    instrumentId: 'coin-1',
+  });
+
+  assert.strictEqual(result.usage.instrumentKey, 'coin-1');
+  assert.strictEqual(result.usage.reservedAmount.toString(), '15');
 });

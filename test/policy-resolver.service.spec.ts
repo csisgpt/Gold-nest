@@ -138,3 +138,28 @@ test('precedence orders by scope, selector specificity, then priority', () => {
   assert.ok(ids.indexOf('type') < ids.indexOf('g'));
   assert.ok(ids.indexOf('p1') < ids.indexOf('p2'));
 });
+
+test('eligible rules are preferred even when higher KYC upgrade rules exist', async () => {
+  const standardRule = rule({ scopeType: PolicyScopeType.USER, limit: new Decimal(50), minKycLevel: KycLevel.NONE });
+  const upgradeRule = rule({ scopeType: PolicyScopeType.GLOBAL, limit: new Decimal(200), minKycLevel: KycLevel.BASIC });
+
+  const resolverWithContext = new PolicyResolverService({} as any);
+  resolverWithContext.getEffectiveRules = async () => ({
+    user: { id: 'u1' } as any,
+    userKyc: { level: KycLevel.NONE } as any,
+    customerGroup: null,
+    rules: [standardRule, upgradeRule],
+  });
+
+  const result = await resolverWithContext.getApplicableRulesForRequest({
+    userId: 'u1',
+    action: standardRule.action,
+    metric: standardRule.metric,
+    period: standardRule.period,
+  });
+
+  assert.strictEqual(result.effectiveLimit?.toString(), '50');
+  assert.strictEqual(result.eligibleRules.length, 1);
+  assert.strictEqual(result.blockedByKycRules.length, 1);
+  assert.strictEqual(result.kycRequiredLevel, KycLevel.BASIC);
+});

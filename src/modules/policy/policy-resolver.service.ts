@@ -19,10 +19,16 @@ interface RuleMatchParams {
   instrumentType?: InstrumentType | null;
 }
 
-const KYC_ORDER = [KycLevel.NONE, KycLevel.BASIC, KycLevel.FULL];
+const KycLevelEnum = (KycLevel as any) ?? { NONE: 'NONE', BASIC: 'BASIC', FULL: 'FULL' };
+const KYC_ORDER = [KycLevelEnum.NONE, KycLevelEnum.BASIC, KycLevelEnum.FULL];
+const PolicyScopeTypeEnum = (PolicyScopeType as any) ?? {
+  USER: 'USER',
+  GROUP: 'GROUP',
+  GLOBAL: 'GLOBAL',
+};
 
 function kycIndex(level: KycLevel | null | undefined) {
-  return KYC_ORDER.indexOf(level ?? KycLevel.NONE);
+  return KYC_ORDER.indexOf((level as any) ?? KycLevelEnum.NONE);
 }
 
 @Injectable()
@@ -48,9 +54,9 @@ export class PolicyResolverService {
       where: {
         enabled: true,
         OR: [
-          { scopeType: PolicyScopeType.GLOBAL },
-          { scopeType: PolicyScopeType.GROUP, scopeGroupId: user.customerGroupId },
-          { scopeType: PolicyScopeType.USER, scopeUserId: user.id },
+          { scopeType: PolicyScopeTypeEnum.GLOBAL as any },
+          { scopeType: PolicyScopeTypeEnum.GROUP as any, scopeGroupId: user.customerGroupId },
+          { scopeType: PolicyScopeTypeEnum.USER as any, scopeUserId: user.id },
         ],
       },
     });
@@ -88,13 +94,12 @@ export class PolicyResolverService {
       instrumentType: params.instrumentType,
     });
 
-    const userLevel = effective.userKyc?.level ?? KycLevel.NONE;
+    const userLevel = (effective.userKyc?.level as any) ?? KycLevelEnum.NONE;
     const eligibleRules = applicableRules.filter((rule) => kycIndex(rule.minKycLevel) <= kycIndex(userLevel));
-    const kycRequiredLevel = applicableRules.reduce<KycLevel | null>((required, rule) => {
-      if (kycIndex(rule.minKycLevel) > kycIndex(userLevel)) {
-        if (!required || kycIndex(rule.minKycLevel) > kycIndex(required)) {
-          return rule.minKycLevel;
-        }
+    const blockedByKycRules = applicableRules.filter((rule) => kycIndex(rule.minKycLevel) > kycIndex(userLevel));
+    const kycRequiredLevel = blockedByKycRules.reduce<KycLevel | null>((required, rule) => {
+      if (!required || kycIndex(rule.minKycLevel) < kycIndex(required)) {
+        return rule.minKycLevel;
       }
       return required;
     }, null);
@@ -103,6 +108,8 @@ export class PolicyResolverService {
 
     return {
       kycLevel: userLevel,
+      eligibleRules,
+      blockedByKycRules,
       rulesApplied: applicableRules,
       effectiveLimit,
       kycRequiredLevel,
@@ -138,9 +145,9 @@ export class PolicyResolverService {
   private compareRules(a: PolicyRule, b: PolicyRule) {
     const scopeRank = (rule: PolicyRule) => {
       switch (rule.scopeType) {
-        case PolicyScopeType.USER:
+        case PolicyScopeTypeEnum.USER:
           return 0;
-        case PolicyScopeType.GROUP:
+        case PolicyScopeTypeEnum.GROUP:
           return 1;
         default:
           return 2;

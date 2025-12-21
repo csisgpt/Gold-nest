@@ -30,6 +30,9 @@ type RemittanceType = Prisma.RemittanceGetPayload<{}>;
 // 👇 این type alias رو اضافه کن
 type PrismaClientOrTx = PrismaClient | Prisma.TransactionClient;
 
+const AccountReservationStatusEnum =
+  (AccountReservationStatus as any) ?? ({ RESERVED: 'RESERVED', RELEASED: 'RELEASED', CONSUMED: 'CONSUMED' } as const);
+
 // TODO: Introduce a Remittance entity/service that leverages TxRefType.REMITTANCE for internal transfers.
 
 export interface ApplyTransactionInput {
@@ -146,7 +149,7 @@ export class AccountsService {
       });
 
       if (existingReservation) {
-        if (existingReservation.status === AccountReservationStatus.RELEASED) {
+        if (existingReservation.status === AccountReservationStatusEnum.RELEASED) {
           throw new ConflictException('Reservation already released');
         }
         return { account: freshAccount, reservation: existingReservation };
@@ -163,7 +166,7 @@ export class AccountsService {
           amount,
           refId: params.refId,
           refType: params.refType,
-          status: AccountReservationStatus.RESERVED,
+          status: AccountReservationStatusEnum.RESERVED as any,
         },
       });
 
@@ -202,7 +205,7 @@ export class AccountsService {
         return null;
       }
 
-      if (reservation.status === AccountReservationStatus.RELEASED) {
+      if (reservation.status === AccountReservationStatusEnum.RELEASED) {
         return { account, reservation };
       }
 
@@ -210,7 +213,7 @@ export class AccountsService {
       const freshAccount = await trx.account.findUnique({ where: { id: account.id } });
       if (!freshAccount) throw new NotFoundException('Account not found');
 
-      if (reservation.status === AccountReservationStatus.CONSUMED) {
+      if (reservation.status === AccountReservationStatusEnum.CONSUMED) {
         return { account: freshAccount, reservation };
       }
 
@@ -222,7 +225,7 @@ export class AccountsService {
       const [updatedReservation, updatedAccount] = await trx.$transaction([
         trx.accountReservation.update({
           where: { id: reservation.id },
-          data: { status: AccountReservationStatus.RELEASED },
+          data: { status: AccountReservationStatusEnum.RELEASED as any },
         }),
         trx.account.update({
           where: { id: freshAccount.id },
