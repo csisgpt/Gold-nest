@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { TradeStatus } from '@prisma/client';
+import { TradeSide, TradeStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import { IsEnum, IsISO8601, IsNumberString, IsOptional, IsString } from 'class-validator';
 import { ListQueryDto } from '../../../common/pagination/dto/list-query.dto';
@@ -14,6 +14,16 @@ export class AdminListTradesDto extends ListQueryDto {
   @IsOptional()
   @IsString()
   userId?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by instrument id' })
+  @IsOptional()
+  @IsString()
+  instrumentId?: string;
+
+  @ApiPropertyOptional({ enum: TradeSide, description: 'Filter by side' })
+  @IsOptional()
+  @IsEnum(TradeSide)
+  side?: TradeSide;
 
   @ApiPropertyOptional({ description: 'Filter by client mobile (contains, case-insensitive)' })
   @IsOptional()

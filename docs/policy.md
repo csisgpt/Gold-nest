@@ -12,3 +12,9 @@
 
 ## Instrument keys
 Limit usages and reservations use `instrumentKey` values of `"ALL"` for generic rules or the specific instrument id when reserved per instrument.
+
+## Trades
+- BUY trades use `PolicyAction.TRADE_BUY`; SELL trades use `PolicyAction.TRADE_SELL`.
+- All trades reserve `PolicyMetric.NOTIONAL_IRR` against `instrumentKey="ALL"` for both daily and monthly windows.
+- Gold instruments reserve `PolicyMetric.WEIGHT_750_G` per instrument id; coin instruments reserve `PolicyMetric.COUNT` per instrument id.
+- Reservations are taken when the trade is created, consumed on approval/settlement, and released on cancel/reject.

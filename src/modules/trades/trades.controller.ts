@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiResponse, ApiTags, ApiProperty } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -38,8 +38,12 @@ export class TradesController {
   @Post('trades')
   @Throttle(30, 60)
   @UseGuards(JwtAuthGuard)
-  create(@Body() dto: CreateTradeDto, @CurrentUser() user: JwtRequestUser) {
-    return this.tradesService.createForUser(user, dto);
+  create(
+    @Body() dto: CreateTradeDto,
+    @CurrentUser() user: JwtRequestUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.tradesService.createForUser(user, dto, idempotencyKey ?? undefined);
   }
 
   /**

@@ -7,9 +7,18 @@ import { FilesModule } from '../files/files.module';
 import { InstrumentsModule } from '../instruments/instruments.module';
 import { TahesabModule } from '../tahesab/tahesab.module';
 import { PaginationModule } from '../../common/pagination/pagination.module';
+import { PolicyModule } from '../policy/policy.module';
 
 @Module({
-  imports: [PrismaModule, AccountsModule, FilesModule, InstrumentsModule, TahesabModule, PaginationModule],
+  imports: [
+    PrismaModule,
+    AccountsModule,
+    FilesModule,
+    InstrumentsModule,
+    TahesabModule,
+    PaginationModule,
+    PolicyModule,
+  ],
   providers: [TradesService],
   controllers: [TradesController],
 })
