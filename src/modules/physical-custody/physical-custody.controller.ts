@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
@@ -27,8 +27,12 @@ export class PhysicalCustodyController {
 
   @Post('physical-custody/movements')
   @UseGuards(JwtAuthGuard)
-  request(@CurrentUser() user: JwtRequestUser, @Body() dto: CreatePhysicalCustodyMovementDto) {
-    return this.service.requestMovement(user.id, dto);
+  request(
+    @CurrentUser() user: JwtRequestUser,
+    @Body() dto: CreatePhysicalCustodyMovementDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.service.requestMovement(user.id, dto, idempotencyKey);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -45,6 +49,14 @@ export class PhysicalCustodyController {
   @ApiOkResponse({ type: PhysicalCustodyMovementResponseDto })
   cancel(@Param('id') id: string, @Body() dto: CancelPhysicalCustodyMovementDto) {
     return this.service.cancelMovement(id, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Post('physical-custody/movements/:id/reject')
+  @ApiOkResponse({ type: PhysicalCustodyMovementResponseDto })
+  reject(@Param('id') id: string, @Body() dto: CancelPhysicalCustodyMovementDto) {
+    return this.service.rejectMovement(id, dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

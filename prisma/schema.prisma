@@ -485,6 +485,8 @@ model PhysicalCustodyMovement {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  idempotencyKey String?
+
   userId String
   user   User   @relation(fields: [userId], references: [id])
 
@@ -502,6 +504,8 @@ model PhysicalCustodyMovement {
 
   tahesabFactorCode String?
   note              String?
+
+  @@unique([userId, idempotencyKey])
 
   @@index([userId, assetType, status])
 }
@@ -588,6 +592,8 @@ model Remittance {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
 
+  idempotencyKey String?
+
   group   RemittanceGroup? @relation(fields: [groupId], references: [id])
   groupId String?
 
@@ -628,6 +634,8 @@ model Remittance {
 
   settlementsAsLeg    RemittanceSettlementLink[] @relation("SettlementLegLinks")
   settlementsAsSource RemittanceSettlementLink[] @relation("SettlementSourceLinks")
+
+  @@unique([fromUserId, idempotencyKey])
 }
 
 model RemittanceSettlementLink {

@@ -11,6 +11,9 @@ import {
   RemittanceStatus,
   TxRefType,
   User,
+  PolicyAction,
+  PolicyMetric,
+  PolicyPeriod,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
@@ -32,6 +35,8 @@ import { OpenRemittanceSummaryDto } from './dto/open-remittance-summary.dto';
 import { TahesabRemittancesService } from '../tahesab/tahesab-remittances.service';
 import { runInTx } from '../../common/db/tx.util';
 import { userTahesabSelect } from '../../common/prisma/selects/user.select';
+import { LimitsService } from '../policy/limits.service';
+import { PaginationService } from '../../common/pagination/pagination.service';
 
 type TahesabUser = Pick<User, 'id' | 'fullName' | 'mobile' | 'tahesabCustomerCode'>;
 
@@ -103,11 +108,18 @@ export class RemittancesService {
     note: true,
     createdAt: true,
     status: true,
+    idempotencyKey: true,
     channel: true,
     iban: true,
     cardLast4: true,
     externalPaymentRef: true,
     tahesabDocId: true,
+  };
+
+  private readonly remittanceProcessSelect: Prisma.RemittanceSelect = {
+    ...this.remittanceListSelect,
+    fromAccountTxId: true,
+    toAccountTxId: true,
   };
 
   private readonly remittanceDetailsSelect: Prisma.RemittanceSelect = {
@@ -193,25 +205,108 @@ export class RemittancesService {
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
     private readonly tahesabRemittances: TahesabRemittancesService,
+    private readonly limitsService: LimitsService,
+    private readonly paginationService: PaginationService,
   ) { }
 
-  async createForUser(fromUserId: string, dto: CreateRemittanceDto): Promise<RemittanceResponseDto> {
-    const { legs } = await this.createGroupInternal(
-      fromUserId,
-      [
-        {
-          toMobile: dto.toMobile,
-          instrumentCode: dto.instrumentCode,
-          amount: dto.amount,
-          note: dto.note,
-        },
-      ],
-      dto.note,
+  async createForUser(
+    fromUserId: string,
+    dto: CreateRemittanceDto,
+    idempotencyKey?: string,
+  ): Promise<RemittanceResponseDto> {
+    const amount = new Decimal(dto.amount);
+    if (amount.lte(0)) {
+      throw new BadRequestException('Amount must be positive');
+    }
+
+    const remittance = await runInTx(
+      this.prisma,
+      async (tx) => {
+        const instrument = await tx.instrument.findUnique({
+          where: { code: dto.instrumentCode },
+          select: { id: true, code: true, type: true },
+        });
+        if (!instrument) {
+          throw new NotFoundException('Instrument not found');
+        }
+
+        const toUser = await tx.user.findUnique({ where: { mobile: dto.toMobile }, select: userTahesabSelect });
+        if (!toUser) {
+          throw new NotFoundException('Destination user not found');
+        }
+
+        if (toUser.id === fromUserId) {
+          throw new BadRequestException('Cannot transfer to self');
+        }
+
+        if (idempotencyKey) {
+          const existing = await tx.remittance.findFirst({
+            where: { fromUserId, idempotencyKey },
+            select: this.remittanceListSelect,
+          });
+          if (existing) {
+            this.logger.debug(`Reusing idempotent remittance ${existing.id} for user ${fromUserId}`);
+            return existing as RemittanceWithListRelations;
+          }
+        }
+
+        const remittance = await tx.remittance.create({
+          data: {
+            fromUserId,
+            toUserId: toUser.id,
+            instrumentId: instrument.id,
+            amount,
+            note: dto.note,
+            channel: RemittanceChannel.INTERNAL,
+            status: RemittanceStatus.PENDING,
+            idempotencyKey,
+          },
+          select: this.remittanceListSelect,
+        });
+
+        await this.limitsService.reserve(
+          {
+            userId: fromUserId,
+            action: PolicyAction.REMITTANCE_SEND,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.DAILY,
+            amount,
+            instrumentId: instrument.id,
+            refType: TxRefType.REMITTANCE,
+            refId: remittance.id,
+          },
+          tx,
+        );
+
+        await this.limitsService.reserve(
+          {
+            userId: fromUserId,
+            action: PolicyAction.REMITTANCE_SEND,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.MONTHLY,
+            amount,
+            instrumentId: instrument.id,
+            refType: TxRefType.REMITTANCE,
+            refId: remittance.id,
+          },
+          tx,
+        );
+
+        await this.accountsService.reserveFunds({
+          userId: fromUserId,
+          instrumentCode: instrument.code,
+          amount,
+          refType: TxRefType.REMITTANCE,
+          refId: remittance.id,
+          tx,
+        });
+
+        return remittance as RemittanceWithListRelations;
+      },
+      { logger: this.logger },
     );
 
-    const leg = legs[0];
-
-    return this.mapRemittanceToDto({ ...leg, group: leg.group });
+    return this.mapRemittanceToDto(remittance);
   }
 
   async createGroupForUser(
@@ -246,6 +341,214 @@ export class RemittancesService {
     });
 
     return remittances.map((remittance) => this.mapRemittanceToDto(remittance));
+  }
+
+  async approve(id: string, adminId: string): Promise<RemittanceResponseDto> {
+    const remittance = await runInTx(
+      this.prisma,
+      async (tx) => {
+        await tx.$executeRaw`SELECT 1 FROM "Remittance" WHERE id = ${id} FOR UPDATE`;
+
+        const record = (await tx.remittance.findUnique({
+          where: { id },
+          select: {
+            ...this.remittanceProcessSelect,
+            instrument: { select: this.instrumentCodeTypeSelect },
+          },
+        })) as RemittanceWithListRelations & { fromAccountTxId?: string | null; toAccountTxId?: string | null };
+
+        if (!record) {
+          throw new NotFoundException('Remittance not found');
+        }
+
+        if (record.status === RemittanceStatus.COMPLETED) {
+          return record;
+        }
+
+        if (record.status !== RemittanceStatus.PENDING) {
+          throw new BadRequestException('INVALID_STATUS');
+        }
+
+        const amount = new Decimal(record.amount);
+
+        await this.accountsService.consumeFunds({
+          userId: record.fromUserId,
+          instrumentCode: record.instrument.code,
+          refType: TxRefType.REMITTANCE,
+          refId: record.id,
+          tx,
+        });
+
+        const fromAccount = await this.accountsService.getOrCreateAccount(record.fromUserId, record.instrument.code, tx);
+        const toAccount = await this.accountsService.getOrCreateAccount(record.toUserId, record.instrument.code, tx);
+
+        const { txRecord: fromTx } = await this.accountsService.applyTransaction(
+          tx,
+          fromAccount,
+          amount.negated(),
+          AccountTxType.REMITTANCE,
+          TxRefType.REMITTANCE,
+          record.id,
+          adminId,
+        );
+
+        const { txRecord: toTx } = await this.accountsService.applyTransaction(
+          tx,
+          toAccount,
+          amount,
+          AccountTxType.REMITTANCE,
+          TxRefType.REMITTANCE,
+          record.id,
+          adminId,
+        );
+
+        await this.limitsService.consume({ refType: TxRefType.REMITTANCE, refId: record.id }, tx);
+
+        return tx.remittance.update({
+          where: { id: record.id },
+          data: {
+            status: RemittanceStatus.COMPLETED,
+            fromAccountTxId: fromTx.id,
+            toAccountTxId: toTx.id,
+          },
+          select: this.remittanceProcessSelect,
+        });
+      },
+      { logger: this.logger },
+    );
+
+    return this.mapRemittanceToDto(remittance as RemittanceWithListRelations);
+  }
+
+  async reject(id: string, _adminId: string): Promise<RemittanceResponseDto> {
+    const remittance = await runInTx(
+      this.prisma,
+      async (tx) => {
+        await tx.$executeRaw`SELECT 1 FROM "Remittance" WHERE id = ${id} FOR UPDATE`;
+
+        const record = (await tx.remittance.findUnique({
+          where: { id },
+          select: this.remittanceProcessSelect,
+        })) as RemittanceWithListRelations | null;
+
+        if (!record) {
+          throw new NotFoundException('Remittance not found');
+        }
+
+        if (record.status === RemittanceStatus.CANCELLED) {
+          return record;
+        }
+
+        if (record.status !== RemittanceStatus.PENDING) {
+          throw new BadRequestException('INVALID_STATUS');
+        }
+
+        await this.limitsService.release({ refType: TxRefType.REMITTANCE, refId: record.id }, tx);
+        await this.accountsService.releaseFunds({
+          userId: record.fromUserId,
+          instrumentCode: (record.instrument as any)?.code ?? 'IRR',
+          refType: TxRefType.REMITTANCE,
+          refId: record.id,
+          tx,
+        });
+
+        return tx.remittance.update({
+          where: { id: record.id },
+          data: { status: RemittanceStatus.CANCELLED },
+          select: this.remittanceProcessSelect,
+        });
+      },
+      { logger: this.logger },
+    );
+
+    return this.mapRemittanceToDto(remittance as RemittanceWithListRelations);
+  }
+
+  async cancelByUser(id: string, userId: string): Promise<RemittanceResponseDto> {
+    const remittance = await runInTx(
+      this.prisma,
+      async (tx) => {
+        await tx.$executeRaw`SELECT 1 FROM "Remittance" WHERE id = ${id} FOR UPDATE`;
+
+        const record = (await tx.remittance.findUnique({
+          where: { id },
+          select: this.remittanceProcessSelect,
+        })) as RemittanceWithListRelations | null;
+
+        if (!record || record.fromUserId !== userId) {
+          throw new NotFoundException('Remittance not found');
+        }
+
+        if (record.status === RemittanceStatus.CANCELLED) {
+          return record;
+        }
+
+        if (record.status !== RemittanceStatus.PENDING) {
+          throw new BadRequestException('INVALID_STATUS');
+        }
+
+        await this.limitsService.release({ refType: TxRefType.REMITTANCE, refId: record.id }, tx);
+        await this.accountsService.releaseFunds({
+          userId: record.fromUserId,
+          instrumentCode: (record.instrument as any)?.code ?? 'IRR',
+          refType: TxRefType.REMITTANCE,
+          refId: record.id,
+          tx,
+        });
+
+        return tx.remittance.update({
+          where: { id: record.id },
+          data: { status: RemittanceStatus.CANCELLED },
+          select: this.remittanceProcessSelect,
+        });
+      },
+      { logger: this.logger },
+    );
+
+    return this.mapRemittanceToDto(remittance as RemittanceWithListRelations);
+  }
+
+  async adminList(query: {
+    status?: RemittanceStatus;
+    fromUserId?: string;
+    toUserId?: string;
+    createdFrom?: Date;
+    createdTo?: Date;
+    page?: number;
+    limit?: number;
+  }) {
+    const { skip, take, page, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+
+    const where: Prisma.RemittanceWhereInput = {
+      status: query.status,
+      fromUserId: query.fromUserId,
+      toUserId: query.toUserId,
+      createdAt:
+        query.createdFrom || query.createdTo
+          ? {
+            gte: query.createdFrom ?? undefined,
+            lte: query.createdTo ?? undefined,
+          }
+          : undefined,
+    };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.remittance.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+        select: this.remittanceListSelect,
+      }),
+      this.prisma.remittance.count({ where }),
+    ]);
+
+    return this.paginationService.wrap(
+      (items as RemittanceWithListRelations[]).map((remittance) => this.mapRemittanceToDto(remittance)),
+      total,
+      page,
+      limit,
+    );
   }
 
   async findGroupsByUser(userId: string): Promise<RemittanceGroupResponseDto[]> {
@@ -753,6 +1056,7 @@ export class RemittancesService {
           note: true,
           createdAt: true,
           status: true,
+          idempotencyKey: true,
           fromAccountTxId: true,
           toAccountTxId: true,
           channel: true,

@@ -138,7 +138,7 @@ export class TradesService {
         });
 
         await this.reserveFundsForTrade({
-          trade: { ...trade, instrument } as TradeWithRelations,
+          trade: { ...trade, instrument } as unknown as TradeWithRelations,
           instrument,
           quantity,
           totalAmount,
@@ -284,13 +284,13 @@ export class TradesService {
           : undefined,
       client: query.mobile
         ? {
-            mobile: { contains: query.mobile, mode: 'insensitive' },
+            mobile: { contains: query.mobile, mode: 'insensitive' as const },
           }
         : undefined,
       OR: query.q
         ? [
             { id: query.q },
-            { clientNote: { contains: query.q, mode: 'insensitive' } },
+            { clientNote: { contains: query.q, mode: 'insensitive' as const } },
           ]
         : undefined,
     } as const;
@@ -307,7 +307,7 @@ export class TradesService {
     ]);
 
     return this.paginationService.wrap(
-      items.map((trade) => TradesMapper.toResponse(trade as TradeWithRelations)),
+      items.map((trade) => TradesMapper.toResponse(trade as unknown as TradeWithRelations)),
       total,
       page,
       limit,

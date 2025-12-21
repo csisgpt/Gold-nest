@@ -222,16 +222,15 @@ export class AccountsService {
         throw new BadRequestException('Blocked balance cannot be negative');
       }
 
-      const [updatedReservation, updatedAccount] = await trx.$transaction([
-        trx.accountReservation.update({
-          where: { id: reservation.id },
-          data: { status: AccountReservationStatusEnum.RELEASED as any },
-        }),
-        trx.account.update({
-          where: { id: freshAccount.id },
-          data: { blockedBalance: newBlocked },
-        }),
-      ]);
+      const updatedReservation = await trx.accountReservation.update({
+        where: { id: reservation.id },
+        data: { status: AccountReservationStatusEnum.RELEASED as any },
+      });
+
+      const updatedAccount = await trx.account.update({
+        where: { id: freshAccount.id },
+        data: { blockedBalance: newBlocked },
+      });
 
       return { account: updatedAccount, reservation: updatedReservation };
     };
@@ -278,16 +277,15 @@ export class AccountsService {
         throw new BadRequestException('Blocked balance cannot be negative');
       }
 
-      const [updatedReservation, updatedAccount] = await trx.$transaction([
-        trx.accountReservation.update({
-          where: { id: reservation.id },
-          data: { status: AccountReservationStatusEnum.CONSUMED as any },
-        }),
-        trx.account.update({
-          where: { id: freshAccount.id },
-          data: { blockedBalance: newBlocked },
-        }),
-      ]);
+      const updatedReservation = await trx.accountReservation.update({
+        where: { id: reservation.id },
+        data: { status: AccountReservationStatusEnum.CONSUMED as any },
+      });
+
+      const updatedAccount = await trx.account.update({
+        where: { id: freshAccount.id },
+        data: { blockedBalance: newBlocked },
+      });
 
       return { account: updatedAccount, reservation: updatedReservation };
     };

@@ -164,15 +164,18 @@ export class UsersService {
       return;
     }
 
-    const withGroup = await this.prisma.user.findUnique({
+    const withGroup = (await this.prisma.user.findUnique({
       where: { id: user.id },
       select: {
+        id: true,
         fullName: true,
         mobile: true,
         tahesabCustomerCode: true,
         customerGroup: { select: { code: true, tahesabGroupName: true } },
       },
-    });
+    })) as Pick<User, 'id' | 'fullName' | 'mobile' | 'tahesabCustomerCode'> & {
+      customerGroup?: { code: string; tahesabGroupName: string | null } | null;
+    };
 
     if (!withGroup) return;
 
@@ -198,7 +201,7 @@ export class UsersService {
 
     if (!withGroup) return;
 
-    const dto = this.buildMoshtariEditDto(withGroup);
+    const dto = this.buildMoshtariEditDto(withGroup as any);
     await this.tahesabOutbox.enqueueOnce('DoEditMoshtari', dto, {
       correlationId: `customer:edit:${user.id}:${new Date().toISOString()}`,
     });

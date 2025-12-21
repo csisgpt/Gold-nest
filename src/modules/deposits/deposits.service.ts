@@ -95,12 +95,12 @@ export class DepositsService {
           : undefined,
       user: query.mobile
         ? {
-            mobile: { contains: query.mobile, mode: 'insensitive' },
+            mobile: { contains: query.mobile, mode: 'insensitive' as const },
           }
         : undefined,
       OR: query.q
         ? [
-            { refNo: { contains: query.q, mode: 'insensitive' } },
+            { refNo: { contains: query.q, mode: 'insensitive' as const } },
             { id: query.q },
           ]
         : undefined,
