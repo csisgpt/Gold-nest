@@ -25,6 +25,8 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private enabled = false;
   private keyPrefix = 'gn:';
   private defaultTtlSec = 30;
+  private channelHandlers = new Map<string, Set<(payload: any) => void>>();
+  private messageListenerAttached = false;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -81,10 +83,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
     const options: RedisOptions = {
       keyPrefix: cfg.keyPrefix,
-      tls: cfg.tls ? {} : null,
-      connectTimeout: 5000,
-      maxRetriesPerRequest: 3,
-      retryStrategy: (times: number) => Math.min(times * 200, 5000),
+      tls: cfg.tls ? {} : undefined,
+      connectTimeout: 10_000,
+      maxRetriesPerRequest: 2,
+      enableReadyCheck: true,
+      lazyConnect: true,
+      retryStrategy: (times: number) => Math.min(2000, times * 50),
     };
 
     this.logger.log(`Connecting to redis at ${this.maskUri(cfg.uri)} ...`);
@@ -93,7 +97,11 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     this.subClient = this.createClient(cfg.uri, options);
 
     try {
-      await this.commandClient.connect();
+      await Promise.all([
+        this.commandClient.connect(),
+        this.pubClient.connect(),
+        this.subClient.connect(),
+      ]);
       const started = Date.now();
       await this.commandClient.ping();
       const latency = Date.now() - started;
@@ -107,11 +115,11 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    for (const client of [this.commandClient, this.pubClient, this.subClient]) {
-      if (client) {
-        await client.quit();
-      }
-    }
+    await Promise.allSettled(
+      [this.commandClient, this.pubClient, this.subClient]
+        .filter(Boolean)
+        .map((client) => (client as Redis).quit()),
+    );
     this.commandClient = null;
     this.pubClient = null;
     this.subClient = null;
@@ -125,7 +133,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async getJson<T>(key: string): Promise<T | null> {
     this.ensureEnabled();
-    const raw = await this.commandClient.get(this.withPrefix(key));
+    const raw = await this.commandClient.get(key);
     if (!raw) return null;
     return JSON.parse(raw) as T;
   }
@@ -134,12 +142,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     this.ensureEnabled();
     const payload = JSON.stringify(value);
     const ttl = ttlSec ?? this.defaultTtlSec;
-    await this.commandClient.set(this.withPrefix(key), payload, 'EX', ttl);
+    await this.commandClient.set(key, payload, 'EX', ttl);
   }
 
   async del(key: string): Promise<void> {
     this.ensureEnabled();
-    await this.commandClient.del(this.withPrefix(key));
+    await this.commandClient.del(key);
   }
 
   async publish(channel: string, payload: any): Promise<void> {
@@ -147,22 +155,43 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.pubClient.publish(channel, JSON.stringify(payload));
   }
 
-  async subscribe(channel: string, handler: (payload: any) => void): Promise<void> {
+  async subscribe(channel: string, handler: (payload: any) => void): Promise<() => Promise<void>> {
     this.ensureEnabled();
     await this.subClient.subscribe(channel);
-    this.subClient.on('message', (ch, message) => {
-      if (ch === channel) {
+    if (!this.messageListenerAttached) {
+      this.subClient.on('message', (ch, message) => {
+        const handlers = this.channelHandlers.get(ch);
+        if (!handlers || handlers.size === 0) {
+          return;
+        }
+        for (const cb of Array.from(handlers)) {
+          try {
+            cb(JSON.parse(message));
+          } catch (err) {
+            this.logger.error(`Redis subscribe handler failed for ${ch}: ${(err as Error).message}`);
+          }
+        }
+      });
+      this.messageListenerAttached = true;
+    }
+
+    const handlers = this.channelHandlers.get(channel) ?? new Set<(payload: any) => void>();
+    handlers.add(handler);
+    this.channelHandlers.set(channel, handlers);
+
+    return async () => {
+      const channelSet = this.channelHandlers.get(channel);
+      if (!channelSet) return;
+      channelSet.delete(handler);
+      if (channelSet.size === 0) {
+        this.channelHandlers.delete(channel);
         try {
-          handler(JSON.parse(message));
+          await this.subClient?.unsubscribe(channel);
         } catch (err) {
-          this.logger.error(`Redis subscribe handler failed for ${channel}: ${(err as Error).message}`);
+          this.logger.error(`Redis unsubscribe failed for ${channel}: ${(err as Error).message}`);
         }
       }
-    });
-  }
-
-  private withPrefix(key: string): string {
-    return `${this.keyPrefix}${key}`;
+    };
   }
 
   async health(): Promise<RedisHealth> {
