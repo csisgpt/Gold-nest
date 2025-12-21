@@ -31,6 +31,8 @@ import { TradesService } from '../src/modules/trades/trades.service';
 import { CreateTradeDto } from '../src/modules/trades/dto/create-trade.dto';
 import { JwtService } from '@nestjs/jwt';
 import { PhysicalCustodyService } from '../src/modules/physical-custody/physical-custody.service';
+import { RedisService } from '../src/infra/redis/redis.service';
+import { MarketProductType, TradeType } from '@prisma/client';
 
 async function createStoredFile(prisma: PrismaService, uploadedById: string) {
   return prisma.file.create({
@@ -196,6 +198,157 @@ test('Users cannot access other users\' accounts or gold lots', async (t) => {
     headers: authHeader(admin),
   });
   assert.strictEqual(adminLots.status, 200);
+});
+
+test('Redis service stays disabled without configuration', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const redis = app.get(RedisService);
+  assert.strictEqual(redis.isEnabled(), false);
+  const health = await redis.health();
+  assert.strictEqual(health.enabled, false);
+});
+
+test('Admin can manage pricing catalog, providers, mappings, overrides and user settings', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma, UserRole.CLIENT);
+  const instrument = await prisma.instrument.findFirst({ where: { code: IRR_INSTRUMENT_CODE } });
+  assert.ok(instrument);
+
+  const marketProductRes = await fetch(`${baseUrl}/admin/market-products`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      code: `CASH_TEST_${Date.now()}`,
+      displayName: 'Test Cash',
+      productType: MarketProductType.CASH,
+      tradeType: TradeType.SPOT,
+      baseInstrumentId: instrument!.id,
+      unitType: 'NOTIONAL_IRR',
+      groupKey: 'cash',
+      sortOrder: 99,
+    }),
+  });
+  assert.strictEqual(marketProductRes.status, 201);
+  const product = (await marketProductRes.json()) as any;
+  assert.ok(product.id);
+
+  const productsList = await fetch(`${baseUrl}/admin/market-products`, { headers: authHeader(admin) });
+  assert.strictEqual(productsList.status, 200);
+  const productsJson = (await productsList.json()) as any[];
+  assert.ok(productsJson.some((p) => p.id === product.id));
+
+  const providerRes = await fetch(`${baseUrl}/admin/price-providers`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({ key: `PROV_${Date.now()}`, displayName: 'E2E Provider' }),
+  });
+  assert.strictEqual(providerRes.status, 201);
+  const provider = (await providerRes.json()) as any;
+
+  const providerRes2 = await fetch(`${baseUrl}/admin/price-providers`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({ key: `PROV_${Date.now()}_B`, displayName: 'E2E Provider B' }),
+  });
+  assert.strictEqual(providerRes2.status, 201);
+  const provider2 = (await providerRes2.json()) as any;
+
+  const mappingRes = await fetch(`${baseUrl}/admin/product-provider-mappings`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      productId: product.id,
+      providerId: provider.id,
+      providerSymbol: 'TEST',
+      priority: 1,
+    }),
+  });
+  assert.strictEqual(mappingRes.status, 201);
+  const mapping = (await mappingRes.json()) as any;
+
+  const bulkRes = await fetch(`${baseUrl}/admin/market-products/${product.id}/provider-priority`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      mappings: [
+        { providerId: provider.id, providerSymbol: 'TEST2', priority: 2, isEnabled: true },
+        { providerId: provider2.id, providerSymbol: 'TEST3', priority: 1, isEnabled: true },
+      ],
+    }),
+  });
+  assert.strictEqual(bulkRes.status, 201);
+  const bulkJson = (await bulkRes.json()) as any[];
+  assert.ok(Array.isArray(bulkJson));
+  assert.ok(bulkJson.length === 2);
+
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const overrideRes1 = await fetch(`${baseUrl}/admin/price-overrides`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      productId: product.id,
+      mode: 'ABSOLUTE',
+      buyAbsolute: 100,
+      sellAbsolute: 110,
+      expiresAt,
+      reason: 'test1',
+    }),
+  });
+  assert.strictEqual(overrideRes1.status, 201);
+  const override1 = (await overrideRes1.json()) as any;
+
+  const overrideRes2 = await fetch(`${baseUrl}/admin/price-overrides`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      productId: product.id,
+      mode: 'ABSOLUTE',
+      buyAbsolute: 200,
+      sellAbsolute: 210,
+      expiresAt,
+      reason: 'replace',
+    }),
+  });
+  assert.strictEqual(overrideRes2.status, 201);
+  const override2 = (await overrideRes2.json()) as any;
+  assert.notStrictEqual(override1.id, override2.id);
+
+  const activeOverrides = await fetch(
+    `${baseUrl}/admin/price-overrides?productId=${product.id}&activeOnly=true`,
+    { headers: authHeader(admin) },
+  );
+  assert.strictEqual(activeOverrides.status, 200);
+  const activeJson = (await activeOverrides.json()) as any[];
+  assert.strictEqual(activeJson.length, 1);
+  assert.strictEqual(activeJson[0].id, override2.id);
+
+  const mySettingsRes = await fetch(`${baseUrl}/users/me/settings`, { headers: authHeader(user) });
+  assert.strictEqual(mySettingsRes.status, 200);
+  const mySettings = (await mySettingsRes.json()) as any;
+  assert.strictEqual(mySettings.showGold, true);
+
+  const updateSettingsRes = await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify({ showGold: false, maxOpenTrades: 2 }),
+  });
+  assert.strictEqual(updateSettingsRes.status, 200);
+  const updated = (await updateSettingsRes.json()) as any;
+  assert.strictEqual(updated.showGold, false);
+  assert.strictEqual(updated.maxOpenTrades, 2);
+
+  const adminOverrideSettings = await fetch(`${baseUrl}/admin/users/${user.id}/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({ tradeEnabled: false }),
+  });
+  assert.strictEqual(adminOverrideSettings.status, 200);
+  const adminUpdated = (await adminOverrideSettings.json()) as any;
+  assert.strictEqual(adminUpdated.tradeEnabled, false);
 });
 
 test('Admin can cancel pending deposit request', async (t) => {

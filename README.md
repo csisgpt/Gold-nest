@@ -10,6 +10,11 @@ Initial NestJS backend skeleton for an Iranian gold/abshodeh trading platform wi
 ## Environment
 Copy `.env.example` to `.env` and set `DATABASE_URL`, `HOUSE_USER_ID` (default `house-system-user`), and optional `UPLOAD_ROOT` (defaults to `uploads`).
 
+### Redis (Liara-compatible)
+- `REDIS_URI` (preferred) should look like `redis://:password@host:port/0`. On Liara, create a Redis database and set this value in your app environment.
+- If your provider requires TLS, set `REDIS_TLS=true`.
+- Optional: `REDIS_KEY_PREFIX` (default `gn:`) and `REDIS_DEFAULT_TTL_SEC` (default `30`).
+
 ## File storage (Liara Object Storage / S3)
 - Local disk storage is intended for development; production deployments should use an S3-compatible object store such as Liara Object Storage.
 - Required environment variables:

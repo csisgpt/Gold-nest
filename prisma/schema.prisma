@@ -119,6 +119,20 @@ enum TradeType {
   DAY_AFTER
 }
 
+enum MarketProductType {
+  CASH
+  GOLD
+  COIN
+  FX
+  OTHER
+}
+
+enum PricingOverrideMode {
+  ABSOLUTE
+  DELTA_BPS
+  DELTA_AMOUNT
+}
+
 enum CustodyAssetType {
   GOLD
 }
@@ -302,6 +316,10 @@ model User {
   goldLots GoldLot[]
   files    File[]    @relation("FilesUploadedBy")
 
+  createdPriceOverrides AdminPriceOverride[] @relation("AdminPriceOverrideCreatedBy")
+  revokedPriceOverrides AdminPriceOverride[] @relation("AdminPriceOverrideRevokedBy")
+  settings              UserSettings?
+
   userKyc         UserKyc?
   policyAuditLogs PolicyAuditLog[]
   policyRules     PolicyRule[]   @relation("PolicyRuleScopeUser")
@@ -338,6 +356,102 @@ model Instrument {
   prices      InstrumentPrice[]
   remittances Remittance[]
   policyRules PolicyRule[]     @relation("PolicyRuleInstrument")
+  marketProducts MarketProduct[]
+}
+
+model MarketProduct {
+  id             String            @id @default(cuid())
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  code           String            @unique
+  displayName    String
+  productType    MarketProductType
+  tradeType      TradeType
+  baseInstrument Instrument        @relation(fields: [baseInstrumentId], references: [id])
+  baseInstrumentId String
+  unitType       PolicyMetric
+  groupKey       String
+  sortOrder      Int               @default(0)
+  isActive       Boolean           @default(true)
+  metaJson       Json?
+
+  providerMappings ProductProviderMapping[]
+  priceOverrides   AdminPriceOverride[]
+
+  @@index([isActive, groupKey, sortOrder])
+}
+
+model PriceProvider {
+  id                  String   @id @default(cuid())
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  key                 String   @unique
+  displayName         String
+  baseUrl             String?
+  isEnabled           Boolean  @default(true)
+  supportsStreaming   Boolean  @default(false)
+  defaultPollIntervalSec Int?
+  authJson            Json?
+
+  mappings ProductProviderMapping[]
+}
+
+model ProductProviderMapping {
+  id           String        @id @default(cuid())
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  product      MarketProduct @relation(fields: [productId], references: [id])
+  productId    String
+  provider     PriceProvider @relation(fields: [providerId], references: [id])
+  providerId   String
+  providerSymbol String
+  priority     Int
+  isEnabled    Boolean       @default(true)
+  metaJson     Json?
+
+  @@unique([productId, providerId])
+  @@index([productId, isEnabled, priority])
+}
+
+model AdminPriceOverride {
+  id              String             @id @default(cuid())
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  product         MarketProduct      @relation(fields: [productId], references: [id])
+  productId       String
+  mode            PricingOverrideMode
+  buyAbsolute     Decimal?           @db.Decimal(24, 6)
+  sellAbsolute    Decimal?           @db.Decimal(24, 6)
+  buyDeltaBps     Int?
+  sellDeltaBps    Int?
+  buyDeltaAmount  Decimal?           @db.Decimal(24, 6)
+  sellDeltaAmount Decimal?           @db.Decimal(24, 6)
+  isActive        Boolean            @default(true)
+  startsAt        DateTime           @default(now())
+  expiresAt       DateTime
+  reason          String
+  createdByAdmin  User               @relation("AdminPriceOverrideCreatedBy", fields: [createdByAdminId], references: [id])
+  createdByAdminId String
+  revokedAt       DateTime?
+  revokedByAdmin  User?              @relation("AdminPriceOverrideRevokedBy", fields: [revokedByAdminId], references: [id])
+  revokedByAdminId String?
+
+  @@index([productId, isActive, expiresAt])
+}
+
+model UserSettings {
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String   @id
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  showBalances    Boolean @default(true)
+  showGold        Boolean @default(true)
+  showCoins       Boolean @default(true)
+  showCash        Boolean @default(true)
+  tradeEnabled    Boolean @default(true)
+  withdrawEnabled Boolean @default(true)
+  maxOpenTrades   Int?
+  metaJson        Json?
 }
 
 model InstrumentPrice {
