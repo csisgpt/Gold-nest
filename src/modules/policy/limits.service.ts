@@ -1,18 +1,22 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
-  KycLevel,
+  InstrumentType,
   LimitReservationStatus,
   PolicyAction,
   PolicyMetric,
   PolicyPeriod,
 } from '@prisma/client';
-import Decimal from 'decimal.js';
+import { Decimal } from '@prisma/client/runtime/library';
+import { PolicyViolationException } from '../../common/exceptions/policy-violation.exception';
+import { addDec, dec, subDec } from '../../common/utils/decimal.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { PeriodKeyService } from './period-key.service';
 import { PolicyResolverService } from './policy-resolver.service';
-import { PolicyViolationException } from '../../common/exceptions/policy-violation.exception';
 
 const DEFAULT_INSTRUMENT_KEY = 'ALL';
+const LimitReservationStatusEnum =
+  (LimitReservationStatus as any) ?? ({ RESERVED: 'RESERVED', CONSUMED: 'CONSUMED', RELEASED: 'RELEASED' } as const);
+const PolicyPeriodEnum = (PolicyPeriod as any) ?? ({ DAILY: 'DAILY', MONTHLY: 'MONTHLY' } as const);
 
 @Injectable()
 export class LimitsService {
@@ -29,18 +33,40 @@ export class LimitsService {
     period: PolicyPeriod;
     amount: Decimal.Value;
     instrumentKey?: string;
+    instrumentId?: string;
+    instrumentType?: InstrumentType | null;
     refType: string;
     refId: string;
   }) {
-    const amount = new Decimal(params.amount);
-    const instrumentKey = params.instrumentKey ?? DEFAULT_INSTRUMENT_KEY;
+    const amount = dec(params.amount);
+    const instrumentKey = params.instrumentKey ?? params.instrumentId ?? DEFAULT_INSTRUMENT_KEY;
     const periodKey =
-      params.period === PolicyPeriod.MONTHLY
+      params.period === PolicyPeriodEnum.MONTHLY
         ? this.periodKeyService.getMonthlyKey()
         : this.periodKeyService.getDailyKey();
 
     return this.prisma.$transaction(async (tx) => {
-      const effective = await this.policyResolver.getEffectiveRules(params.userId);
+      let instrumentType = params.instrumentType ?? null;
+      if (!instrumentType && params.instrumentId) {
+        const instrument = await tx.instrument.findUnique({ where: { id: params.instrumentId } });
+        instrumentType = instrument?.type ?? null;
+      }
+
+      const applicable = await this.policyResolver.getApplicableRulesForRequest(
+        {
+          userId: params.userId,
+          action: params.action as any,
+          metric: params.metric as any,
+          period: params.period,
+          instrumentId: params.instrumentId,
+          instrumentType: instrumentType,
+        },
+        tx,
+      );
+
+      if (!applicable.effectiveLimit && applicable.kycRequiredLevel) {
+        throw new PolicyViolationException('KYC_REQUIRED', 'User KYC level insufficient for limit');
+      }
 
       const usage = await tx.limitUsage.upsert({
         where: {
@@ -68,30 +94,9 @@ export class LimitsService {
       const lockedUsage = await tx.limitUsage.findUnique({ where: { id: usage.id } });
       if (!lockedUsage) throw new NotFoundException('Limit usage not found');
 
-      const applicableRules = this.policyResolver.findApplicableRules({
-        rules: effective.rules,
-        action: params.action as any,
-        metric: params.metric as any,
-        period: params.period,
-        instrumentId: instrumentKey !== DEFAULT_INSTRUMENT_KEY ? instrumentKey : undefined,
-        instrumentType: null,
-      });
+      const projected = dec(lockedUsage.usedAmount).add(lockedUsage.reservedAmount).add(amount);
 
-      const requiredKyc = applicableRules.reduce<KycLevel>((max, rule) => {
-        const order = [KycLevel.NONE, KycLevel.BASIC, KycLevel.FULL];
-        return order.indexOf(rule.minKycLevel) > order.indexOf(max) ? rule.minKycLevel : max;
-      }, KycLevel.NONE);
-
-      if (!this.policyResolver.hasRequiredKyc(effective.userKyc?.level, requiredKyc)) {
-        throw new PolicyViolationException('KYC_REQUIRED', 'User KYC level insufficient for limit');
-      }
-
-      const effectiveLimit = this.policyResolver.computeEffectiveLimit(applicableRules);
-      const projected = new Decimal(lockedUsage.usedAmount)
-        .add(lockedUsage.reservedAmount)
-        .add(amount);
-
-      if (effectiveLimit.isFinite() && projected.gt(effectiveLimit)) {
+      if (applicable.effectiveLimit && projected.gt(applicable.effectiveLimit)) {
         throw new PolicyViolationException('LIMIT_EXCEEDED', 'Policy limit exceeded');
       }
 
@@ -106,14 +111,6 @@ export class LimitsService {
       });
 
       if (existingReservation) {
-        if (existingReservation.status === LimitReservationStatus.RELEASED) {
-          return { usage: lockedUsage, reservation: existingReservation };
-        }
-
-        if (existingReservation.status === LimitReservationStatus.CONSUMED) {
-          return { usage: lockedUsage, reservation: existingReservation };
-        }
-
         return { usage: lockedUsage, reservation: existingReservation };
       }
 
@@ -124,13 +121,13 @@ export class LimitsService {
           amount,
           refId: params.refId,
           refType: params.refType,
-          status: LimitReservationStatus.RESERVED,
+          status: LimitReservationStatusEnum.RESERVED as any,
         },
       });
 
       const updatedUsage = await tx.limitUsage.update({
         where: { id: lockedUsage.id },
-        data: { reservedAmount: new Decimal(lockedUsage.reservedAmount).add(amount) },
+        data: { reservedAmount: addDec(lockedUsage.reservedAmount, amount) },
       });
 
       return { usage: updatedUsage, reservation };
@@ -144,14 +141,14 @@ export class LimitsService {
       });
 
       for (const reservation of reservations) {
-        if (reservation.status === LimitReservationStatus.CONSUMED) continue;
+        if (reservation.status === LimitReservationStatusEnum.CONSUMED) continue;
 
         await tx.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, reservation.usageId);
         const usage = await tx.limitUsage.findUnique({ where: { id: reservation.usageId } });
         if (!usage) continue;
 
-        const newReserved = new Decimal(usage.reservedAmount).minus(reservation.amount);
-        const newUsed = new Decimal(usage.usedAmount).add(reservation.amount);
+        const newReserved = subDec(usage.reservedAmount, reservation.amount);
+        const newUsed = addDec(usage.usedAmount, reservation.amount);
 
         await tx.limitUsage.update({
           where: { id: usage.id },
@@ -160,7 +157,7 @@ export class LimitsService {
 
         await tx.limitReservation.update({
           where: { id: reservation.id },
-          data: { status: LimitReservationStatus.CONSUMED },
+          data: { status: LimitReservationStatusEnum.CONSUMED as any },
         });
       }
     });
@@ -173,13 +170,13 @@ export class LimitsService {
       });
 
       for (const reservation of reservations) {
-        if (reservation.status !== LimitReservationStatus.RESERVED) continue;
+        if (reservation.status !== LimitReservationStatusEnum.RESERVED) continue;
 
         await tx.$executeRawUnsafe(`SELECT 1 FROM "LimitUsage" WHERE id = $1 FOR UPDATE`, reservation.usageId);
         const usage = await tx.limitUsage.findUnique({ where: { id: reservation.usageId } });
         if (!usage) continue;
 
-        const newReserved = new Decimal(usage.reservedAmount).minus(reservation.amount);
+        const newReserved = subDec(usage.reservedAmount, reservation.amount);
 
         await tx.limitUsage.update({
           where: { id: usage.id },
@@ -188,7 +185,7 @@ export class LimitsService {
 
         await tx.limitReservation.update({
           where: { id: reservation.id },
-          data: { status: LimitReservationStatus.RELEASED },
+          data: { status: LimitReservationStatusEnum.RELEASED as any },
         });
       }
     });

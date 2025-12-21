@@ -1,11 +1,17 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InstrumentType, PolicyPeriod, PolicyRule, PolicyScopeType } from '@prisma/client';
-import Decimal from 'decimal.js';
+import {
+  InstrumentType,
+  KycLevel,
+  PolicyPeriod,
+  PolicyRule,
+  PolicyScopeType,
+  Prisma,
+} from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
+import { dec, minDec } from '../../common/utils/decimal.util';
 import { PrismaService } from '../prisma/prisma.service';
-import { KycLevel } from '@prisma/client';
 
-interface ApplicableRuleParams {
-  rules: PolicyRule[];
+interface RuleMatchParams {
   action: PolicyRule['action'];
   metric: PolicyRule['metric'];
   period: PolicyPeriod;
@@ -13,12 +19,24 @@ interface ApplicableRuleParams {
   instrumentType?: InstrumentType | null;
 }
 
+const KycLevelEnum = (KycLevel as any) ?? { NONE: 'NONE', BASIC: 'BASIC', FULL: 'FULL' };
+const KYC_ORDER = [KycLevelEnum.NONE, KycLevelEnum.BASIC, KycLevelEnum.FULL];
+const PolicyScopeTypeEnum = (PolicyScopeType as any) ?? {
+  USER: 'USER',
+  GROUP: 'GROUP',
+  GLOBAL: 'GLOBAL',
+};
+
+function kycIndex(level: KycLevel | null | undefined) {
+  return KYC_ORDER.indexOf((level as any) ?? KycLevelEnum.NONE);
+}
+
 @Injectable()
 export class PolicyResolverService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getUserContext(userId: string) {
-    const user = await this.prisma.user.findUnique({
+  async getUserContext(userId: string, db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    const user = await db.user.findUnique({
       where: { id: userId },
       include: { customerGroup: true, userKyc: true },
     });
@@ -30,18 +48,17 @@ export class PolicyResolverService {
     return user;
   }
 
-  async getEffectiveRules(userId: string) {
-    const user = await this.getUserContext(userId);
-    const rules = await this.prisma.policyRule.findMany({
+  async getEffectiveRules(userId: string, db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    const user = await this.getUserContext(userId, db);
+    const rules = await db.policyRule.findMany({
       where: {
         enabled: true,
         OR: [
-          { scopeType: PolicyScopeType.GLOBAL },
-          { scopeType: PolicyScopeType.GROUP, scopeGroupId: user.customerGroupId },
-          { scopeType: PolicyScopeType.USER, scopeUserId: user.id },
+          { scopeType: PolicyScopeTypeEnum.GLOBAL as any },
+          { scopeType: PolicyScopeTypeEnum.GROUP as any, scopeGroupId: user.customerGroupId },
+          { scopeType: PolicyScopeTypeEnum.USER as any, scopeUserId: user.id },
         ],
       },
-      orderBy: [{ priority: 'asc' }],
     });
 
     const sortedRules = rules.sort((a, b) => this.compareRules(a, b));
@@ -49,58 +66,88 @@ export class PolicyResolverService {
     return { user, userKyc: user.userKyc, customerGroup: user.customerGroup, rules: sortedRules };
   }
 
-  findApplicableRules(params: ApplicableRuleParams) {
+  findApplicableRules(params: RuleMatchParams & { rules: PolicyRule[] }) {
     return params.rules
       .filter((rule) => this.matchesRule(rule, params))
       .sort((a, b) => this.compareRules(a, b));
   }
 
-  computeEffectiveLimit(rules: PolicyRule[]) {
+  computeEffectiveLimit(rules: PolicyRule[]): Decimal | null {
     if (!rules.length) {
-      return new Decimal(Infinity);
+      return null;
     }
 
-    return rules.reduce(
-      (min, rule) => Decimal.min(min, new Decimal(rule.limit)),
-      new Decimal(Infinity),
-    );
+    return rules.reduce((min, rule) => minDec(min, rule.limit), dec(rules[0].limit));
+  }
+
+  async getApplicableRulesForRequest(
+    params: RuleMatchParams & { userId: string },
+    db: Prisma.TransactionClient | PrismaService = this.prisma,
+  ) {
+    const effective = await this.getEffectiveRules(params.userId, db);
+    const applicableRules = this.findApplicableRules({
+      rules: effective.rules,
+      action: params.action,
+      metric: params.metric,
+      period: params.period,
+      instrumentId: params.instrumentId,
+      instrumentType: params.instrumentType,
+    });
+
+    const userLevel = (effective.userKyc?.level as any) ?? KycLevelEnum.NONE;
+    const eligibleRules = applicableRules.filter((rule) => kycIndex(rule.minKycLevel) <= kycIndex(userLevel));
+    const blockedByKycRules = applicableRules.filter((rule) => kycIndex(rule.minKycLevel) > kycIndex(userLevel));
+    const kycRequiredLevel = blockedByKycRules.reduce<KycLevel | null>((required, rule) => {
+      if (!required || kycIndex(rule.minKycLevel) < kycIndex(required)) {
+        return rule.minKycLevel;
+      }
+      return required;
+    }, null);
+
+    const effectiveLimit = this.computeEffectiveLimit(eligibleRules);
+
+    return {
+      kycLevel: userLevel,
+      eligibleRules,
+      blockedByKycRules,
+      rulesApplied: applicableRules,
+      effectiveLimit,
+      kycRequiredLevel,
+    };
   }
 
   private matchesRule(
     rule: PolicyRule,
-    params: { action: PolicyRule['action']; metric: PolicyRule['metric']; period: PolicyPeriod; instrumentId?: string | null; instrumentType?: InstrumentType | null },
+    params: {
+      action: PolicyRule['action'];
+      metric: PolicyRule['metric'];
+      period: PolicyPeriod;
+      instrumentId?: string | null;
+      instrumentType?: InstrumentType | null;
+    },
   ) {
     if (rule.action !== params.action || rule.metric !== params.metric || rule.period !== params.period) {
       return false;
     }
 
-    if (rule.instrumentId && params.instrumentId && rule.instrumentId !== params.instrumentId) {
-      return false;
+    if (rule.instrumentId) {
+      return !!params.instrumentId && rule.instrumentId === params.instrumentId;
     }
 
-    if (!rule.instrumentId && params.instrumentId && rule.instrumentType && params.instrumentType && rule.instrumentType !== params.instrumentType) {
-      return false;
-    }
-
-    if (rule.instrumentId && !params.instrumentId) {
-      return false;
-    }
-
-    if (rule.instrumentType && params.instrumentType && rule.instrumentType !== params.instrumentType) {
-      return false;
+    if (rule.instrumentType) {
+      if (!params.instrumentType) return false;
+      return rule.instrumentType === params.instrumentType;
     }
 
     return true;
   }
 
   private compareRules(a: PolicyRule, b: PolicyRule) {
-    if (a.priority !== b.priority) return a.priority - b.priority;
-
     const scopeRank = (rule: PolicyRule) => {
       switch (rule.scopeType) {
-        case PolicyScopeType.USER:
+        case PolicyScopeTypeEnum.USER:
           return 0;
-        case PolicyScopeType.GROUP:
+        case PolicyScopeTypeEnum.GROUP:
           return 1;
         default:
           return 2;
@@ -119,13 +166,12 @@ export class PolicyResolverService {
     const selectorDiff = selectorRank(a) - selectorRank(b);
     if (selectorDiff !== 0) return selectorDiff;
 
+    if (a.priority !== b.priority) return a.priority - b.priority;
+
     return a.createdAt.getTime() - b.createdAt.getTime();
   }
 
   hasRequiredKyc(userLevel: KycLevel | null | undefined, required: KycLevel) {
-    const order = [KycLevel.NONE, KycLevel.BASIC, KycLevel.FULL];
-    const currentIdx = order.indexOf(userLevel ?? KycLevel.NONE);
-    const requiredIdx = order.indexOf(required);
-    return currentIdx >= requiredIdx;
+    return kycIndex(userLevel) >= kycIndex(required);
   }
 }

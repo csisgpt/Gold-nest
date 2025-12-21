@@ -57,3 +57,5 @@ Copy `.env.example` to `.env` and set `DATABASE_URL`, `HOUSE_USER_ID` (default `
 - Prisma migrations have been squashed into a single baseline for easier bootstrapping. If you cloned the repo before this change, reset your database (`npx prisma migrate reset --force`) to align with the new history.
 
 > Note: Package installation may require network access to npm registry.
+
+See [docs/policy.md](docs/policy.md) for policy rule precedence and reservation lifecycle details.
