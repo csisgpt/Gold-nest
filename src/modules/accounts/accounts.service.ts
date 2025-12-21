@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Decimal } from '@prisma/client/runtime/library';
 import {
   PrismaClient,
@@ -9,6 +9,7 @@ import {
   TradeSide,
   UserRole,
   UserStatus,
+  AccountReservationStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
@@ -44,6 +45,12 @@ export interface ApplyTransactionInput {
 @Injectable()
 export class AccountsService {
   constructor(private readonly prisma: PrismaService) { }
+
+  getUsableCapacity(account: { balance: Decimal | string | number; blockedBalance?: Decimal | string | number; minBalance?: Decimal | string | number; }) {
+    return new Decimal(account.balance ?? 0)
+      .minus(new Decimal(account.blockedBalance ?? 0))
+      .minus(new Decimal(account.minBalance ?? 0));
+  }
 
   async getOrCreateAccount(
     userId: string,
@@ -104,6 +111,132 @@ export class AccountsService {
     `;
   }
 
+  private async lockAccountRow(tx: Prisma.TransactionClient, accountId: string): Promise<void> {
+    await tx.$executeRawUnsafe(
+      `SELECT 1 FROM "Account" WHERE id = $1 FOR UPDATE`,
+      accountId,
+    );
+  }
+
+  async reserveFunds(params: {
+    userId: string;
+    instrumentCode: string;
+    amount: Decimal | string | number;
+    refType: TxRefType;
+    refId: string;
+    createdById?: string;
+    tx?: PrismaClientOrTx;
+  }) {
+    const amount = new Decimal(params.amount);
+    const executor = async (trx: Prisma.TransactionClient) => {
+      const account = await this.getOrCreateAccount(params.userId, params.instrumentCode, trx);
+
+      await this.lockAccountRow(trx, account.id);
+      const freshAccount = await trx.account.findUnique({ where: { id: account.id } });
+      if (!freshAccount) throw new NotFoundException('Account not found');
+
+      const existingReservation = await trx.accountReservation.findUnique({
+        where: {
+          refType_refId_accountId: {
+            accountId: freshAccount.id,
+            refId: params.refId,
+            refType: params.refType,
+          },
+        },
+      });
+
+      if (existingReservation) {
+        if (existingReservation.status === AccountReservationStatus.RELEASED) {
+          throw new ConflictException('Reservation already released');
+        }
+        return { account: freshAccount, reservation: existingReservation };
+      }
+
+      const usable = this.getUsableCapacity(freshAccount);
+      if (usable.lt(amount)) {
+        throw new InsufficientCreditException('Insufficient usable balance');
+      }
+
+      const reservation = await trx.accountReservation.create({
+        data: {
+          accountId: freshAccount.id,
+          amount,
+          refId: params.refId,
+          refType: params.refType,
+          status: AccountReservationStatus.RESERVED,
+        },
+      });
+
+      const updatedAccount = await trx.account.update({
+        where: { id: freshAccount.id },
+        data: { blockedBalance: new Decimal(freshAccount.blockedBalance).add(amount) },
+      });
+
+      return { account: updatedAccount, reservation };
+    };
+
+    if (params.tx) return executor(params.tx as Prisma.TransactionClient);
+    return runInTx(this.prisma, (trx) => executor(trx));
+  }
+
+  async releaseFunds(params: {
+    userId: string;
+    instrumentCode: string;
+    refType: TxRefType;
+    refId: string;
+    tx?: PrismaClientOrTx;
+  }) {
+    const executor = async (trx: Prisma.TransactionClient) => {
+      const account = await this.getOrCreateAccount(params.userId, params.instrumentCode, trx);
+      const reservation = await trx.accountReservation.findUnique({
+        where: {
+          refType_refId_accountId: {
+            accountId: account.id,
+            refId: params.refId,
+            refType: params.refType,
+          },
+        },
+      });
+
+      if (!reservation) {
+        return null;
+      }
+
+      if (reservation.status === AccountReservationStatus.RELEASED) {
+        return { account, reservation };
+      }
+
+      await this.lockAccountRow(trx, account.id);
+      const freshAccount = await trx.account.findUnique({ where: { id: account.id } });
+      if (!freshAccount) throw new NotFoundException('Account not found');
+
+      if (reservation.status === AccountReservationStatus.CONSUMED) {
+        return { account: freshAccount, reservation };
+      }
+
+      const newBlocked = new Decimal(freshAccount.blockedBalance).minus(reservation.amount);
+      if (newBlocked.lt(0)) {
+        throw new BadRequestException('Blocked balance cannot be negative');
+      }
+
+      const [updatedReservation, updatedAccount] = await trx.$transaction([
+        trx.accountReservation.update({
+          where: { id: reservation.id },
+          data: { status: AccountReservationStatus.RELEASED },
+        }),
+        trx.account.update({
+          where: { id: freshAccount.id },
+          data: { blockedBalance: newBlocked },
+        }),
+      ]);
+
+      return { account: updatedAccount, reservation: updatedReservation };
+    };
+
+    if (params.tx) return executor(params.tx as Prisma.TransactionClient);
+    return runInTx(this.prisma, (trx) => executor(trx));
+  }
+
   async applyTransaction(
     inputOrTx: ApplyTransactionInput | PrismaClientOrTx,
     accountOrInput?: any,
@@ -148,7 +281,8 @@ export class AccountsService {
       }
 
       const newBalance = new Decimal(account.balance).add(deltaDecimal);
-      if (newBalance.lt(account.minBalance)) {
+      const requiredBalance = new Decimal(account.blockedBalance ?? 0).add(account.minBalance ?? 0);
+      if (newBalance.lt(requiredBalance)) {
         throw new InsufficientCreditException();
       }
 

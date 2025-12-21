@@ -107,7 +107,7 @@ export class TradesService {
         user.id,
         IRR_INSTRUMENT_CODE,
       );
-      const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
+      const usable = this.accountsService.getUsableCapacity(irrAccount);
       if (usable.lt(totalAmount)) {
         throw new InsufficientCreditException('Not enough IRR usable balance to open BUY trade');
       }
@@ -119,7 +119,7 @@ export class TradesService {
         instrument.code,
       );
 
-      const usable = new Decimal(assetAccount.balance).minus(assetAccount.minBalance);
+      const usable = this.accountsService.getUsableCapacity(assetAccount);
       if (usable.lt(quantity)) {
         throw new InsufficientCreditException(
           'Not enough asset balance to sell with WALLET settlement',
@@ -313,16 +313,14 @@ export class TradesService {
         ]);
 
         if (trade.side === TradeSide.BUY) {
-          const usable = new Decimal(irrAccount.balance).minus(irrAccount.minBalance);
+          const usable = this.accountsService.getUsableCapacity(irrAccount);
           if (usable.lt(total)) {
             throw new InsufficientCreditException('Insufficient IRR for settlement');
           }
         }
 
         if (trade.side === TradeSide.SELL) {
-          const usableAssetBalance = new Decimal(userAsset.balance).minus(
-            userAsset.minBalance,
-          );
+          const usableAssetBalance = this.accountsService.getUsableCapacity(userAsset);
           if (usableAssetBalance.lt(quantity)) {
             throw new InsufficientCreditException('Not enough asset to approve sell trade');
           }
@@ -615,7 +613,7 @@ export class TradesService {
           await this.accountsService.lockAccounts(tx, [userIrr.id, houseIrr.id]);
 
           if (amount.gt(0)) {
-            const usable = new Decimal(userIrr.balance).minus(userIrr.minBalance);
+            const usable = this.accountsService.getUsableCapacity(userIrr);
             if (usable.lt(amount)) {
               throw new InsufficientCreditException(
                 'Not enough IRR balance for forward cash settlement',
@@ -643,7 +641,7 @@ export class TradesService {
             );
           } else {
             const absAmount = amount.abs();
-            const usableHouse = new Decimal(houseIrr.balance).minus(houseIrr.minBalance);
+            const usableHouse = this.accountsService.getUsableCapacity(houseIrr);
             if (usableHouse.lt(absAmount)) {
               throw new InsufficientCreditException(
                 'House IRR balance is not enough to credit client for forward cash settlement',

@@ -44,9 +44,7 @@ export class WithdrawalsService {
       user.id,
       IRR_INSTRUMENT_CODE,
     );
-    const balance = new Decimal(account.balance);
-    const minBalance = new Decimal(account.minBalance);
-    const usable = balance.minus(minBalance);
+    const usable = this.accountsService.getUsableCapacity(account);
     if (usable.lt(amountDecimal)) {
       throw new BadRequestException('Insufficient capacity for withdrawal');
     }
@@ -187,7 +185,7 @@ export class WithdrawalsService {
       );
 
       const total = new Decimal(withdraw.amount);
-      const usable = new Decimal(account.balance).minus(account.minBalance);
+      const usable = this.accountsService.getUsableCapacity(account);
       if (usable.lt(total)) {
         throw new InsufficientCreditException('Insufficient IRR balance for withdrawal');
       }

@@ -19,6 +19,7 @@ import { TahesabModule } from './modules/tahesab/tahesab.module';
 import { PhysicalCustodyModule } from './modules/physical-custody/physical-custody.module';
 import { RequestIdMiddleware } from './common/http/request-id.middleware';
 import { AttachmentsModule } from './modules/attachments/attachments.module';
+import { PolicyModule } from './modules/policy/policy.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { AttachmentsModule } from './modules/attachments/attachments.module';
     TahesabModule,
     PhysicalCustodyModule,
     AttachmentsModule,
+    PolicyModule,
     ThrottlerModule.forRoot({
       ttl: 60,
       limit: 60,

@@ -19,6 +19,11 @@ import {
     PhysicalCustodyMovementStatus,
     GoldLotStatus,
     AttachmentEntityType,
+    PolicyScopeType,
+    PolicyAction,
+    PolicyMetric,
+    PolicyPeriod,
+    KycLevel,
 } from '@prisma/client';
 import { faker } from '@faker-js/faker/locale/fa';
 import * as bcrypt from 'bcrypt';
@@ -38,6 +43,38 @@ async function main() {
     const sharedPassword = await bcrypt.hash('Password@123', saltRounds);
     const now = new Date();
 
+    console.log('0. Creating customer groups...');
+    const groups = [
+        { code: 'STANDARD', name: 'Standard Customers', tahesabGroupName: 'DEFAULT', isDefault: true },
+        { code: 'VERIFIED', name: 'Verified Customers', tahesabGroupName: 'VERIFIED', isDefault: false },
+        { code: 'VIP', name: 'VIP Customers', tahesabGroupName: 'VIP', isDefault: false },
+    ];
+
+    let defaultGroupId: string | undefined;
+    const groupMap = new Map<string, string>();
+    for (const group of groups) {
+        const upserted = await prisma.customerGroup.upsert({
+            where: { code: group.code },
+            update: {
+                name: group.name,
+                tahesabGroupName: group.tahesabGroupName,
+                isDefault: group.isDefault,
+            },
+            create: group,
+        });
+        groupMap.set(group.code, upserted.id);
+        if (group.isDefault) {
+            defaultGroupId = upserted.id;
+        }
+    }
+
+    if (defaultGroupId) {
+        await prisma.customerGroup.updateMany({
+            where: { id: { not: defaultGroupId } },
+            data: { isDefault: false },
+        });
+    }
+
     // --- ۱. ایجاد کاربران پایه (Admin, Trader, Client) ---
     console.log('1. Creating base Users...');
 
@@ -55,6 +92,7 @@ async function main() {
             password: sharedPassword,
             role: UserRole.ADMIN,
             status: UserStatus.ACTIVE,
+            customerGroupId: defaultGroupId,
         },
     });
 
@@ -67,6 +105,7 @@ async function main() {
             role: UserRole.ADMIN,
             status: UserStatus.ACTIVE,
             tahesabCustomerCode: 'TC_ADMIN_001',
+            customerGroupId: defaultGroupId,
         },
         create: {
             fullName: 'مدیر کل سیستم',
@@ -76,6 +115,7 @@ async function main() {
             role: UserRole.ADMIN,
             status: UserStatus.ACTIVE,
             tahesabCustomerCode: 'TC_ADMIN_001',
+            customerGroupId: defaultGroupId,
         },
     });
 
@@ -88,6 +128,7 @@ async function main() {
             role: UserRole.TRADER,
             status: UserStatus.ACTIVE,
             tahesabCustomerCode: 'TC_TRADER_002',
+            customerGroupId: defaultGroupId,
         },
         create: {
             fullName: 'معامله‌گر اصلی',
@@ -97,6 +138,7 @@ async function main() {
             role: UserRole.TRADER,
             status: UserStatus.ACTIVE,
             tahesabCustomerCode: 'TC_TRADER_002',
+            customerGroupId: defaultGroupId,
         },
     });
 
@@ -115,6 +157,7 @@ async function main() {
                 role: UserRole.CLIENT,
                 status: clientStatus,
                 tahesabCustomerCode: `TC_CLIENT_${i.toString().padStart(3, '0')}`,
+                customerGroupId: defaultGroupId,
             },
             create: {
                 fullName: faker.person.fullName(),
@@ -124,12 +167,20 @@ async function main() {
                 role: UserRole.CLIENT,
                 status: clientStatus,
                 tahesabCustomerCode: `TC_CLIENT_${i.toString().padStart(3, '0')}`,
+                customerGroupId: defaultGroupId,
             },
         });
         clients.push(client);
     }
     const clientA = clients[0];
     const clientB = clients[1];
+
+    if (defaultGroupId) {
+        await prisma.user.updateMany({
+            where: { customerGroupId: null },
+            data: { customerGroupId: defaultGroupId },
+        });
+    }
 
     // --- ۲. ایجاد ابزارهای معاملاتی (Instrument) ---
     console.log('2. Creating Instruments...');
@@ -187,6 +238,123 @@ async function main() {
                 sellPrice: new Decimal(goldPrice),
                 source: 'Exchange Data',
             },
+        });
+    }
+
+    console.log('3.a Creating baseline Policy Rules...');
+    const upsertPolicyRule = async (data: any) => {
+        const selector = {
+            scopeType: data.scopeType,
+            scopeUserId: data.scopeUserId ?? null,
+            scopeGroupId: data.scopeGroupId ?? null,
+            action: data.action,
+            metric: data.metric,
+            period: data.period,
+            instrumentId: data.instrumentId ?? null,
+            instrumentType: data.instrumentType ?? null,
+        } as const;
+
+        const existing = await prisma.policyRule.findFirst({ where: selector });
+        if (existing) {
+            await prisma.policyRule.update({
+                where: { id: existing.id },
+                data: {
+                    ...data,
+                    scopeUserId: data.scopeUserId ?? null,
+                    scopeGroupId: data.scopeGroupId ?? null,
+                    instrumentId: data.instrumentId ?? null,
+                    instrumentType: data.instrumentType ?? null,
+                },
+            });
+            return existing;
+        }
+
+        return prisma.policyRule.create({ data });
+    };
+
+    const baselineRules = [
+        {
+            scopeType: PolicyScopeType.GLOBAL,
+            action: PolicyAction.WITHDRAW_IRR,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.DAILY,
+            limit: new Decimal(50000000),
+            minKycLevel: KycLevel.BASIC,
+            priority: 100,
+        },
+        {
+            scopeType: PolicyScopeType.GLOBAL,
+            action: PolicyAction.WITHDRAW_IRR,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.MONTHLY,
+            limit: new Decimal(150000000),
+            minKycLevel: KycLevel.BASIC,
+            priority: 100,
+        },
+        {
+            scopeType: PolicyScopeType.GROUP,
+            scopeGroupId: groupMap.get('STANDARD'),
+            action: PolicyAction.WITHDRAW_IRR,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.DAILY,
+            limit: new Decimal(10000000),
+            minKycLevel: KycLevel.NONE,
+            priority: 90,
+        },
+        {
+            scopeType: PolicyScopeType.GROUP,
+            scopeGroupId: groupMap.get('STANDARD'),
+            action: PolicyAction.WITHDRAW_IRR,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.MONTHLY,
+            limit: new Decimal(30000000),
+            minKycLevel: KycLevel.NONE,
+            priority: 90,
+        },
+        {
+            scopeType: PolicyScopeType.GROUP,
+            scopeGroupId: groupMap.get('STANDARD'),
+            action: PolicyAction.TRADE_BUY,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.DAILY,
+            limit: new Decimal(50000000),
+            priority: 90,
+        },
+        {
+            scopeType: PolicyScopeType.GROUP,
+            scopeGroupId: groupMap.get('STANDARD'),
+            action: PolicyAction.TRADE_SELL,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.DAILY,
+            limit: new Decimal(50000000),
+            priority: 90,
+        },
+        {
+            scopeType: PolicyScopeType.GROUP,
+            scopeGroupId: groupMap.get('VIP'),
+            action: PolicyAction.WITHDRAW_IRR,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.DAILY,
+            limit: new Decimal(200000000),
+            minKycLevel: KycLevel.FULL,
+            priority: 80,
+        },
+        {
+            scopeType: PolicyScopeType.GROUP,
+            scopeGroupId: groupMap.get('VIP'),
+            action: PolicyAction.WITHDRAW_IRR,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.MONTHLY,
+            limit: new Decimal(600000000),
+            minKycLevel: KycLevel.FULL,
+            priority: 80,
+        },
+    ];
+
+    for (const rule of baselineRules) {
+        await upsertPolicyRule({
+            enabled: true,
+            ...rule,
         });
     }
 

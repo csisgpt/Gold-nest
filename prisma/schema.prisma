@@ -27,6 +27,64 @@ enum InstrumentType {
   OTHER
 }
 
+enum KycStatus {
+  NONE
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum KycLevel {
+  NONE
+  BASIC
+  FULL
+}
+
+enum PolicyScopeType {
+  GLOBAL
+  GROUP
+  USER
+}
+
+enum PolicyAction {
+  WITHDRAW_IRR
+  DEPOSIT_IRR
+  TRADE_BUY
+  TRADE_SELL
+  REMITTANCE_SEND
+  CUSTODY_IN
+  CUSTODY_OUT
+}
+
+enum PolicyMetric {
+  NOTIONAL_IRR
+  WEIGHT_750_G
+  COUNT
+}
+
+enum PolicyPeriod {
+  DAILY
+  MONTHLY
+}
+
+enum LimitReservationStatus {
+  RESERVED
+  CONSUMED
+  RELEASED
+}
+
+enum AccountReservationStatus {
+  RESERVED
+  CONSUMED
+  RELEASED
+}
+
+enum PolicyAuditEntityType {
+  CUSTOMER_GROUP
+  USER_KYC
+  POLICY_RULE
+}
+
 enum InstrumentUnit {
   GRAM_750_EQ
   PIECE
@@ -185,6 +243,19 @@ enum TahesabOutboxStatus {
   FAILED
 }
 
+model CustomerGroup {
+  id               String   @id @default(cuid())
+  code             String   @unique
+  name             String
+  tahesabGroupName String?
+  isDefault        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  users User[]
+  policyRules PolicyRule[] @relation("PolicyRuleScopeGroup")
+}
+
 model User {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
@@ -199,6 +270,9 @@ model User {
 
   role   UserRole   @default(CLIENT)
   status UserStatus @default(PENDING_APPROVAL)
+
+  customerGroupId String?
+  customerGroup   CustomerGroup? @relation(fields: [customerGroupId], references: [id])
 
   accounts  Account[]
   trades    Trade[]     @relation("UserTrades")
@@ -227,6 +301,26 @@ model User {
 
   goldLots GoldLot[]
   files    File[]    @relation("FilesUploadedBy")
+
+  userKyc         UserKyc?
+  policyAuditLogs PolicyAuditLog[]
+  policyRules     PolicyRule[]   @relation("PolicyRuleScopeUser")
+  limitUsages     LimitUsage[]
+
+  @@index([customerGroupId])
+}
+
+model UserKyc {
+  id           String    @id @default(cuid())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  userId       String    @unique
+  user         User      @relation(fields: [userId], references: [id])
+  status       KycStatus @default(NONE)
+  level        KycLevel  @default(NONE)
+  verifiedAt   DateTime?
+  rejectedAt   DateTime?
+  rejectReason String?
 }
 
 model Instrument {
@@ -243,6 +337,7 @@ model Instrument {
   trades      Trade[]
   prices      InstrumentPrice[]
   remittances Remittance[]
+  policyRules PolicyRule[]     @relation("PolicyRuleInstrument")
 }
 
 model InstrumentPrice {
@@ -273,8 +368,25 @@ model Account {
   minBalance     Decimal @default(0) @db.Decimal(24, 6)
 
   transactions AccountTx[]
+  reservations AccountReservation[]
 
   @@unique([userId, instrumentId])
+}
+
+model AccountReservation {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account   Account @relation(fields: [accountId], references: [id])
+  accountId String
+
+  amount Decimal @db.Decimal(24, 6)
+  refType TxRefType
+  refId   String
+  status  AccountReservationStatus @default(RESERVED)
+
+  @@unique([refType, refId, accountId])
 }
 
 model AccountTx {
@@ -573,4 +685,82 @@ model Attachment {
   entityId   String
 
   purpose String?
+}
+
+model PolicyRule {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scopeType   PolicyScopeType
+  scopeUserId String?
+  scopeGroupId String?
+  action      PolicyAction
+  metric      PolicyMetric
+  period      PolicyPeriod
+  limit       Decimal @db.Decimal(24, 6)
+  minKycLevel KycLevel @default(NONE)
+  instrumentId String?
+  instrumentType InstrumentType?
+  enabled     Boolean @default(true)
+  priority    Int     @default(100)
+  note        String?
+
+  scopeUser  User?          @relation("PolicyRuleScopeUser", fields: [scopeUserId], references: [id])
+  scopeGroup CustomerGroup? @relation("PolicyRuleScopeGroup", fields: [scopeGroupId], references: [id])
+  instrument Instrument?    @relation("PolicyRuleInstrument", fields: [instrumentId], references: [id])
+
+  @@index([scopeType, scopeUserId, scopeGroupId])
+  @@index([action, metric, period])
+  @@index([instrumentId, instrumentType])
+}
+
+model LimitUsage {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId  String
+  user    User   @relation(fields: [userId], references: [id])
+  action  PolicyAction
+  metric  PolicyMetric
+  period  PolicyPeriod
+  periodKey String
+  instrumentKey String  @default("ALL")
+  usedAmount     Decimal @default(0) @db.Decimal(24, 6)
+  reservedAmount Decimal @default(0) @db.Decimal(24, 6)
+
+  reservations LimitReservation[]
+
+  @@unique([userId, action, metric, period, periodKey, instrumentKey])
+}
+
+model LimitReservation {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  usageId String
+  usage   LimitUsage @relation(fields: [usageId], references: [id])
+  amount  Decimal @db.Decimal(24, 6)
+  refType String
+  refId   String
+  status  LimitReservationStatus @default(RESERVED)
+
+  @@unique([refType, refId, usageId])
+}
+
+model PolicyAuditLog {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  entityType PolicyAuditEntityType
+  entityId   String
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  beforeJson Json?
+  afterJson  Json?
+  reason     String?
+
+  @@index([entityType, entityId])
 }

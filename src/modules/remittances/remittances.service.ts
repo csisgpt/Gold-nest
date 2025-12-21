@@ -550,7 +550,7 @@ export class RemittancesService {
         fromAccounts.set(code, account);
 
         const totalForInstrument = totalsByInstrument.get(code)!;
-        const usable = new Decimal(account.balance).minus(account.minBalance);
+        const usable = this.accountsService.getUsableCapacity(account);
         if (usable.lt(totalForInstrument)) {
           throw new InsufficientCreditException('Insufficient balance for remittance');
         }
