@@ -4,6 +4,7 @@ import { Decimal } from '@prisma/client/runtime/library';
 import { PolicyViolationException } from '../src/common/exceptions/policy-violation.exception';
 import { LimitsService } from '../src/modules/policy/limits.service';
 import { PeriodKeyService } from '../src/modules/policy/period-key.service';
+import { PolicyContextBuilder } from '../src/modules/policy/policy-context-builder.service';
 
 enum LimitReservationStatus {
   RESERVED = 'RESERVED',
@@ -32,23 +33,43 @@ enum InstrumentType {
 class StubPolicyResolver {
   constructor(private readonly behavior: any = { limit: new Decimal(100) }) {}
 
-  async getApplicableRulesForRequest(params: any) {
+  async resolve(params: any) {
     if (typeof this.behavior === 'function') {
-      return this.behavior(params);
+      const output = await this.behavior(params);
+      const value = 'value' in output ? output.value : output.effectiveLimit ?? null;
+      return {
+        value,
+        source: 'GLOBAL',
+        ruleId: null,
+        selectorUsed: null,
+        kycRequiredLevel: output.kycRequiredLevel ?? null,
+      };
     }
 
-    const effectiveLimit = this.behavior.limit ?? null;
+    const value = this.behavior.limit ?? null;
     const kycRequiredLevel = this.behavior.kycRequiredLevel ?? null;
-    const eligibleRules = this.behavior.eligibleRules ?? [];
-    const blockedByKycRules = this.behavior.blockedByKycRules ?? [];
 
     return {
-      effectiveLimit,
+      value,
       kycRequiredLevel,
-      eligibleRules,
-      blockedByKycRules,
-      rulesApplied: eligibleRules,
-      kycLevel: null,
+      source: 'GLOBAL',
+      ruleId: null,
+      selectorUsed: null,
+    };
+  }
+}
+
+class StubPolicyContextBuilder extends PolicyContextBuilder {
+  constructor() {
+    super({} as any);
+  }
+
+  async buildFromMarketProduct(productId: string) {
+    return {
+      productId,
+      instrumentId: 'inst-1',
+      instrumentType: InstrumentType.GOLD as any,
+      tradeType: 'SPOT' as any,
     };
   }
 }
@@ -182,7 +203,12 @@ class StubPeriodKeyService extends PeriodKeyService {
 function createService(limit: Decimal | null = new Decimal(100)) {
   const prisma = new InMemoryPrisma() as any;
   return {
-    service: new LimitsService(prisma, new StubPeriodKeyService(), new StubPolicyResolver({ limit }) as any),
+    service: new LimitsService(
+      prisma,
+      new StubPeriodKeyService(),
+      new StubPolicyResolver({ limit }) as any,
+      new StubPolicyContextBuilder() as any,
+    ),
     prisma,
   };
 }
@@ -190,7 +216,12 @@ function createService(limit: Decimal | null = new Decimal(100)) {
 function createServiceWithResolverBehavior(behavior: any) {
   const prisma = new InMemoryPrisma() as any;
   return {
-    service: new LimitsService(prisma, new StubPeriodKeyService(), new StubPolicyResolver(behavior) as any),
+    service: new LimitsService(
+      prisma,
+      new StubPeriodKeyService(),
+      new StubPolicyResolver(behavior) as any,
+      new StubPolicyContextBuilder() as any,
+    ),
     prisma,
   };
 }
