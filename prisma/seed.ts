@@ -323,10 +323,28 @@ async function main() {
         {
             scopeType: PolicyScopeType.GROUP,
             scopeGroupId: groupMap.get('STANDARD'),
+            action: PolicyAction.TRADE_BUY,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.MONTHLY,
+            limit: new Decimal(1500000000),
+            priority: 90,
+        },
+        {
+            scopeType: PolicyScopeType.GROUP,
+            scopeGroupId: groupMap.get('STANDARD'),
             action: PolicyAction.TRADE_SELL,
             metric: PolicyMetric.NOTIONAL_IRR,
             period: PolicyPeriod.DAILY,
             limit: new Decimal(50000000),
+            priority: 90,
+        },
+        {
+            scopeType: PolicyScopeType.GROUP,
+            scopeGroupId: groupMap.get('STANDARD'),
+            action: PolicyAction.TRADE_SELL,
+            metric: PolicyMetric.NOTIONAL_IRR,
+            period: PolicyPeriod.MONTHLY,
+            limit: new Decimal(1500000000),
             priority: 90,
         },
         {

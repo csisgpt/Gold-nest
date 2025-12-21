@@ -14,6 +14,8 @@ import {
   WithdrawStatus,
   AccountReservationStatus,
   LimitReservationStatus,
+  PolicyAction,
+  PolicyMetric,
   PhysicalCustodyMovementStatus,
   PhysicalCustodyMovementType,
 } from '@prisma/client';
@@ -1207,7 +1209,7 @@ test('Trade reverse is idempotent and restores balances', async (t) => {
     quantity: new Decimal(1).toString(),
   } as any;
 
-  const trade = await tradesService.createForUser(client.id, tradeDto);
+  const trade = await tradesService.createForUser({ id: client.id, role: client.role } as any, tradeDto);
 
   const balancesBefore = await prisma.account.findMany({ where: { id: { in: [userIrr.id, userAsset.id, houseIrr.id, houseAsset.id] } } });
 
@@ -1447,6 +1449,9 @@ test('Wallet BUY trade reserves limits/funds and approves idempotently', async (
 
   const irrAfterApprove = await prisma.account.findUnique({ where: { id: userIrr.id } });
   const assetAfterApprove = await prisma.account.findUnique({ where: { id: userAsset.id } });
+  const txCountAfterApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.TRADE, refId: created.id },
+  });
   assert.strictEqual(decimalString(irrAfterApprove?.blockedBalance ?? 0), '0');
   assert.strictEqual(
     decimalString(irrAfterApprove?.balance ?? 0),
@@ -1458,6 +1463,50 @@ test('Wallet BUY trade reserves limits/funds and approves idempotently', async (
     where: { refType: TxRefType.TRADE, refId: created.id },
   });
   assert.ok(consumedLimits.every((lr) => lr.status === LimitReservationStatus.CONSUMED));
+
+  const limitUsagesAfterApprove = await prisma.limitUsage.findMany({
+    where: { userId: user.id, action: PolicyAction.TRADE_BUY },
+  });
+
+  const approveAgainRes = await fetch(`${baseUrl}/admin/trades/${created.id}/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(admin),
+    },
+    body: JSON.stringify({}),
+  });
+  assert.ok(approveAgainRes.ok, `Second approve failed ${approveAgainRes.status}`);
+  const approvedAgain = (await approveAgainRes.json()) as any;
+  assert.strictEqual(approvedAgain.status, TradeStatus.APPROVED);
+  assert.strictEqual(approvedAgain.approvedAt, approved.approvedAt);
+
+  const irrAfterSecondApprove = await prisma.account.findUnique({ where: { id: userIrr.id } });
+  const assetAfterSecondApprove = await prisma.account.findUnique({ where: { id: userAsset.id } });
+  const txCountAfterSecondApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.TRADE, refId: created.id },
+  });
+  assert.strictEqual(decimalString(irrAfterSecondApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(decimalString(assetAfterSecondApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(decimalString(irrAfterSecondApprove?.balance ?? 0), decimalString(irrAfterApprove?.balance ?? 0));
+  assert.strictEqual(decimalString(assetAfterSecondApprove?.balance ?? 0), decimalString(assetAfterApprove?.balance ?? 0));
+  assert.strictEqual(txCountAfterSecondApprove, txCountAfterApprove);
+
+  const limitUsagesAfterSecondApprove = await prisma.limitUsage.findMany({
+    where: { userId: user.id, action: PolicyAction.TRADE_BUY },
+  });
+  assert.strictEqual(limitUsagesAfterSecondApprove.length, limitUsagesAfterApprove.length);
+  limitUsagesAfterApprove.forEach((usage) => {
+    const match = limitUsagesAfterSecondApprove.find(
+      (candidate) =>
+        candidate.metric === usage.metric &&
+        candidate.period === usage.period &&
+        candidate.instrumentKey === usage.instrumentKey,
+    );
+    assert.ok(match, 'Matching limit usage not found after idempotent approve');
+    assert.strictEqual(decimalString(match.usedAmount), decimalString(usage.usedAmount));
+    assert.strictEqual(decimalString(match.reservedAmount), decimalString(usage.reservedAmount));
+  });
 });
 
 test('Wallet SELL trade cancellation releases reservations', async (t) => {
