@@ -126,11 +126,13 @@ export class UsersService {
   }
 
   private buildMoshtariCreateDto(
-    user: Pick<User, 'fullName' | 'mobile' | 'tahesabCustomerCode'>,
+    user: Pick<User, 'fullName' | 'mobile' | 'tahesabCustomerCode'> & {
+      customerGroup?: { tahesabGroupName: string | null; code: string } | null;
+    },
   ): DoNewMoshtariRequestDto {
     return {
       name: (user.fullName as string) ?? '',
-      groupName: 'DEFAULT',
+      groupName: user.customerGroup?.tahesabGroupName ?? user.customerGroup?.code ?? 'DEFAULT',
       tel: (user.mobile as string) ?? '',
       address: '',
       nationalCode: '',
@@ -140,12 +142,14 @@ export class UsersService {
   }
 
   private buildMoshtariEditDto(
-    user: Pick<User, 'id' | 'fullName' | 'mobile' | 'tahesabCustomerCode'>,
+    user: Pick<User, 'id' | 'fullName' | 'mobile' | 'tahesabCustomerCode'> & {
+      customerGroup?: { tahesabGroupName: string | null; code: string } | null;
+    },
   ): DoEditMoshtariRequestDto {
     return {
       moshtariCode: user.tahesabCustomerCode!,
       name: (user.fullName as string) ?? '',
-      groupName: 'DEFAULT',
+      groupName: user.customerGroup?.tahesabGroupName ?? user.customerGroup?.code ?? 'DEFAULT',
       tel: (user.mobile as string) ?? '',
       address: '',
       nationalCode: '',
@@ -160,7 +164,19 @@ export class UsersService {
       return;
     }
 
-    const dto = this.buildMoshtariCreateDto(user);
+    const withGroup = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        fullName: true,
+        mobile: true,
+        tahesabCustomerCode: true,
+        customerGroup: { select: { code: true, tahesabGroupName: true } },
+      },
+    });
+
+    if (!withGroup) return;
+
+    const dto = this.buildMoshtariCreateDto(withGroup);
     await this.tahesabOutbox.enqueueOnce('DoNewMoshtari', dto, {
       correlationId: `customer:create:${user.id}`,
     });
@@ -170,7 +186,19 @@ export class UsersService {
     if (!this.tahesabIntegration.isEnabled()) return;
     if (!user.tahesabCustomerCode) return;
 
-    const dto = this.buildMoshtariEditDto(user);
+    const withGroup = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        fullName: true,
+        mobile: true,
+        tahesabCustomerCode: true,
+        customerGroup: { select: { code: true, tahesabGroupName: true } },
+      },
+    });
+
+    if (!withGroup) return;
+
+    const dto = this.buildMoshtariEditDto(withGroup);
     await this.tahesabOutbox.enqueueOnce('DoEditMoshtari', dto, {
       correlationId: `customer:edit:${user.id}:${new Date().toISOString()}`,
     });

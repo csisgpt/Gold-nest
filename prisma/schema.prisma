@@ -726,7 +726,7 @@ model LimitUsage {
   metric  PolicyMetric
   period  PolicyPeriod
   periodKey String
-  instrumentKey String?
+  instrumentKey String  @default("ALL")
   usedAmount     Decimal @default(0) @db.Decimal(24, 6)
   reservedAmount Decimal @default(0) @db.Decimal(24, 6)
 
