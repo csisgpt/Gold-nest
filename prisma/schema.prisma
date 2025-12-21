@@ -377,6 +377,7 @@ model MarketProduct {
 
   providerMappings ProductProviderMapping[]
   priceOverrides   AdminPriceOverride[]
+  policyRules      PolicyRule[]
 
   @@index([isActive, groupKey, sortOrder])
 }
@@ -835,6 +836,7 @@ model PolicyRule {
   minKycLevel KycLevel @default(NONE)
   instrumentId String?
   instrumentType InstrumentType?
+  productId     String?
   enabled     Boolean @default(true)
   priority    Int     @default(100)
   note        String?
@@ -842,10 +844,13 @@ model PolicyRule {
   scopeUser  User?          @relation("PolicyRuleScopeUser", fields: [scopeUserId], references: [id])
   scopeGroup CustomerGroup? @relation("PolicyRuleScopeGroup", fields: [scopeGroupId], references: [id])
   instrument Instrument?    @relation("PolicyRuleInstrument", fields: [instrumentId], references: [id])
+  product    MarketProduct? @relation(fields: [productId], references: [id])
 
   @@index([scopeType, scopeUserId, scopeGroupId])
+  @@index([scopeType, scopeGroupId, scopeUserId, productId])
   @@index([action, metric, period])
   @@index([instrumentId, instrumentType])
+  @@index([productId, action, metric, period])
 }
 
 model LimitUsage {

@@ -16,6 +16,7 @@ import {
   LimitReservationStatus,
   PolicyAction,
   PolicyMetric,
+  PolicyPeriod,
   PhysicalCustodyMovementStatus,
   PhysicalCustodyMovementType,
   RemittanceStatus,
@@ -2021,4 +2022,162 @@ test('Physical custody lifecycle reserves, settles, and releases', async (t) => 
     where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: inMovement.id },
   });
   assert.ok(consumedInLimits.every((r) => r.status === LimitReservationStatus.CONSUMED));
+});
+
+test('Admin product limits grid and apply flow', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const customerGroup = await prisma.customerGroup.create({
+    data: { code: `cg-${Date.now()}`, name: 'VIP', isDefault: false },
+  });
+
+  const user = await createUser(prisma);
+  await prisma.user.update({ where: { id: user.id }, data: { customerGroupId: customerGroup.id } });
+
+  const instrument = await prisma.instrument.create({
+    data: { code: `INST-${Date.now()}`, name: 'Gold Bar', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
+  });
+
+  const product = await prisma.marketProduct.create({
+    data: {
+      code: `MP-${Date.now()}`,
+      displayName: 'Gold Spot',
+      productType: MarketProductType.GOLD,
+      tradeType: TradeType.SPOT,
+      baseInstrumentId: instrument.id,
+      unitType: PolicyMetric.WEIGHT_750_G,
+      groupKey: 'GOLD',
+      sortOrder: 1,
+      isActive: true,
+    },
+  });
+
+  const bulkUpsertRes = await fetch(`${baseUrl}/admin/policy-rules/bulk-upsert`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      items: [
+        {
+          scopeType: 'GLOBAL',
+          action: PolicyAction.TRADE_BUY,
+          metric: PolicyMetric.WEIGHT_750_G,
+          period: PolicyPeriod.DAILY,
+          instrumentType: instrument.type,
+          limit: 900,
+        },
+        {
+          scopeType: 'GROUP',
+          scopeGroupId: customerGroup.id,
+          action: PolicyAction.TRADE_SELL,
+          metric: PolicyMetric.WEIGHT_750_G,
+          period: PolicyPeriod.DAILY,
+          productId: product.id,
+          limit: 400,
+        },
+      ],
+    }),
+  });
+  assert.ok(bulkUpsertRes.ok, `bulk upsert failed ${bulkUpsertRes.status}`);
+  const bulkJson = (await bulkUpsertRes.json()) as any;
+  assert.ok(bulkJson.created >= 2);
+
+  const userRuleRes = await fetch(`${baseUrl}/admin/policy-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      scopeType: 'USER',
+      scopeUserId: user.id,
+      action: PolicyAction.TRADE_BUY,
+      metric: PolicyMetric.WEIGHT_750_G,
+      period: PolicyPeriod.DAILY,
+      limit: 700,
+    }),
+  });
+  assert.ok(userRuleRes.ok, `user rule create failed ${userRuleRes.status}`);
+  const userRule = (await userRuleRes.json()) as any;
+
+  const initialGridRes = await fetch(`${baseUrl}/admin/users/${user.id}/product-limits`, {
+    headers: authHeader(admin),
+  });
+  assert.ok(initialGridRes.ok);
+  const initialGrid = (await initialGridRes.json()) as any;
+  const findRow = (pid: string, grid: any) => {
+    for (const group of grid.groups as any[]) {
+      const found = (group.items as any[]).find((i) => i.productId === pid);
+      if (found) return found;
+    }
+    return null;
+  };
+  const initialRow = findRow(product.id, initialGrid);
+  assert.ok(initialRow, 'product row missing');
+  assert.strictEqual(initialRow.limits.buyDaily.source, 'USER');
+  assert.strictEqual(initialRow.limits.buyDaily.selectorUsed, 'ALL');
+  assert.strictEqual(initialRow.limits.sellDaily.source, 'GROUP');
+  assert.strictEqual(initialRow.limits.sellDaily.selectorUsed, 'PRODUCT');
+
+  await fetch(`${baseUrl}/admin/policy-rules/${userRule.id}`, {
+    method: 'DELETE',
+    headers: authHeader(admin),
+  });
+
+  const applyRes = await fetch(`${baseUrl}/admin/users/${user.id}/product-limits:apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      changes: [
+        {
+          productId: product.id,
+          buyDaily: { mode: 'SET', value: 111 },
+          buyMonthly: { mode: 'SET', value: 222 },
+          sellDaily: { mode: 'SET', value: 333 },
+          sellMonthly: { mode: 'SET', value: 444 },
+        },
+      ],
+    }),
+  });
+  assert.ok(applyRes.ok, `apply failed ${applyRes.status}`);
+  const applyJson = (await applyRes.json()) as any;
+  assert.strictEqual(applyJson.created, 4);
+
+  const postApplyGridRes = await fetch(`${baseUrl}/admin/users/${user.id}/product-limits`, {
+    headers: authHeader(admin),
+  });
+  const postApplyGrid = (await postApplyGridRes.json()) as any;
+  const postRow = findRow(product.id, postApplyGrid);
+  assert.ok(postRow);
+  assert.strictEqual(postRow.limits.buyDaily.source, 'USER');
+  assert.strictEqual(postRow.limits.buyDaily.selectorUsed, 'PRODUCT');
+  assert.strictEqual(postRow.limits.sellMonthly.source, 'USER');
+
+  const clearRes = await fetch(`${baseUrl}/admin/users/${user.id}/product-limits:apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(admin) },
+    body: JSON.stringify({
+      changes: [
+        {
+          productId: product.id,
+          buyDaily: { mode: 'CLEAR' },
+          buyMonthly: { mode: 'CLEAR' },
+          sellDaily: { mode: 'CLEAR' },
+          sellMonthly: { mode: 'CLEAR' },
+        },
+      ],
+    }),
+  });
+  assert.ok(clearRes.ok, `clear failed ${clearRes.status}`);
+  const clearJson = (await clearRes.json()) as any;
+  assert.ok(clearJson.deleted >= 4);
+
+  const finalGridRes = await fetch(`${baseUrl}/admin/users/${user.id}/product-limits`, {
+    headers: authHeader(admin),
+  });
+  const finalGrid = (await finalGridRes.json()) as any;
+  const finalRow = findRow(product.id, finalGrid);
+  assert.ok(finalRow);
+  assert.strictEqual(finalRow.limits.sellDaily.source, 'GROUP');
+  assert.strictEqual(finalRow.limits.buyDaily.source, 'GLOBAL');
+  assert.strictEqual(finalRow.limits.buyDaily.selectorUsed, 'TYPE');
 });

@@ -12,7 +12,8 @@ import { PolicyViolationException } from '../../common/exceptions/policy-violati
 import { addDec, dec, subDec } from '../../common/utils/decimal.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { PeriodKeyService } from './period-key.service';
-import { PolicyResolverService } from './policy-resolver.service';
+import { PolicyContextBuilder } from './policy-context-builder.service';
+import { PolicyResolutionService } from './policy-resolution.service';
 
 const DEFAULT_INSTRUMENT_KEY = 'ALL';
 const LimitReservationStatusEnum =
@@ -24,7 +25,8 @@ export class LimitsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly periodKeyService: PeriodKeyService,
-    private readonly policyResolver: PolicyResolverService,
+    private readonly policyResolver: PolicyResolutionService,
+    private readonly policyContextBuilder: PolicyContextBuilder,
   ) {}
 
   async reserve(
@@ -37,13 +39,14 @@ export class LimitsService {
       instrumentKey?: string;
       instrumentId?: string;
       instrumentType?: InstrumentType | null;
+      productId?: string;
       refType: string;
       refId: string;
     },
     tx?: Prisma.TransactionClient,
   ) {
     const amount = dec(params.amount);
-    const instrumentKey = params.instrumentKey ?? params.instrumentId ?? DEFAULT_INSTRUMENT_KEY;
+    const instrumentKey = params.instrumentKey ?? params.productId ?? params.instrumentId ?? DEFAULT_INSTRUMENT_KEY;
     const periodKey =
       params.period === PolicyPeriodEnum.MONTHLY
         ? this.periodKeyService.getMonthlyKey()
@@ -51,26 +54,30 @@ export class LimitsService {
 
     const executor = async (db: Prisma.TransactionClient) => {
       let instrumentType = params.instrumentType ?? null;
-      if (!instrumentType && params.instrumentId) {
-        const instrument = await db.instrument.findUnique({ where: { id: params.instrumentId } });
+      let instrumentId = params.instrumentId ?? null;
+
+      if (params.productId) {
+        const built = await this.policyContextBuilder.buildFromMarketProduct(params.productId, db);
+        instrumentId = instrumentId ?? built.instrumentId;
+        instrumentType = instrumentType ?? built.instrumentType;
+      }
+
+      if (!instrumentType && instrumentId) {
+        const instrument = await db.instrument.findUnique({ where: { id: instrumentId } });
         instrumentType = instrument?.type ?? null;
       }
 
-      const applicable = await this.policyResolver.getApplicableRulesForRequest(
-        {
+      const applicable = await this.policyResolver.resolve({
+        action: params.action as any,
+        metric: params.metric as any,
+        period: params.period,
+        context: {
           userId: params.userId,
-          action: params.action as any,
-          metric: params.metric as any,
-          period: params.period,
-          instrumentId: params.instrumentId,
-          instrumentType: instrumentType,
+          instrumentId: instrumentId ?? undefined,
+          instrumentType: instrumentType ?? undefined,
+          productId: params.productId,
         },
-        db,
-      );
-
-      if (!applicable.effectiveLimit && applicable.kycRequiredLevel) {
-        throw new PolicyViolationException('KYC_REQUIRED', 'User KYC level insufficient for limit');
-      }
+      }, db);
 
       const usage = await db.limitUsage.upsert({
         where: {
@@ -100,7 +107,11 @@ export class LimitsService {
 
       const projected = dec(lockedUsage.usedAmount).add(lockedUsage.reservedAmount).add(amount);
 
-      if (applicable.effectiveLimit && projected.gt(applicable.effectiveLimit)) {
+      if (!applicable.value && applicable.kycRequiredLevel) {
+        throw new PolicyViolationException('KYC_REQUIRED', 'User KYC level insufficient for limit');
+      }
+
+      if (applicable.value && projected.gt(applicable.value)) {
         throw new PolicyViolationException('LIMIT_EXCEEDED', 'Policy limit exceeded');
       }
 
