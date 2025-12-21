@@ -20,6 +20,12 @@ import { PhysicalCustodyModule } from './modules/physical-custody/physical-custo
 import { RequestIdMiddleware } from './common/http/request-id.middleware';
 import { AttachmentsModule } from './modules/attachments/attachments.module';
 import { PolicyModule } from './modules/policy/policy.module';
+import { RedisModule } from './infra/redis/redis.module';
+import { MarketProductsModule } from './modules/market-products/market-products.module';
+import { PriceProvidersModule } from './modules/price-providers/price-providers.module';
+import { ProductProviderMappingsModule } from './modules/product-provider-mappings/product-provider-mappings.module';
+import { PriceOverridesModule } from './modules/price-overrides/price-overrides.module';
+import { UserSettingsModule } from './modules/user-settings/user-settings.module';
 
 @Module({
   imports: [
@@ -40,6 +46,12 @@ import { PolicyModule } from './modules/policy/policy.module';
     PhysicalCustodyModule,
     AttachmentsModule,
     PolicyModule,
+    MarketProductsModule,
+    PriceProvidersModule,
+    ProductProviderMappingsModule,
+    PriceOverridesModule,
+    UserSettingsModule,
+    RedisModule,
     ThrottlerModule.forRoot({
       ttl: 60,
       limit: 60,

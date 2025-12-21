@@ -39,6 +39,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "decimal.js": "^10.4.3",
+    "ioredis": "file:vendor/ioredis",
     "luxon": "^3.5.0",
     "multer": "^1.4.5-lts.1",
     "passport": "file:vendor/passport",

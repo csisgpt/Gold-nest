@@ -24,6 +24,8 @@ import {
     PolicyMetric,
     PolicyPeriod,
     KycLevel,
+    MarketProductType,
+    TradeType,
 } from '@prisma/client';
 import { faker } from '@faker-js/faker/locale/fa';
 import * as bcrypt from 'bcrypt';
@@ -187,6 +189,7 @@ async function main() {
 
     let irr: any;
     let gold: any;
+    let coin: any;
 
     irr = await prisma.instrument.upsert({
         where: { code: 'IRR' },
@@ -224,6 +227,21 @@ async function main() {
         });
     }
 
+    coin = await prisma.instrument.upsert({
+        where: { code: 'COIN_BAHAR' },
+        update: {
+            name: 'سکه بهار آزادی',
+            type: InstrumentType.COIN,
+            unit: InstrumentUnit.PIECE,
+        },
+        create: {
+            code: 'COIN_BAHAR',
+            name: 'سکه بهار آزادی',
+            type: InstrumentType.COIN,
+            unit: InstrumentUnit.PIECE,
+        },
+    });
+
     // --- ۳. ایجاد قیمت‌های اولیه (InstrumentPrice) ---
     console.log('3. Creating Instrument Prices...');
 
@@ -238,6 +256,102 @@ async function main() {
                 sellPrice: new Decimal(goldPrice),
                 source: 'Exchange Data',
             },
+        });
+    }
+
+    console.log('3.b Creating Market Products and Pricing Providers...');
+    const manualProvider = await prisma.priceProvider.upsert({
+        where: { key: 'MANUAL' },
+        update: { displayName: 'Manual Input', isEnabled: true },
+        create: { key: 'MANUAL', displayName: 'Manual Input', isEnabled: true },
+    });
+
+    const tahesabProvider = await prisma.priceProvider.upsert({
+        where: { key: 'TAHESAB' },
+        update: { displayName: 'Tahesab', isEnabled: true },
+        create: { key: 'TAHESAB', displayName: 'Tahesab', isEnabled: true },
+    });
+
+    const cashProduct = await prisma.marketProduct.upsert({
+        where: { code: 'CASH_IRR_SPOT' },
+        update: {
+            displayName: 'وجه نقد ریال',
+            productType: MarketProductType.CASH,
+            tradeType: TradeType.SPOT,
+            baseInstrumentId: irr.id,
+            unitType: PolicyMetric.NOTIONAL_IRR,
+            groupKey: 'cash',
+            sortOrder: 1,
+        },
+        create: {
+            code: 'CASH_IRR_SPOT',
+            displayName: 'وجه نقد ریال',
+            productType: MarketProductType.CASH,
+            tradeType: TradeType.SPOT,
+            baseInstrumentId: irr.id,
+            unitType: PolicyMetric.NOTIONAL_IRR,
+            groupKey: 'cash',
+            sortOrder: 1,
+        },
+    });
+
+    const goldProduct = await prisma.marketProduct.upsert({
+        where: { code: 'GOLD_GRAM_FULL' },
+        update: {
+            displayName: 'طلای ۱۸ عیار',
+            productType: MarketProductType.GOLD,
+            tradeType: TradeType.SPOT,
+            baseInstrumentId: gold.id,
+            unitType: PolicyMetric.WEIGHT_750_G,
+            groupKey: 'gold',
+            sortOrder: 2,
+        },
+        create: {
+            code: 'GOLD_GRAM_FULL',
+            displayName: 'طلای ۱۸ عیار',
+            productType: MarketProductType.GOLD,
+            tradeType: TradeType.SPOT,
+            baseInstrumentId: gold.id,
+            unitType: PolicyMetric.WEIGHT_750_G,
+            groupKey: 'gold',
+            sortOrder: 2,
+        },
+    });
+
+    const coinProduct = await prisma.marketProduct.upsert({
+        where: { code: 'COIN_BAHAR_FULL' },
+        update: {
+            displayName: 'سکه بهار آزادی',
+            productType: MarketProductType.COIN,
+            tradeType: TradeType.SPOT,
+            baseInstrumentId: coin.id,
+            unitType: PolicyMetric.COUNT,
+            groupKey: 'coin',
+            sortOrder: 3,
+        },
+        create: {
+            code: 'COIN_BAHAR_FULL',
+            displayName: 'سکه بهار آزادی',
+            productType: MarketProductType.COIN,
+            tradeType: TradeType.SPOT,
+            baseInstrumentId: coin.id,
+            unitType: PolicyMetric.COUNT,
+            groupKey: 'coin',
+            sortOrder: 3,
+        },
+    });
+
+    const baselineMappings = [
+        { productId: cashProduct.id, providerId: manualProvider.id, providerSymbol: 'IRR_MANUAL', priority: 1 },
+        { productId: goldProduct.id, providerId: tahesabProvider.id, providerSymbol: 'GOLD_MAIN', priority: 1 },
+        { productId: coinProduct.id, providerId: tahesabProvider.id, providerSymbol: 'COIN_MAIN', priority: 1 },
+    ];
+
+    for (const mapping of baselineMappings) {
+        await prisma.productProviderMapping.upsert({
+            where: { productId_providerId: { productId: mapping.productId, providerId: mapping.providerId } },
+            update: mapping,
+            create: mapping,
         });
     }
 
