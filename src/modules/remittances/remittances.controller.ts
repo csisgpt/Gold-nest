@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CreateRemittanceDto } from './dto/create-remittance.dto';
 import { RemittancesService } from './remittances.service';
@@ -9,6 +9,9 @@ import { CreateMultiLegRemittanceDto } from './dto/create-multi-leg-remittance.d
 import { RemittanceGroupResponseDto } from './dto/remittance-group-response.dto';
 import { RemittanceDetailsResponseDto } from './dto/remittance-details-response.dto';
 import { OpenRemittanceSummaryDto } from './dto/open-remittance-summary.dto';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
+import { UserRole } from '@prisma/client';
 
 @ApiTags('remittances')
 @ApiBearerAuth('access-token')
@@ -18,8 +21,12 @@ export class RemittancesController {
 
   @Post('remittances')
   @UseGuards(JwtAuthGuard)
-  create(@Body() dto: CreateRemittanceDto, @CurrentUser() user: JwtRequestUser) {
-    return this.remittancesService.createForUser(user.id, dto);
+  create(
+    @Body() dto: CreateRemittanceDto,
+    @CurrentUser() user: JwtRequestUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.remittancesService.createForUser(user.id, dto, idempotencyKey);
   }
 
   @Get('remittances/my')
@@ -58,5 +65,48 @@ export class RemittancesController {
   @UseGuards(JwtAuthGuard)
   async listMyGroups(@CurrentUser() user: JwtRequestUser): Promise<RemittanceGroupResponseDto[]> {
     return this.remittancesService.findGroupsByUser(user.id);
+  }
+
+  @Post('remittances/:id/cancel')
+  @UseGuards(JwtAuthGuard)
+  cancel(@Param('id') id: string, @CurrentUser() user: JwtRequestUser) {
+    return this.remittancesService.cancelByUser(id, user.id);
+  }
+
+  @Get('admin/remittances')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  listAdmin(
+    @Query('status') status?: any,
+    @Query('fromUserId') fromUserId?: string,
+    @Query('toUserId') toUserId?: string,
+    @Query('createdFrom') createdFrom?: string,
+    @Query('createdTo') createdTo?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.remittancesService.adminList({
+      status,
+      fromUserId,
+      toUserId,
+      createdFrom: createdFrom ? new Date(createdFrom) : undefined,
+      createdTo: createdTo ? new Date(createdTo) : undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+  }
+
+  @Post('admin/remittances/:id/approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  approve(@Param('id') id: string, @CurrentUser() admin: JwtRequestUser) {
+    return this.remittancesService.approve(id, admin.id);
+  }
+
+  @Post('admin/remittances/:id/reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  reject(@Param('id') id: string, @CurrentUser() admin: JwtRequestUser) {
+    return this.remittancesService.reject(id, admin.id);
   }
 }

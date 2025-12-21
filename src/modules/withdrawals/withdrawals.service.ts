@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import {
   AccountTxType,
   AttachmentEntityType,
+  Prisma,
   PolicyAction,
   PolicyMetric,
   PolicyPeriod,
@@ -160,7 +161,7 @@ export class WithdrawalsService {
   async listAdmin(query: AdminListWithdrawalsDto) {
     const { skip, take, page, limit } = this.paginationService.getSkipTake(query.page, query.limit);
 
-    const where = {
+    const where: Prisma.WithdrawRequestWhereInput = {
       status: query.status,
       userId: query.userId,
       amount: {
@@ -172,10 +173,10 @@ export class WithdrawalsService {
           ? { gte: query.createdFrom ? new Date(query.createdFrom) : undefined, lte: query.createdTo ? new Date(query.createdTo) : undefined }
           : undefined,
       user: query.mobile
-        ? { mobile: { contains: query.mobile, mode: 'insensitive' } }
+        ? { mobile: { contains: query.mobile, mode: 'insensitive' as const } }
         : undefined,
       OR: query.q ? [{ id: query.q }] : undefined,
-    } as const;
+    };
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.withdrawRequest.findMany({

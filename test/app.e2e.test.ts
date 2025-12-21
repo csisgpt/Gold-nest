@@ -18,6 +18,7 @@ import {
   PolicyMetric,
   PhysicalCustodyMovementStatus,
   PhysicalCustodyMovementType,
+  RemittanceStatus,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { AppModule } from '../src/app.module';
@@ -1582,4 +1583,289 @@ test('Wallet SELL trade cancellation releases reservations', async (t) => {
     where: { refType: TxRefType.TRADE, refId: created.id },
   });
   assert.ok(releasedLimits.every((lr) => lr.status === LimitReservationStatus.RELEASED));
+});
+
+test('Remittance lifecycle reserves, settles, and releases correctly', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+
+  const prisma = app.get(PrismaService);
+  const accounts = app.get(AccountsService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const sender = await createUser(prisma);
+  const receiver = await createUser(prisma);
+
+  const senderAccount = await accounts.getOrCreateAccount(sender.id, IRR_INSTRUMENT_CODE);
+  const receiverAccount = await accounts.getOrCreateAccount(receiver.id, IRR_INSTRUMENT_CODE);
+  await setAccountBalance(prisma, senderAccount.id, 20000000);
+  await setAccountBalance(prisma, receiverAccount.id, 0);
+
+  const idempotencyKey = `remit-${Date.now()}`;
+  const createRes = await fetch(`${baseUrl}/remittances`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+      ...authHeader(sender),
+    },
+    body: JSON.stringify({
+      toMobile: receiver.mobile,
+      instrumentCode: IRR_INSTRUMENT_CODE,
+      amount: '1500000',
+      note: 'remit test',
+    }),
+  });
+  assert.ok(createRes.ok, `create remittance failed ${createRes.status}`);
+  const created = (await createRes.json()) as any;
+  assert.strictEqual(created.status, RemittanceStatus.PENDING);
+
+  const duplicate = await fetch(`${baseUrl}/remittances`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+      ...authHeader(sender),
+    },
+    body: JSON.stringify({
+      toMobile: receiver.mobile,
+      instrumentCode: IRR_INSTRUMENT_CODE,
+      amount: '1500000',
+    }),
+  });
+  assert.ok(duplicate.ok);
+  const duplicateBody = (await duplicate.json()) as any;
+  assert.strictEqual(created.id, duplicateBody.id);
+
+  const senderAfterReserve = await prisma.account.findUnique({ where: { id: senderAccount.id } });
+  assert.strictEqual(decimalString(senderAfterReserve?.blockedBalance ?? 0), '1500000');
+
+  const remittanceReservations = await prisma.accountReservation.findMany({
+    where: { refType: TxRefType.REMITTANCE, refId: created.id },
+  });
+  assert.strictEqual(remittanceReservations.length, 1);
+  assert.strictEqual(remittanceReservations[0].status, AccountReservationStatus.RESERVED);
+
+  const remittanceLimitReservations = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.REMITTANCE, refId: created.id },
+  });
+  assert.strictEqual(remittanceLimitReservations.length, 2);
+  assert.ok(remittanceLimitReservations.every((lr) => lr.status === LimitReservationStatus.RESERVED));
+
+  const approveRes = await fetch(`${baseUrl}/admin/remittances/${created.id}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader(admin) },
+  });
+  assert.ok(approveRes.ok, `approve failed ${approveRes.status}`);
+  const approved = (await approveRes.json()) as any;
+  assert.strictEqual(approved.status, RemittanceStatus.COMPLETED);
+
+  const txCountAfterApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.REMITTANCE, refId: created.id },
+  });
+
+  const senderAfterApprove = await prisma.account.findUnique({ where: { id: senderAccount.id } });
+  const receiverAfterApprove = await prisma.account.findUnique({ where: { id: receiverAccount.id } });
+  assert.strictEqual(decimalString(senderAfterApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(decimalString(senderAfterApprove?.balance ?? 0), decimalString(new Decimal(20000000).minus(1500000)));
+  assert.strictEqual(decimalString(receiverAfterApprove?.balance ?? 0), '1500000');
+
+  const consumedLimits = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.REMITTANCE, refId: created.id },
+  });
+  assert.ok(consumedLimits.every((lr) => lr.status === LimitReservationStatus.CONSUMED));
+
+  const approveAgain = await fetch(`${baseUrl}/admin/remittances/${created.id}/approve`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+  });
+  assert.ok(approveAgain.ok, `second approve failed ${approveAgain.status}`);
+  const approveAgainBody = (await approveAgain.json()) as any;
+  assert.strictEqual(approveAgainBody.status, RemittanceStatus.COMPLETED);
+
+  const senderAfterSecondApprove = await prisma.account.findUnique({ where: { id: senderAccount.id } });
+  const receiverAfterSecondApprove = await prisma.account.findUnique({ where: { id: receiverAccount.id } });
+  const txCountAfterSecondApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.REMITTANCE, refId: created.id },
+  });
+  assert.strictEqual(decimalString(senderAfterSecondApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(decimalString(senderAfterSecondApprove?.balance ?? 0), decimalString(senderAfterApprove?.balance ?? 0));
+  assert.strictEqual(decimalString(receiverAfterSecondApprove?.balance ?? 0), decimalString(receiverAfterApprove?.balance ?? 0));
+  assert.strictEqual(txCountAfterSecondApprove, txCountAfterApprove);
+
+  const rejectRemitRes = await fetch(`${baseUrl}/remittances`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(sender),
+      'Idempotency-Key': `remit-reject-${Date.now()}`,
+    },
+    body: JSON.stringify({
+      toMobile: receiver.mobile,
+      instrumentCode: IRR_INSTRUMENT_CODE,
+      amount: '500000',
+    }),
+  });
+  assert.ok(rejectRemitRes.ok);
+  const rejectCandidate = (await rejectRemitRes.json()) as any;
+
+  const rejectResponse = await fetch(`${baseUrl}/admin/remittances/${rejectCandidate.id}/reject`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+  });
+  assert.ok(rejectResponse.ok, `reject failed ${rejectResponse.status}`);
+  const rejected = (await rejectResponse.json()) as any;
+  assert.strictEqual(rejected.status, RemittanceStatus.CANCELLED);
+
+  const rejectLimits = await prisma.limitReservation.findMany({ where: { refType: TxRefType.REMITTANCE, refId: rejectCandidate.id } });
+  assert.ok(rejectLimits.every((lr) => lr.status === LimitReservationStatus.RELEASED));
+
+  const approveAfterReject = await fetch(`${baseUrl}/admin/remittances/${rejectCandidate.id}/approve`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+  });
+  assert.strictEqual(approveAfterReject.status, 400);
+});
+
+test('Physical custody lifecycle reserves, settles, and releases', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+
+  const prisma = app.get(PrismaService);
+  const accounts = app.get(AccountsService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma);
+
+  const goldAccount = await accounts.getOrCreateAccount(user.id, GOLD_750_INSTRUMENT_CODE);
+  await setAccountBalance(prisma, goldAccount.id, 50);
+
+  const outKey = `custody-out-${Date.now()}`;
+  const createOut = await fetch(`${baseUrl}/physical-custody/movements`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': outKey,
+      ...authHeader(user),
+    },
+    body: JSON.stringify({ movementType: PhysicalCustodyMovementType.WITHDRAWAL, weightGram: 10, ayar: 750 }),
+  });
+  assert.ok(createOut.ok, `create custody out failed ${createOut.status}`);
+  const outMovement = (await createOut.json()) as any;
+  assert.strictEqual(outMovement.status, PhysicalCustodyMovementStatus.PENDING);
+
+  const goldAfterReserve = await prisma.account.findUnique({ where: { id: goldAccount.id } });
+  assert.strictEqual(decimalString(goldAfterReserve?.blockedBalance ?? 0), '10');
+
+  const custodyLimitRes = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: outMovement.id },
+  });
+  assert.strictEqual(custodyLimitRes.length, 2);
+  assert.ok(custodyLimitRes.every((r) => r.status === LimitReservationStatus.RESERVED));
+
+  const approveOut = await fetch(`${baseUrl}/physical-custody/movements/${outMovement.id}/approve`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+  });
+  assert.ok(approveOut.ok, `approve out failed ${approveOut.status}`);
+  const approvedOut = (await approveOut.json()) as any;
+  assert.strictEqual(approvedOut.status, PhysicalCustodyMovementStatus.APPROVED);
+
+  const txCountOutAfterApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: outMovement.id },
+  });
+
+  const goldAfterApprove = await prisma.account.findUnique({ where: { id: goldAccount.id } });
+  assert.strictEqual(decimalString(goldAfterApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(decimalString(goldAfterApprove?.balance ?? 0), '40');
+
+  const consumedOutLimits = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: outMovement.id },
+  });
+  assert.ok(consumedOutLimits.every((r) => r.status === LimitReservationStatus.CONSUMED));
+
+  const approveOutAgain = await fetch(`${baseUrl}/physical-custody/movements/${outMovement.id}/approve`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+  });
+  assert.ok(approveOutAgain.ok, `second approve out failed ${approveOutAgain.status}`);
+  const approvedOutAgain = (await approveOutAgain.json()) as any;
+  assert.strictEqual(approvedOutAgain.status, PhysicalCustodyMovementStatus.APPROVED);
+  assert.strictEqual(approvedOutAgain.userGoldAccountTxId, approvedOut.userGoldAccountTxId);
+  assert.strictEqual(approvedOutAgain.houseGoldAccountTxId, approvedOut.houseGoldAccountTxId);
+
+  const goldAfterSecondApprove = await prisma.account.findUnique({ where: { id: goldAccount.id } });
+  const txCountOutAfterSecondApprove = await prisma.accountTx.count({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: outMovement.id },
+  });
+  assert.strictEqual(decimalString(goldAfterSecondApprove?.blockedBalance ?? 0), '0');
+  assert.strictEqual(decimalString(goldAfterSecondApprove?.balance ?? 0), decimalString(goldAfterApprove?.balance ?? 0));
+  assert.strictEqual(txCountOutAfterSecondApprove, txCountOutAfterApprove);
+
+  const rejectOutCreate = await fetch(`${baseUrl}/physical-custody/movements`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(user),
+      'Idempotency-Key': `custody-reject-${Date.now()}`,
+    },
+    body: JSON.stringify({ movementType: PhysicalCustodyMovementType.WITHDRAWAL, weightGram: 5, ayar: 750 }),
+  });
+  assert.ok(rejectOutCreate.ok);
+  const rejectOutMovement = (await rejectOutCreate.json()) as any;
+
+  const rejectOut = await fetch(`${baseUrl}/physical-custody/movements/${rejectOutMovement.id}/reject`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+    body: JSON.stringify({ reason: 'kyc' }),
+  });
+  assert.ok(rejectOut.ok, `reject out failed ${rejectOut.status}`);
+  const rejectedOutBody = (await rejectOut.json()) as any;
+  assert.strictEqual(rejectedOutBody.status, PhysicalCustodyMovementStatus.REJECTED);
+
+  const rejectOutLimits = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: rejectOutMovement.id },
+  });
+  assert.ok(rejectOutLimits.every((r) => r.status === LimitReservationStatus.RELEASED));
+
+  const approveAfterReject = await fetch(`${baseUrl}/physical-custody/movements/${rejectOutMovement.id}/approve`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+  });
+  assert.strictEqual(approveAfterReject.status, 400);
+
+  const createIn = await fetch(`${baseUrl}/physical-custody/movements`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeader(user),
+    },
+    body: JSON.stringify({ movementType: PhysicalCustodyMovementType.DEPOSIT, weightGram: 12, ayar: 700 }),
+  });
+  assert.ok(createIn.ok, `create custody in failed ${createIn.status}`);
+  const inMovement = (await createIn.json()) as any;
+
+  const goldAfterInReserve = await prisma.account.findUnique({ where: { id: goldAccount.id } });
+  assert.strictEqual(decimalString(goldAfterInReserve?.blockedBalance ?? 0), '0');
+
+  const inLimits = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: inMovement.id },
+  });
+  assert.ok(inLimits.every((r) => r.status === LimitReservationStatus.RESERVED));
+
+  const approveIn = await fetch(`${baseUrl}/physical-custody/movements/${inMovement.id}/approve`, {
+    method: 'POST',
+    headers: { ...authHeader(admin) },
+  });
+  assert.ok(approveIn.ok, `approve in failed ${approveIn.status}`);
+  const approvedIn = (await approveIn.json()) as any;
+  assert.strictEqual(approvedIn.status, PhysicalCustodyMovementStatus.APPROVED);
+
+  const goldAfterInApprove = await prisma.account.findUnique({ where: { id: goldAccount.id } });
+  assert.strictEqual(decimalString(goldAfterInApprove?.balance ?? 0), decimalString(new Decimal(40).add(toEquivGram750(12, 700))));
+
+  const consumedInLimits = await prisma.limitReservation.findMany({
+    where: { refType: TxRefType.PHYSICAL_CUSTODY_MOVEMENT, refId: inMovement.id },
+  });
+  assert.ok(consumedInLimits.every((r) => r.status === LimitReservationStatus.CONSUMED));
 });
