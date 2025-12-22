@@ -35,8 +35,10 @@ export interface LockedQuotePayload {
   nonce?: string;
 }
 
+type ConsumeStatus = 'OK' | 'NOT_FOUND' | 'ALREADY_CONSUMED' | 'FORBIDDEN';
+
 interface ConsumeResult {
-  status: 'OK' | 'NOT_FOUND' | 'ALREADY_CONSUMED';
+  status: ConsumeStatus;
   payload?: LockedQuotePayload;
 }
 
@@ -213,22 +215,32 @@ export class QuoteLockService {
     return payload;
   }
 
-  private async evalConsume(quoteId: string): Promise<ConsumeResult> {
+  private async evalConsume(quoteId: string, expectedUserId?: string): Promise<ConsumeResult> {
     this.ensureRedis();
     const client = this.redis.getCommandClient();
     const script = `
       local payload = redis.call('GET', KEYS[1])
       if not payload then return {'NOT_FOUND'} end
+      local decoded = cjson.decode(payload)
+      if ARGV[2] and ARGV[2] ~= '' then
+        if decoded['userId'] ~= ARGV[2] then return {'FORBIDDEN'} end
+      end
       if redis.call('EXISTS', KEYS[2]) == 1 then return {'ALREADY_CONSUMED'} end
       local ttl = redis.call('TTL', KEYS[1])
-      local expire = tonumber(ARGV[1])
+      local expire = tonumber(ARGV[3])
       if ttl and ttl > 0 and ttl < expire then expire = ttl end
       redis.call('SET', KEYS[2], '1', 'EX', expire)
       return {'OK', payload}
     `;
-    const res = (await client.eval(script, 2, this.lockKey(quoteId), this.consumedKey(quoteId), this.consumedTtlSec)) as
-      | [string]
-      | [string, string];
+    const res = (await client.eval(
+      script,
+      2,
+      this.lockKey(quoteId),
+      this.consumedKey(quoteId),
+      Date.now(),
+      expectedUserId ?? '',
+      this.consumedTtlSec,
+    )) as [string] | [string, string];
     if (!Array.isArray(res) || res.length === 0) {
       return { status: 'NOT_FOUND' };
     }
@@ -242,6 +254,23 @@ export class QuoteLockService {
     const result = await this.evalConsume(quoteId);
     if (result.status === 'NOT_FOUND') {
       throw new ConflictException({ code: 'QUOTE_LOCK_EXPIRED', message: 'Quote lock expired' });
+    }
+    if (result.status === 'ALREADY_CONSUMED') {
+      throw new ConflictException({ code: 'QUOTE_LOCK_ALREADY_USED', message: 'Quote already used' });
+    }
+    if (result.status === 'FORBIDDEN') {
+      throw new ForbiddenException({ code: 'QUOTE_LOCK_FORBIDDEN', message: 'Quote lock does not belong to user' });
+    }
+    return result.payload!;
+  }
+
+  async consumeForUser(quoteId: string, expectedUserId: string): Promise<LockedQuotePayload> {
+    const result = await this.evalConsume(quoteId, expectedUserId);
+    if (result.status === 'NOT_FOUND') {
+      throw new ConflictException({ code: 'QUOTE_LOCK_EXPIRED', message: 'Quote lock expired' });
+    }
+    if (result.status === 'FORBIDDEN') {
+      throw new ForbiddenException({ code: 'QUOTE_LOCK_FORBIDDEN', message: 'Quote lock does not belong to user' });
     }
     if (result.status === 'ALREADY_CONSUMED') {
       throw new ConflictException({ code: 'QUOTE_LOCK_ALREADY_USED', message: 'Quote already used' });

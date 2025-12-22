@@ -103,10 +103,7 @@ export class TradesService {
     quantity: Decimal,
     idempotencyKey?: string,
   ) {
-    const lock = await this.quoteLockService.consumeLock(dto.quoteId!);
-    if (lock.userId !== user.id) {
-      throw new ConflictException({ code: 'QUOTE_LOCK_FORBIDDEN', message: 'Quote lock belongs to another user' });
-    }
+    const lock = await this.quoteLockService.consumeForUser(dto.quoteId!, user.id);
     if (dto.side !== lock.side) {
       throw new ConflictException({ code: 'QUOTE_LOCK_SIDE_MISMATCH', message: 'Trade side does not match locked quote' });
     }

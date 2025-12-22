@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Decimal } from '@prisma/client/runtime/library';
 import {
   InstrumentType,
@@ -9,7 +9,6 @@ import {
   SettlementMethod,
   TradeSide,
   TradeType,
-  QuoteSourceType,
 } from '@prisma/client';
 import { QuoteLockService } from '../src/modules/market/quotes/quote-lock.service';
 import { TradesService } from '../src/modules/trades/trades.service';
@@ -49,11 +48,21 @@ class FakeRedisService {
         this.prune(key);
         return this.store.has(key) ? 1 : 0;
       },
-      eval: async (_script: string, _keys: number, key1: string, key2: string, expire: number) => {
+      eval: async (
+        _script: string,
+        _keys: number,
+        key1: string,
+        key2: string,
+        _nowMs: number,
+        expectedUserId: string,
+        expire: number,
+      ) => {
         this.prune(key1);
         this.prune(key2);
         const payload = this.store.get(key1);
         if (!payload) return ['NOT_FOUND'];
+        const decoded = JSON.parse(payload);
+        if (expectedUserId && decoded.userId !== expectedUserId) return ['FORBIDDEN'];
         if (this.store.has(key2)) return ['ALREADY_CONSUMED'];
         this.store.set(key2, '1');
         this.expiry.set(key2, Date.now() + expire * 1000);
@@ -250,7 +259,7 @@ function baseServices() {
       baseSell: 85,
       asOf: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      source: { type: QuoteSourceType.PROVIDER, providerKey: 'stub' },
+      source: { type: 'PROVIDER', providerKey: 'stub' },
     },
   });
   const quoteLock = new QuoteLockService(prisma as any, cache as any, redis as any, new StubUserSettingsService() as any, new StubConfig() as any);
@@ -328,11 +337,25 @@ test('T4: quote lock cannot be used by another user', async () => {
   const lock = await deps.quoteLock.lockQuote({ userId: 'u1', productId: deps.product.id, side: TradeSide.BUY });
   await assert.rejects(
     () => trades.createForUser({ id: 'u2', role: 'CLIENT' } as any, tradeDto(lock.quoteId)),
-    ConflictException,
+    ForbiddenException,
   );
 });
 
-test('T5: limits integration blocks oversized trades', async () => {
+test('T5: attacker cannot consume another user lock before owner uses it', async () => {
+  const deps = baseServices();
+  const trades = tradeServiceDeps(deps.prisma, deps.quoteLock, new StubLimitsService(), new StubAccountsService());
+  const lock = await deps.quoteLock.lockQuote({ userId: 'u1', productId: deps.product.id, side: TradeSide.BUY });
+
+  await assert.rejects(
+    () => trades.createForUser({ id: 'u2', role: 'CLIENT' } as any, tradeDto(lock.quoteId)),
+    ForbiddenException,
+  );
+
+  const created = await trades.createForUser({ id: 'u1', role: 'CLIENT' } as any, tradeDto(lock.quoteId));
+  assert.equal(created?.quoteId, lock.quoteId);
+});
+
+test('T6: limits integration blocks oversized trades', async () => {
   const deps = baseServices();
   const limits = new StubLimitsService(new Decimal(50));
   const trades = tradeServiceDeps(deps.prisma, deps.quoteLock, limits, new StubAccountsService());
