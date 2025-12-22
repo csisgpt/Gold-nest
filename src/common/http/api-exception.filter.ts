@@ -40,7 +40,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
   private resolveException(exception: unknown): {
     status: number;
-    errorCode: ApiErrorCode;
+    errorCode: string;
     message: string;
     details?: ApiFieldError[];
   } {
@@ -61,7 +61,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
   private mapPrismaError(exception: Prisma.PrismaClientKnownRequestError): {
     status: number;
-    errorCode: ApiErrorCode;
+    errorCode: string;
     message: string;
   } {
     if (exception.code === 'P2002') {
@@ -89,15 +89,16 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
   private mapHttpException(exception: HttpException): {
     status: number;
-    errorCode: ApiErrorCode;
+    errorCode: string;
     message: string;
     details?: ApiFieldError[];
   } {
     const status = exception.getStatus();
     const response: unknown = exception.getResponse();
-    const baseMessage = this.extractMessage(response);
+    const { customCode, customMessage } = this.extractCustomHttpException(response);
+    const baseMessage = customMessage ?? this.extractMessage(response);
 
-    const errorCode = this.mapStatusToCode(status, exception);
+    const errorCode = customCode ?? this.mapStatusToCode(status, exception);
 
     const details = this.extractValidationDetails(exception, response);
 
@@ -122,7 +123,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
       const message = response['message'];
 
       if (Array.isArray(message) && message.length > 0) {
-        return 'Invalid input';
+        return message.map((m) => (typeof m === 'string' ? m : 'Invalid input')).join('; ');
       }
 
       if (typeof message === 'string') {
@@ -131,6 +132,29 @@ export class ApiExceptionFilter implements ExceptionFilter {
     }
 
     return 'Unexpected error';
+  }
+
+  private extractCustomHttpException(response: unknown): {
+    customCode?: string;
+    customMessage?: string;
+  } {
+    if (!this.isRecord(response)) {
+      return {};
+    }
+
+    const code = response['code'];
+    const message = response['message'];
+
+    const customCode = typeof code === 'string' && code.trim().length ? code.trim() : undefined;
+    let customMessage: string | undefined;
+
+    if (typeof message === 'string') {
+      customMessage = message;
+    } else if (Array.isArray(message) && message.length > 0) {
+      customMessage = message.map((m) => (typeof m === 'string' ? m : 'Invalid input')).join('; ');
+    }
+
+    return { customCode, customMessage };
   }
 
   private extractValidationDetails(
