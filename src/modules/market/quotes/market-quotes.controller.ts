@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Sse, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Sse, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Observable } from 'rxjs';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
@@ -12,6 +12,8 @@ import { UserSettingsService } from '../../user-settings/user-settings.service';
 import { MarketProductType, UserRole } from '@prisma/client';
 import { RolesGuard } from '../../auth/roles.guard';
 import { Roles } from '../../auth/roles.decorator';
+import { QuoteLockService } from './quote-lock.service';
+import { LockQuoteRequestDto, LockQuoteResponseDto } from './dto/lock-quote.dto';
 
 interface StreamMessage {
   data: any;
@@ -25,6 +27,7 @@ export class MarketQuotesController {
     private readonly cache: QuoteCacheService,
     private readonly redis: RedisService,
     private readonly userSettingsService: UserSettingsService,
+    private readonly quoteLockService: QuoteLockService,
   ) {}
 
   @ApiBearerAuth('access-token')
@@ -40,6 +43,49 @@ export class MarketQuotesController {
   async getOne(@Param('productId') productId: string, @CurrentUser() user: any): Promise<{ ok: true; result: MarketQuoteItemDto }> {
     const result = await this.quotesService.getOne(user.sub, productId);
     return { ok: true, result };
+  }
+
+  @ApiBearerAuth('access-token')
+  @UseGuards(JwtAuthGuard)
+  @Post('quotes/lock')
+  async lockQuote(
+    @Body() body: LockQuoteRequestDto,
+    @CurrentUser() user: any,
+  ): Promise<{ ok: true; result: LockQuoteResponseDto }> {
+    const payload = await this.quoteLockService.lockQuote({
+      userId: user.sub,
+      productId: body.productId,
+      side: body.side,
+      forceNew: body.forceNew,
+    });
+    return {
+      ok: true,
+      result: {
+        quoteId: payload.quoteId,
+        expiresAt: payload.expiresAt,
+        executablePrice: payload.executablePrice,
+        quote: payload,
+      },
+    };
+  }
+
+  @ApiBearerAuth('access-token')
+  @UseGuards(JwtAuthGuard)
+  @Get('quotes/lock/:quoteId')
+  async getLock(
+    @Param('quoteId') quoteId: string,
+    @CurrentUser() user: any,
+  ): Promise<{ ok: true; result: LockQuoteResponseDto }> {
+    const payload = await this.quoteLockService.getLockForUser(quoteId, user.sub);
+    return {
+      ok: true,
+      result: {
+        quoteId: payload.quoteId,
+        expiresAt: payload.expiresAt,
+        executablePrice: payload.executablePrice,
+        quote: payload,
+      },
+    };
   }
 
   @ApiBearerAuth('access-token')

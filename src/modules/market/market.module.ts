@@ -11,6 +11,7 @@ import { StubProvider } from './providers/impl/stub-provider';
 import { PricingEngineService } from './ingestion/pricing-engine.service';
 import { RedisModule } from '../../infra/redis/redis.module';
 import { UserSettingsModule } from '../user-settings/user-settings.module';
+import { QuoteLockService } from './quotes/quote-lock.service';
 
 @Module({
   imports: [PrismaModule, RedisModule, UserSettingsModule],
@@ -20,11 +21,13 @@ import { UserSettingsModule } from '../user-settings/user-settings.module';
     QuoteResolverService,
     PriceIngestionWorker,
     QuoteCacheService,
+    QuoteLockService,
     ProviderRegistryService,
     ManualProvider,
     StubProvider,
     PricingEngineService,
   ],
+  exports: [QuoteLockService],
 })
 export class MarketModule {
   constructor(

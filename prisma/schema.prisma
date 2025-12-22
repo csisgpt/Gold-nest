@@ -119,6 +119,11 @@ enum TradeType {
   DAY_AFTER
 }
 
+enum QuoteSourceType {
+  PROVIDER
+  OVERRIDE
+}
+
 enum MarketProductType {
   CASH
   GOLD
@@ -555,6 +560,17 @@ model Trade {
 
   idempotencyKey String?
 
+  quoteId            String?
+  executedPrice      Decimal?        @db.Decimal(24, 6)
+  priceSourceType    QuoteSourceType?
+  priceSourceKey     String?
+  priceSourceAsOf    DateTime?
+  priceSourceRefId   String?
+  lockedBaseBuy      Decimal?        @db.Decimal(24, 6)
+  lockedBaseSell     Decimal?        @db.Decimal(24, 6)
+  lockedDisplayBuy   Decimal?        @db.Decimal(24, 6)
+  lockedDisplaySell  Decimal?        @db.Decimal(24, 6)
+
   entryPrice       Decimal? @db.Decimal(24, 8)
   settlementPrice  Decimal? @db.Decimal(24, 8)
   settlementAmount Decimal? @db.Decimal(24, 2)
@@ -562,6 +578,8 @@ model Trade {
 
   clientNote String?
   adminNote  String?
+
+  quoteLockAudits QuoteLockAudit[]
 
   approvedAt   DateTime?
   approvedBy   User?     @relation("ApprovedTrades", fields: [approvedById], references: [id])
@@ -575,6 +593,34 @@ model Trade {
   cancelledAt DateTime?
 
   @@unique([clientId, idempotencyKey])
+}
+
+model QuoteLockAudit {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  quoteId   String   @unique
+
+  userId    String
+  productId String
+  side      TradeSide
+  metric    PolicyMetric
+  baseInstrumentId String
+  baseInstrumentCode String
+
+  displayBuy  Decimal? @db.Decimal(24, 6)
+  displaySell Decimal? @db.Decimal(24, 6)
+  baseBuy     Decimal? @db.Decimal(24, 6)
+  baseSell    Decimal? @db.Decimal(24, 6)
+
+  sourceType       QuoteSourceType?
+  sourceProviderKey String?
+  sourceOverrideId  String?
+  asOf            DateTime
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  tradeId         String?
+
+  trade Trade? @relation(fields: [tradeId], references: [id])
 }
 
 model PhysicalCustodyPosition {

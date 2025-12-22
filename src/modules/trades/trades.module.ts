@@ -10,6 +10,7 @@ import { PaginationModule } from '../../common/pagination/pagination.module';
 import { PolicyModule } from '../policy/policy.module';
 import { UserSettingsModule } from '../user-settings/user-settings.module';
 import { TradeAccessGuard } from './guards/trade-access.guard';
+import { MarketModule } from '../market/market.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { TradeAccessGuard } from './guards/trade-access.guard';
     PaginationModule,
     PolicyModule,
     UserSettingsModule,
+    MarketModule,
   ],
   providers: [TradesService, TradeAccessGuard],
   controllers: [TradesController],
