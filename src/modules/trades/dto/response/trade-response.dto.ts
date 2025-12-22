@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { SettlementMethod, TradeSide, TradeStatus, TradeType } from '@prisma/client';
+import { QuoteSourceType, SettlementMethod, TradeSide, TradeStatus, TradeType } from '@prisma/client';
 import { UserMinimalDto, UserSafeDto } from '../../../../common/dto/user.dto';
 
 export class TradeInstrumentDto {
@@ -46,6 +46,36 @@ export class TradeResponseDto {
 
   @ApiProperty()
   pricePerUnit!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  executedPrice?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  quoteId?: string | null;
+
+  @ApiPropertyOptional({ enum: QuoteSourceType, nullable: true })
+  priceSourceType?: QuoteSourceType | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  priceSourceKey?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  priceSourceRefId?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  priceSourceAsOf?: Date | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  lockedBaseBuy?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  lockedBaseSell?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  lockedDisplayBuy?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  lockedDisplaySell?: string | null;
 
   @ApiProperty()
   totalAmount!: string;
