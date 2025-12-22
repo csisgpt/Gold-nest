@@ -131,6 +131,11 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  getCommandClient(): Redis {
+    this.ensureEnabled();
+    return this.commandClient;
+  }
+
   async getJson<T>(key: string): Promise<T | null> {
     this.ensureEnabled();
     const raw = await this.commandClient.get(key);
@@ -143,6 +148,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     const payload = JSON.stringify(value);
     const ttl = ttlSec ?? this.defaultTtlSec;
     await this.commandClient.set(key, payload, 'EX', ttl);
+  }
+
+  async setIfNotExists(key: string, value: any, ttlSec?: number): Promise<boolean> {
+    this.ensureEnabled();
+    const payload = JSON.stringify(value);
+    const ttl = ttlSec ?? this.defaultTtlSec;
+    const res = await this.commandClient.set(key, payload, 'NX', 'EX', ttl);
+    return res === 'OK';
   }
 
   async del(key: string): Promise<void> {
