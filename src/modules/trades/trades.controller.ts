@@ -17,6 +17,7 @@ import { SettleForwardCashDto } from './dto/settle-forward-cash.dto';
 import { AdminListTradesDto } from './dto/admin-list-trades.dto';
 import { PaginatedResponseDto, PaginationMetaDto } from '../../common/pagination/dto/pagination-meta.dto';
 import { AdminTradeDetailDto } from './dto/response/admin-trade-detail.dto';
+import { TradeAccessGuard } from './guards/trade-access.guard';
 
 class PaginatedTradeResponseDto extends PaginatedResponseDto<TradeResponseDto> {
   @ApiProperty({ type: [TradeResponseDto] })
@@ -37,7 +38,7 @@ export class TradesController {
   @ApiResponse({ status: 400, description: 'Validation or business rule error.' })
   @Post('trades')
   @Throttle(30, 60)
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, TradeAccessGuard)
   create(
     @Body() dto: CreateTradeDto,
     @CurrentUser() user: JwtRequestUser,

@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { MarketProductType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ListMarketProductsDto } from './dto/list-market-products.dto';
 import { CreateMarketProductDto } from './dto/create-market-product.dto';
 import { UpdateMarketProductDto } from './dto/update-market-product.dto';
+import { EffectiveUserSettings } from '../user-settings/user-settings.types';
 
 @Injectable()
 export class MarketProductsService {
@@ -34,6 +36,23 @@ export class MarketProductsService {
   listActive() {
     return this.prisma.marketProduct.findMany({
       where: { isActive: true },
+      orderBy: [{ groupKey: 'asc' }, { sortOrder: 'asc' }],
+    });
+  }
+
+  listActiveForUser(settings: EffectiveUserSettings) {
+    const hiddenTypes: MarketProductType[] = [];
+    if (!settings.showGold) hiddenTypes.push(MarketProductType.GOLD);
+    if (!settings.showCoins) hiddenTypes.push(MarketProductType.COIN);
+    if (!settings.showCash) hiddenTypes.push(MarketProductType.CASH);
+
+    const where = {
+      isActive: true,
+      productType: hiddenTypes.length ? { notIn: hiddenTypes } : undefined,
+    } as const;
+
+    return this.prisma.marketProduct.findMany({
+      where,
       orderBy: [{ groupKey: 'asc' }, { sortOrder: 'asc' }],
     });
   }

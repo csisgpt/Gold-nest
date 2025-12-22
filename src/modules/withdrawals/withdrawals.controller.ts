@@ -14,6 +14,7 @@ import { CancelRequestDto } from '../deposits/dto/cancel-request.dto';
 import { AdminListWithdrawalsDto } from './dto/admin-list-withdrawals.dto';
 import { AdminWithdrawalDetailDto } from './dto/response/admin-withdrawal-detail.dto';
 import { PaginatedResponseDto, PaginationMetaDto } from '../../common/pagination/dto/pagination-meta.dto';
+import { WithdrawAccessGuard } from './guards/withdraw-access.guard';
 
 class PaginatedWithdrawalResponseDto extends PaginatedResponseDto<WithdrawalResponseDto> {
   @ApiProperty({ type: [WithdrawalResponseDto] })
@@ -31,7 +32,7 @@ export class WithdrawalsController {
   constructor(private readonly withdrawalsService: WithdrawalsService) {}
 
   @Post('withdrawals')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, WithdrawAccessGuard)
   @ApiHeader({ name: 'Idempotency-Key', required: false, description: 'Optional idempotency key for safe retries.' })
   create(
     @Body() dto: CreateWithdrawalDto,

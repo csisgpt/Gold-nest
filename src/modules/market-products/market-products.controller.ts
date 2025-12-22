@@ -8,15 +8,29 @@ import { UpdateMarketProductDto } from './dto/update-market-product.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtRequestUser } from '../auth/jwt.strategy';
+import { EffectiveSettingsService } from '../user-settings/effective-settings.service';
 
 @ApiTags('market-products')
 @Controller()
 export class MarketProductsController {
-  constructor(private readonly marketProductsService: MarketProductsService) {}
+  constructor(
+    private readonly marketProductsService: MarketProductsService,
+    private readonly effectiveSettingsService: EffectiveSettingsService,
+  ) {}
 
   @Get('market-products')
   listActive() {
     return this.marketProductsService.listActive();
+  }
+
+  @ApiBearerAuth('access-token')
+  @UseGuards(JwtAuthGuard)
+  @Get('market-products/me')
+  async listForUser(@CurrentUser() user: JwtRequestUser) {
+    const settings = await this.effectiveSettingsService.getEffective(user.id);
+    return this.marketProductsService.listActiveForUser(settings);
   }
 
   @ApiBearerAuth('access-token')
