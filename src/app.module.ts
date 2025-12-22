@@ -2,6 +2,7 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './modules/prisma/prisma.module';
 import { AccountsModule } from './modules/accounts/accounts.module';
 import { UsersModule } from './modules/users/users.module';
@@ -26,11 +27,13 @@ import { PriceProvidersModule } from './modules/price-providers/price-providers.
 import { ProductProviderMappingsModule } from './modules/product-provider-mappings/product-provider-mappings.module';
 import { PriceOverridesModule } from './modules/price-overrides/price-overrides.module';
 import { UserSettingsModule } from './modules/user-settings/user-settings.module';
+import { MarketModule } from './modules/market/market.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    ScheduleModule.forRoot(),
     AccountsModule,
     UsersModule,
     DepositsModule,
@@ -51,6 +54,7 @@ import { UserSettingsModule } from './modules/user-settings/user-settings.module
     ProductProviderMappingsModule,
     PriceOverridesModule,
     UserSettingsModule,
+    MarketModule,
     RedisModule,
     ThrottlerModule.forRoot({
       ttl: 60,
