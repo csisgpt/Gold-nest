@@ -10,6 +10,7 @@ import { UserRole } from '@prisma/client';
 import { AccountsService } from './accounts.service';
 import { AccountStatementFiltersDto } from './dto/account-statement-filters.dto';
 import { HOUSE_USER_ID } from './constants';
+import { EffectiveSettingsService } from '../user-settings/effective-settings.service';
 
 @ApiTags('accounts')
 @ApiBearerAuth('access-token')
@@ -19,14 +20,30 @@ export class AccountsController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
+    private readonly effectiveSettingsService: EffectiveSettingsService,
   ) {}
 
   @Get('accounts/my')
   async listMy(@CurrentUser() user: JwtRequestUser) {
-    return this.prisma.account.findMany({
-      where: { userId: user.id },
-      include: { instrument: true },
-    });
+    const [accounts, settings] = await Promise.all([
+      this.prisma.account.findMany({
+        where: { userId: user.id },
+        include: { instrument: true },
+      }),
+      this.effectiveSettingsService.getEffective(user.id),
+    ]);
+
+    if (!settings.showBalances) {
+      return accounts.map((account) => ({
+        ...account,
+        balance: null,
+        blockedBalance: null,
+        minBalance: null,
+        balancesHidden: true,
+      }));
+    }
+
+    return accounts;
   }
 
   @Get('accounts/user/:userId')
@@ -40,11 +57,23 @@ export class AccountsController {
   }
 
   @Get('accounts/statement')
-  getMyStatement(
+  async getMyStatement(
     @CurrentUser() user: JwtRequestUser,
     @Query() filters: AccountStatementFiltersDto,
   ) {
-    return this.accountsService.getStatementForUser(user.id, filters);
+    const entries = await this.accountsService.getStatementForUser(user.id, filters);
+    const settings = await this.effectiveSettingsService.getEffective(user.id);
+    if (!settings.showBalances) {
+      return entries.map((entry) => ({
+        ...entry,
+        creditMoney: null,
+        debitMoney: null,
+        creditWeight: null,
+        debitWeight: null,
+        balancesHidden: true,
+      }));
+    }
+    return entries;
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

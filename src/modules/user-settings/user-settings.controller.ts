@@ -8,12 +8,16 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { UserSettingsService } from './user-settings.service';
 import { UpdateUserSettingsDto } from './dto/update-user-settings.dto';
+import { EffectiveSettingsService } from './effective-settings.service';
 
 @ApiTags('user-settings')
 @ApiBearerAuth('access-token')
 @Controller()
 export class UserSettingsController {
-  constructor(private readonly userSettingsService: UserSettingsService) {}
+  constructor(
+    private readonly userSettingsService: UserSettingsService,
+    private readonly effectiveSettingsService: EffectiveSettingsService,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @Get('users/me/settings')
@@ -32,6 +36,13 @@ export class UserSettingsController {
   @Get('admin/users/:userId/settings')
   getAdmin(@Param('userId') userId: string) {
     return this.userSettingsService.getForUser(userId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Get('admin/users/:userId/effective-settings')
+  getEffectiveAdmin(@Param('userId') userId: string) {
+    return this.effectiveSettingsService.getEffective(userId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

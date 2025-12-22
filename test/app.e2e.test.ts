@@ -2257,3 +2257,200 @@ test('Group rules are not applied when user has no customer group', async (t) =>
   assert.strictEqual(row.limits.buyDaily.source, 'GLOBAL');
   assert.strictEqual(row.limits.buyDaily.selectorUsed, 'TYPE');
 });
+
+test('tradeEnabled=false blocks trade creation with clear error code', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma);
+
+  const settingsRes = await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify({ tradeEnabled: false }),
+  });
+  assert.strictEqual(settingsRes.status, 200);
+
+  const tradeRes = await fetch(`${baseUrl}/trades`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify({
+      instrumentCode: GOLD_750_INSTRUMENT_CODE,
+      side: TradeSide.BUY,
+      quantity: '1',
+      pricePerUnit: '1000000',
+      settlementMethod: SettlementMethod.WALLET,
+    }),
+  });
+
+  assert.strictEqual(tradeRes.status, 403);
+  const error = (await tradeRes.json()) as any;
+  assert.strictEqual(error.code, 'USER_TRADE_DISABLED');
+});
+
+test('withdrawEnabled=false blocks withdrawal creation', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const accountsService = app.get(AccountsService);
+
+  const user = await createUser(prisma);
+  const irrAccount = await accountsService.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE);
+  await setAccountBalance(prisma, irrAccount.id, 1000000);
+
+  const settingsRes = await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify({ withdrawEnabled: false }),
+  });
+  assert.strictEqual(settingsRes.status, 200);
+
+  const withdrawalRes = await fetch(`${baseUrl}/withdrawals`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify({ amount: '1000', bankName: 'test', iban: 'IR820540102680020817909002', cardNumber: '6037997555151234' }),
+  });
+
+  assert.strictEqual(withdrawalRes.status, 403);
+  const error = (await withdrawalRes.json()) as any;
+  assert.strictEqual(error.code, 'USER_WITHDRAW_DISABLED');
+});
+
+test('maxOpenTrades setting caps new trade creation', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const accountsService = app.get(AccountsService);
+
+  const user = await createUser(prisma);
+  const instrument = await prisma.instrument.create({
+    data: { code: `E2E_GOLD_${Date.now()}`, name: 'E2E Gold', type: InstrumentType.GOLD, unit: InstrumentUnit.GRAM_750_EQ },
+  });
+  const account = await accountsService.getOrCreateAccount(user.id, instrument.code);
+  await setAccountBalance(prisma, account.id, 10);
+
+  const settingsRes = await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify({ maxOpenTrades: 1 }),
+  });
+  assert.strictEqual(settingsRes.status, 200);
+
+  const tradePayload: CreateTradeDto = {
+    instrumentCode: instrument.code,
+    side: TradeSide.SELL,
+    quantity: '1',
+    pricePerUnit: '5000000',
+    settlementMethod: SettlementMethod.WALLET,
+  };
+
+  const firstTrade = await fetch(`${baseUrl}/trades`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify(tradePayload),
+  });
+  assert.strictEqual(firstTrade.status, 201, await firstTrade.text());
+
+  const secondTrade = await fetch(`${baseUrl}/trades`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify(tradePayload),
+  });
+
+  assert.strictEqual(secondTrade.status, 409);
+  const error = (await secondTrade.json()) as any;
+  assert.strictEqual(error.code, 'MAX_OPEN_TRADES_REACHED');
+});
+
+test('Market products respect user visibility filters', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma);
+  const instrument =
+    (await prisma.instrument.findFirst({ where: { code: IRR_INSTRUMENT_CODE } })) ||
+    (await prisma.instrument.create({
+      data: { code: IRR_INSTRUMENT_CODE, name: 'IRR', type: InstrumentType.CURRENCY, unit: InstrumentUnit.PIECE },
+    }));
+
+  const productBase = `${Date.now()}`;
+  const [goldProduct, coinProduct, cashProduct] = await Promise.all([
+    prisma.marketProduct.create({
+      data: {
+        code: `GOLD_${productBase}`,
+        displayName: 'Gold Product',
+        productType: MarketProductType.GOLD,
+        tradeType: TradeType.SPOT,
+        baseInstrumentId: instrument.id,
+        unitType: PolicyMetric.NOTIONAL_IRR,
+        groupKey: 'grp',
+        sortOrder: 1,
+      },
+    }),
+    prisma.marketProduct.create({
+      data: {
+        code: `COIN_${productBase}`,
+        displayName: 'Coin Product',
+        productType: MarketProductType.COIN,
+        tradeType: TradeType.SPOT,
+        baseInstrumentId: instrument.id,
+        unitType: PolicyMetric.NOTIONAL_IRR,
+        groupKey: 'grp',
+        sortOrder: 2,
+      },
+    }),
+    prisma.marketProduct.create({
+      data: {
+        code: `CASH_${productBase}`,
+        displayName: 'Cash Product',
+        productType: MarketProductType.CASH,
+        tradeType: TradeType.SPOT,
+        baseInstrumentId: instrument.id,
+        unitType: PolicyMetric.NOTIONAL_IRR,
+        groupKey: 'grp',
+        sortOrder: 3,
+      },
+    }),
+  ]);
+
+  const settingsRes = await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify({ showCoins: false }),
+  });
+  assert.strictEqual(settingsRes.status, 200);
+
+  const productsRes = await fetch(`${baseUrl}/market-products/me`, { headers: authHeader(user) });
+  assert.strictEqual(productsRes.status, 200);
+  const products = (await productsRes.json()) as any[];
+  assert.ok(products.some((p) => p.id === goldProduct.id));
+  assert.ok(products.some((p) => p.id === cashProduct.id));
+  assert.ok(!products.some((p) => p.id === coinProduct.id));
+});
+
+test('showBalances=false hides balances in account responses', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const accountsService = app.get(AccountsService);
+
+  const user = await createUser(prisma);
+  const irrAccount = await accountsService.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE);
+  await setAccountBalance(prisma, irrAccount.id, 50000);
+
+  const settingsRes = await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...authHeader(user) },
+    body: JSON.stringify({ showBalances: false }),
+  });
+  assert.strictEqual(settingsRes.status, 200);
+
+  const accountsRes = await fetch(`${baseUrl}/accounts/my`, { headers: authHeader(user) });
+  assert.strictEqual(accountsRes.status, 200);
+  const accounts = (await accountsRes.json()) as any[];
+  assert.ok(accounts.length >= 1);
+  assert.strictEqual(accounts[0].balance, null);
+  assert.strictEqual(accounts[0].balancesHidden, true);
+});
