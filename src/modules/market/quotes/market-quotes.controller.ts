@@ -9,7 +9,9 @@ import { QuoteCacheService } from '../ingestion/quote-cache.service';
 import { RedisService } from '../../../infra/redis/redis.service';
 import { PUBSUB_CHANNELS, LAST_TICK_KEY } from '../ingestion/constants';
 import { UserSettingsService } from '../../user-settings/user-settings.service';
-import { MarketProductType } from '@prisma/client';
+import { MarketProductType, UserRole } from '@prisma/client';
+import { RolesGuard } from '../../auth/roles.guard';
+import { Roles } from '../../auth/roles.decorator';
 
 interface StreamMessage {
   data: any;
@@ -77,7 +79,8 @@ export class MarketQuotesController {
   }
 
   @ApiBearerAuth('access-token')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
   @Get('admin/market/quotes/status')
   async status(): Promise<any> {
     const index = (await this.cache.getIndex()) ?? [];

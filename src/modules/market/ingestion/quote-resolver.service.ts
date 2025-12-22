@@ -1,5 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { MarketProduct, ProductProviderMapping, AdminPriceOverride, MarketProductType } from '@prisma/client';
+import {
+  MarketProduct,
+  ProductProviderMapping,
+  AdminPriceOverride,
+  MarketProductType,
+  PricingOverrideMode,
+} from '@prisma/client';
 import Decimal from 'decimal.js';
 import { ProviderRegistryService } from '../providers/provider-registry.service';
 import { PricingEngineService } from './pricing-engine.service';
@@ -48,6 +54,15 @@ export class QuoteResolverService {
     return asOf.getTime() < cutoff;
   }
 
+  private isOverrideActive(override?: AdminPriceOverride | null, now = new Date()): override is AdminPriceOverride {
+    if (!override) return false;
+    if (!override.isActive) return false;
+    if (override.revokedAt && override.revokedAt <= now) return false;
+    if (override.startsAt && override.startsAt > now) return false;
+    if (override.expiresAt && override.expiresAt <= now) return false;
+    return true;
+  }
+
   async resolve(
     product: MarketProduct,
     mappings: ProductProviderMapping[],
@@ -65,21 +80,6 @@ export class QuoteResolverService {
       status: 'NO_PRICE',
       asOf: now.toISOString(),
     };
-
-    if (override && override.isActive && override.expiresAt > now && (!override.revokedAt || override.revokedAt > now)) {
-      const baseBuy = override.buyAbsolute ? new Decimal(override.buyAbsolute).toNumber() : undefined;
-      const baseSell = override.sellAbsolute ? new Decimal(override.sellAbsolute).toNumber() : undefined;
-      const priced = this.pricingEngine.apply(product.productType, baseBuy, baseSell);
-      return {
-        ...base,
-        status: 'OK',
-        asOf: now.toISOString(),
-        baseBuy,
-        baseSell,
-        ...priced,
-        source: { type: 'OVERRIDE', overrideId: override.id },
-      };
-    }
 
     let chosen: ProviderQuote | null = null;
     let sourceProvider: PriceProvider | undefined;
@@ -103,6 +103,75 @@ export class QuoteResolverService {
         this.logger.error(`Provider ${providerKey} failed for product ${product.id}: ${(err as Error).message}`);
       }
     }
+
+    const activeOverride = this.isOverrideActive(override, now) ? override : null;
+
+    const applyOverride = (): ResolvedQuote | null => {
+      if (!activeOverride) return null;
+
+      const mode = activeOverride.mode as PricingOverrideMode;
+      const baseBuyRaw = activeOverride.buyAbsolute != null ? new Decimal(activeOverride.buyAbsolute).toNumber() : undefined;
+      const baseSellRaw = activeOverride.sellAbsolute != null ? new Decimal(activeOverride.sellAbsolute).toNumber() : undefined;
+
+      if (mode === PricingOverrideMode.ABSOLUTE) {
+        if (baseBuyRaw == null || baseSellRaw == null) return null;
+        const priced = this.pricingEngine.apply(product.productType, baseBuyRaw, baseSellRaw);
+        return {
+          ...base,
+          status: 'OK',
+          asOf: now.toISOString(),
+          baseBuy: baseBuyRaw,
+          baseSell: baseSellRaw,
+          ...priced,
+          source: { type: 'OVERRIDE', overrideId: activeOverride.id },
+        };
+      }
+
+      if (!chosen || !sourceProvider) {
+        return null;
+      }
+
+      if (mode === PricingOverrideMode.DELTA_BPS) {
+        const baseBuy = new Decimal(chosen.buy).mul(new Decimal(1).plus((activeOverride.buyDeltaBps ?? 0) / 10_000)).toNumber();
+        const baseSell = new Decimal(chosen.sell)
+          .mul(new Decimal(1).plus((activeOverride.sellDeltaBps ?? 0) / 10_000))
+          .toNumber();
+        if (baseBuy < 0 || baseSell < 0) return null;
+        const status: QuoteStatus = this.isStale(chosen.asOf) ? 'STALE' : 'OK';
+        const priced = this.pricingEngine.apply(product.productType, baseBuy, baseSell);
+        return {
+          ...base,
+          status,
+          asOf: chosen.asOf.toISOString(),
+          baseBuy,
+          baseSell,
+          ...priced,
+          source: { type: 'OVERRIDE', overrideId: activeOverride.id, providerKey: sourceProvider.key },
+        };
+      }
+
+      if (mode === PricingOverrideMode.DELTA_AMOUNT) {
+        const baseBuy = new Decimal(chosen.buy).plus(activeOverride.buyDeltaAmount ?? 0).toNumber();
+        const baseSell = new Decimal(chosen.sell).plus(activeOverride.sellDeltaAmount ?? 0).toNumber();
+        if (baseBuy < 0 || baseSell < 0) return null;
+        const status: QuoteStatus = this.isStale(chosen.asOf) ? 'STALE' : 'OK';
+        const priced = this.pricingEngine.apply(product.productType, baseBuy, baseSell);
+        return {
+          ...base,
+          status,
+          asOf: chosen.asOf.toISOString(),
+          baseBuy,
+          baseSell,
+          ...priced,
+          source: { type: 'OVERRIDE', overrideId: activeOverride.id, providerKey: sourceProvider.key },
+        };
+      }
+
+      return null;
+    };
+
+    const overridden = applyOverride();
+    if (overridden) return overridden;
 
     if (!chosen || !sourceProvider) {
       return base as ResolvedQuote;

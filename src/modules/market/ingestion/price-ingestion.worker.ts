@@ -1,5 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { Interval } from '@nestjs/schedule';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QuoteResolverService } from './quote-resolver.service';
@@ -8,10 +7,11 @@ import { INGESTION_LOCK_KEY, LAST_TICK_KEY } from './constants';
 import { RedisService } from '../../../infra/redis/redis.service';
 
 @Injectable()
-export class PriceIngestionWorker {
+export class PriceIngestionWorker implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PriceIngestionWorker.name);
   private readonly pollIntervalSec: number;
   private readonly boardTtlSec: number;
+  private timer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -30,7 +30,24 @@ export class PriceIngestionWorker {
     return this.redis.setIfNotExists(INGESTION_LOCK_KEY, '1', ttl);
   }
 
-  @Interval(10_000)
+  async onModuleInit(): Promise<void> {
+    if (!this.redis.isEnabled()) {
+      this.logger.warn('Redis disabled, skipping price ingestion scheduling');
+      return;
+    }
+    const intervalMs = Math.max(this.pollIntervalSec, 1) * 1000;
+    this.timer = setInterval(() => {
+      this.handleTick().catch((err) => this.logger.error(`Ingestion tick failed: ${(err as Error).message}`));
+    }, intervalMs);
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
   async handleTick(): Promise<void> {
     if (!this.redis.isEnabled()) {
       this.logger.warn('Redis disabled, skipping price ingestion');
@@ -50,6 +67,7 @@ export class PriceIngestionWorker {
     if (products.length === 0) return;
     const productIds = products.map((p) => p.id);
 
+    const now = new Date();
     const [mappings, overrides] = await Promise.all([
       this.prisma.productProviderMapping.findMany({
         where: { productId: { in: productIds }, isEnabled: true },
@@ -57,7 +75,18 @@ export class PriceIngestionWorker {
         include: { provider: { select: { key: true } } },
       }),
       this.prisma.adminPriceOverride.findMany({
-        where: { productId: { in: productIds }, isActive: true, expiresAt: { gt: new Date() } },
+        where: {
+          productId: { in: productIds },
+          isActive: true,
+          startsAt: { lte: now },
+          expiresAt: { gt: now },
+          revokedAt: null,
+        },
+        orderBy: [
+          { productId: 'asc' },
+          { updatedAt: 'desc' },
+          { createdAt: 'desc' },
+        ],
       }),
     ]);
 
@@ -67,9 +96,11 @@ export class PriceIngestionWorker {
       list.push(m);
       mappingsByProduct.set(m.productId, list);
     }
-    const overridesByProduct = new Map<string, typeof overrides>();
+    const overridesByProduct = new Map<string, typeof overrides[0]>();
     for (const o of overrides) {
-      overridesByProduct.set(o.productId, o);
+      if (!overridesByProduct.has(o.productId)) {
+        overridesByProduct.set(o.productId, o);
+      }
     }
 
     let ok = 0;

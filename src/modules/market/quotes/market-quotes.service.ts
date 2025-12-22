@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { MarketProductType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { QuoteCacheService, CanonicalQuote } from '../ingestion/quote-cache.service';
@@ -80,8 +80,17 @@ export class MarketQuotesService {
   async getOne(userId: string, productId: string): Promise<MarketQuoteItemDto> {
     const settings = await this.userSettingsService.getForUser(userId);
     const product = await this.prisma.marketProduct.findUnique({ where: { id: productId } });
-    if (!product || !product.isActive || !this.isVisible(product.productType, settings)) {
-      throw new Error('Product not available');
+    if (!product || !product.isActive) {
+      throw new NotFoundException({
+        code: 'MARKET_PRODUCT_NOT_FOUND',
+        message: 'Market product not found or inactive',
+      });
+    }
+    if (!this.isVisible(product.productType, settings)) {
+      throw new ForbiddenException({
+        code: 'MARKET_PRODUCT_HIDDEN',
+        message: 'Not available for this user',
+      });
     }
     const quote = await this.cache.getQuote(productId);
     const fallback: CanonicalQuote = {
