@@ -99,6 +99,14 @@ export class RedisService implements OnModuleDestroy {
     await (command as any).set(key, value, 'EX', ttl);
   }
 
+  // async setIfNotExists(key: string, value: any, ttlSec?: number): Promise<boolean> {
+  //   this.ensureEnabled();
+  //   const payload = JSON.stringify(value);
+  //   const ttl = ttlSec ?? this.defaultTtlSec;
+  //   const res = await this.commandClient.set(key, payload, 'NX', 'EX', ttl);
+  //   return res === 'OK';
+  // }
+
   async del(key: string): Promise<void> {
     const { command } = this.clients();
     await (command as any).del(key);

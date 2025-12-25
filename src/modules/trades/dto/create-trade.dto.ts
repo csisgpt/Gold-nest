@@ -15,9 +15,11 @@ export class CreateTradeDto {
   @ApiProperty({
     example: 'GOLD_750_EQ',
     description: 'Instrument code or symbol for the asset being traded.',
+    required: false,
   })
+  @IsOptional()
   @IsString()
-  instrumentCode!: string;
+  instrumentCode?: string;
 
   @ApiProperty({
     enum: TradeSide,
@@ -38,9 +40,11 @@ export class CreateTradeDto {
     example: '3200000',
     description:
       'Price per unit as a decimal string (in IRR). Currently client-provided but intended to become server-driven.',
+    required: false,
   })
+  @IsOptional()
   @IsNumberString()
-  pricePerUnit!: string;
+  pricePerUnit?: string;
 
   @ApiProperty({
     enum: SettlementMethod,
@@ -80,4 +84,12 @@ export class CreateTradeDto {
   @IsArray()
   @IsString({ each: true })
   fileIds?: string[];
+
+  @ApiProperty({
+    required: false,
+    description: 'Quote lock identifier returned by /quotes/lock. When present, server pricing will be enforced.',
+  })
+  @IsOptional()
+  @IsString()
+  quoteId?: string;
 }

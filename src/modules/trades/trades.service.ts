@@ -43,6 +43,7 @@ import { AdminListTradesDto } from './dto/admin-list-trades.dto';
 import { AdminTradeDetailDto } from './dto/response/admin-trade-detail.dto';
 import { AdminTradesMapper, adminTradeAttachmentWhere, adminTradeSelect } from './trades.admin.mapper';
 import { LimitsService } from '../policy/limits.service';
+import { QuoteLockService } from '../market/quotes/quote-lock.service';
 
 @Injectable()
 export class TradesService {
@@ -57,6 +58,7 @@ export class TradesService {
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
     private readonly paginationService: PaginationService,
+    private readonly quoteLockService: QuoteLockService,
   ) {}
 
   /**
@@ -84,12 +86,44 @@ export class TradesService {
 
   async createForUser(user: JwtRequestUser, dto: CreateTradeDto, idempotencyKey?: string) {
     const quantity = new Decimal(dto.quantity);
-    const pricePerUnit = new Decimal(dto.pricePerUnit);
-    const totalAmount = quantity.mul(pricePerUnit);
-    const tradeType = dto.type ?? TradeType.SPOT;
+    if (quantity.lte(0)) {
+      throw new BadRequestException('Quantity must be positive');
+    }
 
-    if (quantity.lte(0) || pricePerUnit.lte(0)) {
-      throw new BadRequestException('Quantity and pricePerUnit must be positive');
+    if (dto.quoteId) {
+      return this.createWithQuoteLock(user, dto, quantity, idempotencyKey);
+    }
+
+    return this.createWithLatestQuote(user, dto, quantity, idempotencyKey);
+  }
+
+  private async createWithQuoteLock(
+    user: JwtRequestUser,
+    dto: CreateTradeDto,
+    quantity: Decimal,
+    idempotencyKey?: string,
+  ) {
+    const lock = await this.quoteLockService.consumeForUser(dto.quoteId!, user.id);
+    if (dto.side !== lock.side) {
+      throw new ConflictException({ code: 'QUOTE_LOCK_SIDE_MISMATCH', message: 'Trade side does not match locked quote' });
+    }
+
+    const instrument = await this.prisma.instrument.findUnique({ where: { id: lock.baseInstrumentId } });
+    if (!instrument) {
+      throw new NotFoundException('Instrument not found for locked quote');
+    }
+
+    const product = await this.prisma.marketProduct.findUnique({ where: { id: lock.productId } });
+    if (!product) {
+      throw new NotFoundException({ code: 'MARKET_PRODUCT_NOT_FOUND', message: 'Product missing for quote' });
+    }
+
+    const pricePerUnit = new Decimal(lock.executablePrice);
+    const totalAmount = quantity.mul(pricePerUnit);
+    const tradeType = product.tradeType ?? dto.type ?? TradeType.SPOT;
+
+    if (pricePerUnit.lte(0)) {
+      throw new BadRequestException({ code: 'INVALID_PRICE', message: 'Locked price is invalid' });
     }
 
     this.validateTypeAndSettlementMethod(tradeType, dto.settlementMethod);
@@ -97,11 +131,6 @@ export class TradesService {
     return runInTx(
       this.prisma,
       async (tx) => {
-        const instrument = await tx.instrument.findUnique({ where: { code: dto.instrumentCode } });
-        if (!instrument) {
-          throw new NotFoundException('Instrument not found');
-        }
-
         if (idempotencyKey) {
           const existing = await tx.trade.findFirst({
             where: { clientId: user.id, idempotencyKey },
@@ -113,6 +142,14 @@ export class TradesService {
           }
         }
 
+        const existingByQuote = await tx.trade.findFirst({
+          where: { clientId: user.id, quoteId: lock.quoteId },
+          select: tradeWithRelationsSelect,
+        });
+        if (existingByQuote) {
+          return existingByQuote as TradeWithRelations;
+        }
+
         const trade = await tx.trade.create({
           data: {
             clientId: user.id,
@@ -122,7 +159,17 @@ export class TradesService {
             type: tradeType,
             quantity,
             pricePerUnit,
+            executedPrice: pricePerUnit,
             totalAmount,
+            quoteId: lock.quoteId,
+            priceSourceType: (lock.source?.type as any) ?? null,
+            priceSourceKey: lock.source?.providerKey ?? null,
+            priceSourceRefId: lock.source?.overrideId ?? null,
+            priceSourceAsOf: lock.asOf ? new Date(lock.asOf) : null,
+            lockedBaseBuy: lock.baseBuy,
+            lockedBaseSell: lock.baseSell,
+            lockedDisplayBuy: lock.displayBuy,
+            lockedDisplaySell: lock.displaySell,
             clientNote: dto.clientNote,
             idempotencyKey,
           },
@@ -131,6 +178,8 @@ export class TradesService {
         await this.reserveLimitsForTrade({
           action: dto.side === TradeSide.BUY ? PolicyAction.TRADE_BUY : PolicyAction.TRADE_SELL,
           instrument,
+          metric: lock.metric,
+          productId: lock.productId,
           quantity,
           totalAmount,
           trade,
@@ -153,7 +202,9 @@ export class TradesService {
           tx,
         );
 
-        this.logger.log(`Trade ${trade.id} created for user ${user.id}`);
+        await this.quoteLockService.markConsumed(lock.quoteId, trade.id, tx);
+
+        this.logger.log(`Trade ${trade.id} created for user ${user.id} using quote ${lock.quoteId}`);
 
         return tx.trade.findUnique({ where: { id: trade.id }, select: tradeWithRelationsSelect });
       },
@@ -161,9 +212,52 @@ export class TradesService {
     );
   }
 
+  private async createWithLatestQuote(
+    user: JwtRequestUser,
+    dto: CreateTradeDto,
+    quantity: Decimal,
+    idempotencyKey?: string,
+  ) {
+    if (!dto.instrumentCode) {
+      throw new BadRequestException({ code: 'QUOTE_REQUIRED', message: 'instrumentCode is required when quoteId is missing' });
+    }
+
+    const instrument = await this.prisma.instrument.findUnique({ where: { code: dto.instrumentCode } });
+    if (!instrument) {
+      throw new NotFoundException('Instrument not found');
+    }
+
+    const product = await this.prisma.marketProduct.findFirst({
+      where: { baseInstrumentId: instrument.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!product) {
+      throw new ConflictException({ code: 'NO_MARKET_PRODUCT', message: 'No market product for instrument' });
+    }
+
+    const quote = await this.quoteLockService.lockQuote({
+      userId: user.id,
+      productId: product.id,
+      side: dto.side,
+      forceNew: true,
+    });
+    const tradeType = product.tradeType ?? dto.type ?? TradeType.SPOT;
+
+    this.validateTypeAndSettlementMethod(tradeType, dto.settlementMethod);
+
+    return this.createWithQuoteLock(
+      user,
+      { ...dto, quoteId: quote.quoteId, side: dto.side },
+      quantity,
+      idempotencyKey,
+    );
+  }
+
   private async reserveLimitsForTrade(params: {
     action: PolicyAction;
     instrument: Instrument;
+    metric?: PolicyMetric;
+    productId?: string;
     quantity: Decimal;
     totalAmount: Decimal;
     trade: { id: string; clientId: string };
@@ -173,6 +267,7 @@ export class TradesService {
       metric: PolicyMetric,
       amount: Decimal,
       instrumentKey: string,
+      productId?: string,
     ) => {
       await this.limitsService.reserve(
         {
@@ -182,6 +277,7 @@ export class TradesService {
           period: PolicyPeriod.DAILY,
           amount,
           instrumentKey,
+          productId,
           instrumentId: params.instrument.id,
           instrumentType: params.instrument.type,
           refType: TxRefType.TRADE,
@@ -198,6 +294,7 @@ export class TradesService {
           period: PolicyPeriod.MONTHLY,
           amount,
           instrumentKey,
+          productId,
           instrumentId: params.instrument.id,
           instrumentType: params.instrument.type,
           refType: TxRefType.TRADE,
@@ -207,14 +304,20 @@ export class TradesService {
       );
     };
 
-    await reserveMetric(PolicyMetric.NOTIONAL_IRR, params.totalAmount, 'ALL');
+    const instrumentKey = params.productId ?? params.instrument.id ?? 'ALL';
 
-    if (params.instrument.type === InstrumentType.GOLD) {
-      await reserveMetric(PolicyMetric.WEIGHT_750_G, params.quantity, params.instrument.id);
-    }
+    await reserveMetric(PolicyMetric.NOTIONAL_IRR, params.totalAmount, 'ALL', params.productId);
 
-    if (params.instrument.type === InstrumentType.COIN) {
-      await reserveMetric(PolicyMetric.COUNT, params.quantity, params.instrument.id);
+    const metric = params.metric
+      ? params.metric
+      : params.instrument.type === InstrumentType.GOLD
+        ? PolicyMetric.WEIGHT_750_G
+        : params.instrument.type === InstrumentType.COIN
+          ? PolicyMetric.COUNT
+          : null;
+
+    if (metric) {
+      await reserveMetric(metric, params.quantity, instrumentKey, params.productId);
     }
   }
 
