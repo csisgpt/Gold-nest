@@ -1,213 +1,205 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+// src/infra/redis/redis.service.ts
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Redis, { RedisOptions } from 'ioredis';
+import Redis from 'ioredis';
 
-export interface RedisHealth {
-  enabled: boolean;
-  ok: boolean;
-  latencyMs?: number;
-  error?: string;
-}
-
-interface RedisConfig {
-  uri?: string;
-  tls?: boolean;
-  keyPrefix: string;
-  defaultTtlSec: number;
-}
+type Json = Record<string, any> | any[] | string | number | boolean | null;
 
 @Injectable()
-export class RedisService implements OnModuleInit, OnModuleDestroy {
+export class RedisService implements OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
+
   private commandClient: Redis | null = null;
   private pubClient: Redis | null = null;
   private subClient: Redis | null = null;
-  private enabled = false;
-  private keyPrefix = 'gn:';
-  private defaultTtlSec = 30;
-  private channelHandlers = new Map<string, Set<(payload: any) => void>>();
+
+  private readonly defaultTtlSec: number;
+
   private messageListenerAttached = false;
+  private channelHandlers = new Map<string, Set<(payload: any) => void>>();
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private readonly config: ConfigService) {
+    this.defaultTtlSec = this.config.get<number>('REDIS_DEFAULT_TTL_SEC') ?? 60;
 
-  private maskUri(uri?: string): string {
-    if (!uri) return '';
-    const parts = uri.split('@');
-    if (parts.length === 2) {
-      const authPart = parts[0];
-      const maskedAuth = authPart.includes(':') ? `${authPart.split(':')[0]}:***` : '***';
-      return `${maskedAuth}@${parts[1]}`;
-    }
-    return uri;
-  }
-
-  private resolveConfig(): RedisConfig {
-    const uri = this.configService.get<string>('REDIS_URI');
-    const tlsFlag = (this.configService.get<string>('REDIS_TLS') ?? 'false').toLowerCase() === 'true';
-    const keyPrefix = this.configService.get<string>('REDIS_KEY_PREFIX') ?? 'gn:';
-    const defaultTtlSec = Number(this.configService.get<string>('REDIS_DEFAULT_TTL_SEC') ?? '30');
-
-    if (uri) {
-      return { uri, tls: tlsFlag, keyPrefix, defaultTtlSec };
-    }
-
-    const host = this.configService.get<string>('REDIS_HOST');
-    const port = this.configService.get<string>('REDIS_PORT');
-    if (host && port) {
-      const password = this.configService.get<string>('REDIS_PASSWORD');
-      const authSegment = password ? `:${password}@` : '';
-      return { uri: `redis://${authSegment}${host}:${port}/0`, tls: tlsFlag, keyPrefix, defaultTtlSec };
-    }
-
-    return { keyPrefix, defaultTtlSec, tls: tlsFlag };
-  }
-
-  private createClient(uri: string, options: RedisOptions): Redis {
-    const client = new Redis(uri, options);
-    client.on('error', (err) => {
-      this.logger.error(`Redis error: ${err.message}`);
+    // Eager init (safe)
+    this.init().catch((err) => {
+      this.logger.error(`Redis init failed: ${(err as Error).message}`);
     });
-    return client;
   }
 
-  async onModuleInit(): Promise<void> {
-    const cfg = this.resolveConfig();
-    this.keyPrefix = cfg.keyPrefix;
-    this.defaultTtlSec = cfg.defaultTtlSec;
+  private async init(): Promise<void> {
+    if (this.commandClient && this.pubClient && this.subClient) return;
 
-    if (!cfg.uri) {
-      this.enabled = false;
-      this.logger.warn('Redis disabled: REDIS_URI/REDIS_HOST not configured');
-      return;
+    // Vendor ioredis typings are minimal in this repo.
+    // Prefer REDIS_URL and keep options minimal.
+    const url = this.config.get<string>('REDIS_URL');
+    const keyPrefix = this.config.get<string>('REDIS_KEY_PREFIX') ?? '';
+
+    const opts: any = { keyPrefix };
+
+    this.commandClient = url ? new (Redis as any)(url, opts) : new (Redis as any)(opts);
+    this.pubClient = url ? new (Redis as any)(url, opts) : new (Redis as any)(opts);
+    this.subClient = url ? new (Redis as any)(url, opts) : new (Redis as any)(opts);
+
+    this.bindLogs(this.commandClient, 'command');
+    this.bindLogs(this.pubClient, 'pub');
+    this.bindLogs(this.subClient, 'sub');
+  }
+
+  private bindLogs(client: any, name: string) {
+    if (!client?.on) return;
+    client.on('connect', () => this.logger.log(`Redis ${name} connected`));
+    client.on('ready', () => this.logger.log(`Redis ${name} ready`));
+    client.on('error', (err: any) => this.logger.error(`Redis ${name} error: ${err?.message ?? err}`));
+    client.on('close', () => this.logger.warn(`Redis ${name} connection closed`));
+    client.on('reconnecting', () => this.logger.warn(`Redis ${name} reconnecting...`));
+  }
+
+  private clients() {
+    if (!this.commandClient || !this.pubClient || !this.subClient) {
+      throw new Error('Redis is not connected yet');
     }
-
-    const options: RedisOptions = {
-      keyPrefix: cfg.keyPrefix,
-      tls: cfg.tls ? {} : undefined,
-      connectTimeout: 10_000,
-      maxRetriesPerRequest: 2,
-      enableReadyCheck: true,
-      lazyConnect: true,
-      retryStrategy: (times: number) => Math.min(2000, times * 50),
-    };
-
-    this.logger.log(`Connecting to redis at ${this.maskUri(cfg.uri)} ...`);
-    this.commandClient = this.createClient(cfg.uri, options);
-    this.pubClient = this.createClient(cfg.uri, options);
-    this.subClient = this.createClient(cfg.uri, options);
-
-    try {
-      await Promise.all([
-        this.commandClient.connect(),
-        this.pubClient.connect(),
-        this.subClient.connect(),
-      ]);
-      const started = Date.now();
-      await this.commandClient.ping();
-      const latency = Date.now() - started;
-      this.logger.log(`Redis connected (latency ${latency}ms)`);
-      this.enabled = true;
-    } catch (err) {
-      this.logger.error('Failed to connect to Redis, disabling module', err as any);
-      await this.onModuleDestroy();
-      this.enabled = false;
-    }
+    return { command: this.commandClient, pub: this.pubClient, sub: this.subClient };
   }
 
   async onModuleDestroy(): Promise<void> {
-    await Promise.allSettled(
-      [this.commandClient, this.pubClient, this.subClient]
-        .filter(Boolean)
-        .map((client) => (client as Redis).quit()),
-    );
+    try {
+      await (this.commandClient as any)?.quit?.();
+    } catch {}
+    try {
+      await (this.pubClient as any)?.quit?.();
+    } catch {}
+    try {
+      await (this.subClient as any)?.quit?.();
+    } catch {}
+
     this.commandClient = null;
     this.pubClient = null;
     this.subClient = null;
   }
 
-  private ensureEnabled(): asserts this is this & { commandClient: Redis; pubClient: Redis; subClient: Redis } {
-    if (!this.enabled || !this.commandClient || !this.pubClient || !this.subClient) {
-      throw new Error('Redis is disabled or unavailable');
+  async health(): Promise<{ ok: boolean; details?: any }> {
+    try {
+      const { command } = this.clients();
+      const pong = await (command as any).ping();
+      return { ok: pong === 'PONG' };
+    } catch (err) {
+      return { ok: false, details: { message: (err as Error).message } };
     }
   }
 
-  async getJson<T>(key: string): Promise<T | null> {
-    this.ensureEnabled();
-    const raw = await this.commandClient.get(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as T;
+  async get(key: string): Promise<string | null> {
+    const { command } = this.clients();
+    return (command as any).get(key);
   }
 
-  async setJson(key: string, value: any, ttlSec?: number): Promise<void> {
-    this.ensureEnabled();
-    const payload = JSON.stringify(value);
+  async set(key: string, value: string, ttlSec?: number): Promise<void> {
+    const { command } = this.clients();
     const ttl = ttlSec ?? this.defaultTtlSec;
-    await this.commandClient.set(key, payload, 'EX', ttl);
+    await (command as any).set(key, value, 'EX', ttl);
   }
 
   async del(key: string): Promise<void> {
-    this.ensureEnabled();
-    await this.commandClient.del(key);
+    const { command } = this.clients();
+    await (command as any).del(key);
+  }
+
+  async getJson<T = Json>(key: string): Promise<T | null> {
+    const raw = await this.get(key);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch (err) {
+      this.logger.warn(`Redis getJson parse failed for ${key}: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  async setJson(key: string, value: any, ttlSec?: number): Promise<void> {
+    await this.set(key, JSON.stringify(value), ttlSec);
+  }
+
+  // Multi-get JSON without pipeline (vendor typings do not include pipeline()).
+  async mgetJson<T = Json>(keys: string[]): Promise<(T | null)[]> {
+    if (keys.length === 0) return [];
+    const raws = await Promise.all(keys.map((k) => this.get(k)));
+
+    return raws.map((raw, idx) => {
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        this.logger.warn(`Redis mgetJson parse failed for key=${keys[idx]}`);
+        return null;
+      }
+    });
+  }
+
+  // SET key value NX EX ttl
+  async setIfNotExists(key: string, value: string, ttlSec: number): Promise<boolean> {
+    const { command } = this.clients();
+    const res = await (command as any).set(key, value, 'EX', ttlSec, 'NX');
+    return res === 'OK';
   }
 
   async publish(channel: string, payload: any): Promise<void> {
-    this.ensureEnabled();
-    await this.pubClient.publish(channel, JSON.stringify(payload));
+    const { pub } = this.clients();
+    await (pub as any).publish(channel, JSON.stringify(payload));
   }
 
-  async subscribe(channel: string, handler: (payload: any) => void): Promise<() => Promise<void>> {
-    this.ensureEnabled();
-    await this.subClient.subscribe(channel);
+  async subscribe<T = any>(channel: string, cb: (payload: T) => void): Promise<() => Promise<void>> {
+    const { sub } = this.clients();
+
     if (!this.messageListenerAttached) {
-      this.subClient.on('message', (ch, message) => {
+      (sub as any).on('message', (ch: string, message: string) => {
         const handlers = this.channelHandlers.get(ch);
-        if (!handlers || handlers.size === 0) {
+        if (!handlers || handlers.size === 0) return;
+
+        let parsed: any;
+        try {
+          parsed = JSON.parse(message);
+        } catch (err) {
+          this.logger.warn(`Redis pubsub JSON parse failed for ${ch}: ${(err as Error).message}`);
           return;
         }
-        for (const cb of Array.from(handlers)) {
+
+        for (const handler of handlers) {
           try {
-            cb(JSON.parse(message));
+            handler(parsed);
           } catch (err) {
             this.logger.error(`Redis subscribe handler failed for ${ch}: ${(err as Error).message}`);
           }
         }
       });
+
       this.messageListenerAttached = true;
     }
 
-    const handlers = this.channelHandlers.get(channel) ?? new Set<(payload: any) => void>();
-    handlers.add(handler);
-    this.channelHandlers.set(channel, handlers);
+    const set = this.channelHandlers.get(channel) ?? new Set<(payload: any) => void>();
+    set.add(cb as any);
+    this.channelHandlers.set(channel, set);
+
+    await (sub as any).subscribe(channel);
 
     return async () => {
       const channelSet = this.channelHandlers.get(channel);
       if (!channelSet) return;
-      channelSet.delete(handler);
+
+      channelSet.delete(cb as any);
+
       if (channelSet.size === 0) {
         this.channelHandlers.delete(channel);
+
+        // vendor typings may not include unsubscribe; call if exists at runtime
         try {
-          await this.subClient?.unsubscribe(channel);
+          const fn = (sub as any).unsubscribe;
+          if (typeof fn === 'function') {
+            await fn.call(sub, channel);
+          }
         } catch (err) {
           this.logger.error(`Redis unsubscribe failed for ${channel}: ${(err as Error).message}`);
         }
       }
     };
-  }
-
-  async health(): Promise<RedisHealth> {
-    if (!this.enabled || !this.commandClient) {
-      return { enabled: false, ok: false, error: 'Redis disabled' };
-    }
-    const started = Date.now();
-    try {
-      await this.commandClient.ping();
-      return { enabled: true, ok: true, latencyMs: Date.now() - started };
-    } catch (err) {
-      return { enabled: true, ok: false, error: (err as Error).message };
-    }
-  }
-
-  isEnabled(): boolean {
-    return this.enabled;
   }
 }
