@@ -106,68 +106,70 @@ export class QuoteResolverService {
 
     const activeOverride = this.isOverrideActive(override, now) ? override : null;
 
+    // applyOverride () :
     const applyOverride = (): ResolvedQuote | null => {
-      if (!activeOverride) return null;
+      return null
+      // if (!activeOverride) return null;
 
-      const mode = activeOverride.mode as PricingOverrideMode;
-      const baseBuyRaw = activeOverride.buyAbsolute != null ? new Decimal(activeOverride.buyAbsolute).toNumber() : undefined;
-      const baseSellRaw = activeOverride.sellAbsolute != null ? new Decimal(activeOverride.sellAbsolute).toNumber() : undefined;
+      // const mode = activeOverride.mode as PricingOverrideMode;
+      // const baseBuyRaw = activeOverride.buyAbsolute != null ? new Decimal(activeOverride.buyAbsolute).toNumber() : undefined;
+      // const baseSellRaw = activeOverride.sellAbsolute != null ? new Decimal(activeOverride.sellAbsolute).toNumber() : undefined;
 
-      if (mode === PricingOverrideMode.ABSOLUTE) {
-        if (baseBuyRaw == null || baseSellRaw == null) return null;
-        const priced = this.pricingEngine.apply(product.productType, baseBuyRaw, baseSellRaw);
-        return {
-          ...base,
-          status: 'OK',
-          asOf: now.toISOString(),
-          baseBuy: baseBuyRaw,
-          baseSell: baseSellRaw,
-          ...priced,
-          source: { type: 'OVERRIDE', overrideId: activeOverride.id },
-        };
-      }
+      // if (mode === PricingOverrideMode.ABSOLUTE) {
+      //   if (baseBuyRaw == null || baseSellRaw == null) return null;
+      //   const priced = this.pricingEngine.apply(product.productType, baseBuyRaw, baseSellRaw);
+      //   return {
+      //     ...base,
+      //     status: 'OK',
+      //     asOf: now.toISOString(),
+      //     baseBuy: baseBuyRaw,
+      //     baseSell: baseSellRaw,
+      //     ...priced,
+      //     source: { type: 'OVERRIDE', overrideId: activeOverride.id },
+      //   };
+      // }
 
-      if (!chosen || !sourceProvider) {
-        return null;
-      }
+      // if (!chosen || !sourceProvider) {
+      //   return null;
+      // }
 
-      if (mode === PricingOverrideMode.DELTA_BPS) {
-        const baseBuy = new Decimal(chosen.buy).mul(new Decimal(1).plus((activeOverride.buyDeltaBps ?? 0) / 10_000)).toNumber();
-        const baseSell = new Decimal(chosen.sell)
-          .mul(new Decimal(1).plus((activeOverride.sellDeltaBps ?? 0) / 10_000))
-          .toNumber();
-        if (baseBuy < 0 || baseSell < 0) return null;
-        const status: QuoteStatus = this.isStale(chosen.asOf) ? 'STALE' : 'OK';
-        const priced = this.pricingEngine.apply(product.productType, baseBuy, baseSell);
-        return {
-          ...base,
-          status,
-          asOf: chosen.asOf.toISOString(),
-          baseBuy,
-          baseSell,
-          ...priced,
-          source: { type: 'OVERRIDE', overrideId: activeOverride.id, providerKey: sourceProvider.key },
-        };
-      }
+      // if (mode === PricingOverrideMode.DELTA_BPS) {
+      //   const baseBuy = new Decimal(chosen.buy).mul(new Decimal(1).plus((activeOverride.buyDeltaBps ?? 0) / 10_000)).toNumber();
+      //   const baseSell = new Decimal(chosen.sell)
+      //     .mul(new Decimal(1).plus((activeOverride.sellDeltaBps ?? 0) / 10_000))
+      //     .toNumber();
+      //   if (baseBuy < 0 || baseSell < 0) return null;
+      //   const status: QuoteStatus = this.isStale(chosen.asOf) ? 'STALE' : 'OK';
+      //   const priced = this.pricingEngine.apply(product.productType, baseBuy, baseSell);
+      //   return {
+      //     ...base,
+      //     status,
+      //     asOf: chosen.asOf.toISOString(),
+      //     baseBuy,
+      //     baseSell,
+      //     ...priced,
+      //     source: { type: 'OVERRIDE', overrideId: activeOverride.id, providerKey: sourceProvider.key },
+      //   };
+      // }
 
-      if (mode === PricingOverrideMode.DELTA_AMOUNT) {
-        const baseBuy = new Decimal(chosen.buy).plus(activeOverride.buyDeltaAmount ?? 0).toNumber();
-        const baseSell = new Decimal(chosen.sell).plus(activeOverride.sellDeltaAmount ?? 0).toNumber();
-        if (baseBuy < 0 || baseSell < 0) return null;
-        const status: QuoteStatus = this.isStale(chosen.asOf) ? 'STALE' : 'OK';
-        const priced = this.pricingEngine.apply(product.productType, baseBuy, baseSell);
-        return {
-          ...base,
-          status,
-          asOf: chosen.asOf.toISOString(),
-          baseBuy,
-          baseSell,
-          ...priced,
-          source: { type: 'OVERRIDE', overrideId: activeOverride.id, providerKey: sourceProvider.key },
-        };
-      }
+      // if (mode === PricingOverrideMode.DELTA_AMOUNT) {
+      //   const baseBuy = new Decimal(chosen.buy).plus(activeOverride.buyDeltaAmount ?? 0).toNumber();
+      //   const baseSell = new Decimal(chosen.sell).plus(activeOverride.sellDeltaAmount ?? 0).toNumber();
+      //   if (baseBuy < 0 || baseSell < 0) return null;
+      //   const status: QuoteStatus = this.isStale(chosen.asOf) ? 'STALE' : 'OK';
+      //   const priced = this.pricingEngine.apply(product.productType, baseBuy, baseSell);
+      //   return {
+      //     ...base,
+      //     status,
+      //     asOf: chosen.asOf.toISOString(),
+      //     baseBuy,
+      //     baseSell,
+      //     ...priced,
+      //     source: { type: 'OVERRIDE', overrideId: activeOverride.id, providerKey: sourceProvider.key },
+      //   };
+      // }
 
-      return null;
+      // return null;
     };
 
     const overridden = applyOverride();
@@ -179,14 +181,15 @@ export class QuoteResolverService {
 
     const status: QuoteStatus = this.isStale(chosen.asOf) ? 'STALE' : 'OK';
     const priced = this.pricingEngine.apply(product.productType, chosen.buy, chosen.sell);
-    return {
-      ...base,
-      status,
-      asOf: chosen.asOf.toISOString(),
-      baseBuy: chosen.buy,
-      baseSell: chosen.sell,
-      ...priced,
-      source: { type: 'PROVIDER', providerKey: sourceProvider.key },
-    };
+    return null
+    // return {
+    //   ...base,
+    //   status,
+    //   asOf: chosen.asOf.toISOString(),
+    //   baseBuy: chosen.buy,
+    //   baseSell: chosen.sell,
+    //   ...priced,
+    //   source: { type: 'PROVIDER', providerKey: sourceProvider.key },
+    // };
   }
 }

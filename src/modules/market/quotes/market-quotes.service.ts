@@ -41,7 +41,7 @@ export class MarketQuotesService {
       source: quote?.source,
       asOf,
       updatedAt,
-      cacheMiss: quote?.cacheMiss,
+      // cacheMiss: quote?.cacheMiss,
     };
   }
 

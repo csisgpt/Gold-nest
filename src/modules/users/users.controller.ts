@@ -1,5 +1,5 @@
 // src/users/users.controller.ts
-import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, UseGuards, Put } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -28,6 +28,13 @@ export class UsersController {
   async findAll() {
     return this.usersService.findAll();
   }
+
+  @Put('users/activate/:id')
+  async activateUser(@Param('id') id: string) {
+    return this.usersService.activateUser(id);
+  }
+
+
 
   // GET /users/:id  => دریافت یک کاربر با id
   @Get('users/:id')

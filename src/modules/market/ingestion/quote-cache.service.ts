@@ -29,48 +29,49 @@ export interface CanonicalQuote {
 export class QuoteCacheService {
   private readonly logger = new Logger(QuoteCacheService.name);
 
-  constructor(private readonly redis: RedisService) {}
+  constructor(private readonly redis: RedisService) { }
 
   private keyFor(productId: string): string {
     return `${QUOTE_KEY_PREFIX}${productId}`;
   }
 
   async setQuote(productId: string, quote: CanonicalQuote, ttlSec?: number): Promise<void> {
-    if (!this.redis.isEnabled()) {
-      this.logger.warn('Redis disabled, skipping setQuote');
-      return;
-    }
+    // if (!this.redis.isEnabled()) {
+    //   this.logger.warn('Redis disabled, skipping setQuote');
+    //   return;
+    // }
     await this.redis.setJson(this.keyFor(productId), quote, ttlSec);
   }
 
   async getQuote(productId: string): Promise<CanonicalQuote | null> {
-    if (!this.redis.isEnabled()) return null;
+    // if (!this.redis.isEnabled()) return null;
     return this.redis.getJson<CanonicalQuote>(this.keyFor(productId));
   }
 
   async getQuotes(productIds: string[]): Promise<(CanonicalQuote | null)[]> {
-    if (!this.redis.isEnabled()) return productIds.map(() => null);
-    const client = this.redis.getCommandClient();
-    const pipeline = client.multi();
-    for (const pid of productIds) {
-      pipeline.get(this.keyFor(pid));
-    }
-    const res = await pipeline.exec();
-    return res.map(([, value]) => (value ? (JSON.parse(value as string) as CanonicalQuote) : null));
+    return null
+    // if (!this.redis.isEnabled()) return productIds.map(() => null);
+    // const client = this.redis.get(),;
+    // const pipeline = client.multi();
+    // for (const pid of productIds) {
+    //   pipeline.get(this.keyFor(pid));
+    // }
+    // const res = await pipeline.exec();
+    // return res.map(([, value]) => (value ? (JSON.parse(value as string) as CanonicalQuote) : null));
   }
 
   async publishUpdate(productId: string, asOf: string, status: QuoteStatus): Promise<void> {
-    if (!this.redis.isEnabled()) return;
+    // if (!this.redis.isEnabled()) return;
     await this.redis.publish(PUBSUB_CHANNELS.QUOTE_UPDATED, { productId, asOf, status });
   }
 
   async refreshIndex(activeProductIds: string[]): Promise<void> {
-    if (!this.redis.isEnabled()) return;
+    // if (!this.redis.isEnabled()) return;
     await this.redis.setJson(QUOTE_INDEX_KEY, activeProductIds);
   }
 
   async getIndex(): Promise<string[] | null> {
-    if (!this.redis.isEnabled()) return null;
+    // if (!this.redis.isEnabled()) return null;
     return this.redis.getJson<string[]>(QUOTE_INDEX_KEY);
   }
 }

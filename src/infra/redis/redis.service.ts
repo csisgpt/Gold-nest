@@ -27,6 +27,7 @@ export class RedisService implements OnModuleDestroy {
     });
   }
 
+
   private async init(): Promise<void> {
     if (this.commandClient && this.pubClient && this.subClient) return;
 
@@ -65,13 +66,13 @@ export class RedisService implements OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     try {
       await (this.commandClient as any)?.quit?.();
-    } catch {}
+    } catch { }
     try {
       await (this.pubClient as any)?.quit?.();
-    } catch {}
+    } catch { }
     try {
       await (this.subClient as any)?.quit?.();
-    } catch {}
+    } catch { }
 
     this.commandClient = null;
     this.pubClient = null;
@@ -99,6 +100,9 @@ export class RedisService implements OnModuleDestroy {
     await (command as any).set(key, value, 'EX', ttl);
   }
 
+  isEnabled() {
+    return false
+  }
   // async setIfNotExists(key: string, value: any, ttlSec?: number): Promise<boolean> {
   //   this.ensureEnabled();
   //   const payload = JSON.stringify(value);

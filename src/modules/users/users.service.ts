@@ -4,8 +4,9 @@ import {
   NotFoundException,
   ConflictException,
   InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
-import { Prisma, User } from '@prisma/client';
+import { Prisma, User, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
@@ -24,7 +25,7 @@ export class UsersService {
     private readonly prisma: PrismaService,
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
-  ) {}
+  ) { }
 
   async findById(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -110,6 +111,41 @@ export class UsersService {
     }
   }
 
+  async activateUser(userId: string) {
+
+    try {
+      //   const user = await this.prisma.user.findUnique(
+      //     {
+      //       where: {
+      //         id: userId
+      //       }
+      //     },
+      //   )
+
+      //   console.log(user)
+
+
+
+      const user = await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          email: undefined,
+          fullName: undefined,
+          password: undefined,
+          status: UserStatus.ACTIVE
+        },
+      });
+
+      const { password: _pw, ...safeUser } = user;
+      // await this.enqueueTahesabOnEdit(user);
+      return safeUser;
+    } catch (e: any) {
+      console.log(e)
+      throw Error(e)
+    }
+  }
+
+
   async updateUser(id: string, dto: UpdateUserDto) {
     const user = await this.prisma.user.update({
       where: { id },
@@ -124,6 +160,7 @@ export class UsersService {
     await this.enqueueTahesabOnEdit(user);
     return safeUser;
   }
+
 
   private buildMoshtariCreateDto(
     user: Pick<User, 'fullName' | 'mobile' | 'tahesabCustomerCode'> & {

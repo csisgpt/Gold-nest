@@ -59,7 +59,7 @@ export class QuoteLockService {
   }
 
   private ensureRedis(): void {
-    if (!this.redis.isEnabled()) {
+    if (!this.redis.subscribe) {
       throw new ServiceUnavailableException({
         code: 'REDIS_DISABLED',
         message: 'Quote locking requires Redis',
@@ -89,8 +89,9 @@ export class QuoteLockService {
   }
 
   private async getExistingLockId(userId: string, productId: string, side: TradeSide): Promise<string | null> {
-    const client = this.redis.getCommandClient();
-    return client.get(this.pointerKey(userId, productId, side));
+    // const client = this.redis.getCommandClient();
+    // return client.get(this.pointerKey(userId, productId, side));
+    return ;
   }
 
   private getExecutablePrice(quote: CanonicalQuote, side: TradeSide): number {
@@ -188,11 +189,11 @@ export class QuoteLockService {
       nonce: randomUUID(),
     };
 
-    const client = this.redis.getCommandClient();
-    await Promise.all([
-      this.redis.setJson(this.lockKey(quoteId), payload, this.lockTtlSec),
-      client.set(this.pointerKey(userId, productId, side), quoteId, 'EX', this.lockTtlSec),
-    ]);
+    // const client = this.redis.getCommandClient();
+    // await Promise.all([
+    //   this.redis.setJson(this.lockKey(quoteId), payload, this.lockTtlSec),
+    //   client.set(this.pointerKey(userId, productId, side), quoteId, 'EX', this.lockTtlSec),
+    // ]);
 
     await this.saveAudit(payload);
 
@@ -208,46 +209,47 @@ export class QuoteLockService {
     if (payload.userId !== userId) {
       throw new ForbiddenException({ code: 'QUOTE_LOCK_FORBIDDEN', message: 'Quote lock does not belong to user' });
     }
-    const consumed = await this.redis.getCommandClient().exists(this.consumedKey(quoteId));
-    if (consumed) {
-      throw new ConflictException({ code: 'QUOTE_LOCK_ALREADY_USED', message: 'Quote lock already consumed' });
-    }
+    // const consumed = await this.redis.getCommandClient().exists(this.consumedKey(quoteId));
+    // if (consumed) {
+    //   throw new ConflictException({ code: 'QUOTE_LOCK_ALREADY_USED', message: 'Quote lock already consumed' });
+    // }
     return payload;
   }
 
   private async evalConsume(quoteId: string, expectedUserId?: string): Promise<ConsumeResult> {
-    this.ensureRedis();
-    const client = this.redis.getCommandClient();
-    const script = `
-      local payload = redis.call('GET', KEYS[1])
-      if not payload then return {'NOT_FOUND'} end
-      local decoded = cjson.decode(payload)
-      if ARGV[2] and ARGV[2] ~= '' then
-        if decoded['userId'] ~= ARGV[2] then return {'FORBIDDEN'} end
-      end
-      if redis.call('EXISTS', KEYS[2]) == 1 then return {'ALREADY_CONSUMED'} end
-      local ttl = redis.call('TTL', KEYS[1])
-      local expire = tonumber(ARGV[3])
-      if ttl and ttl > 0 and ttl < expire then expire = ttl end
-      redis.call('SET', KEYS[2], '1', 'EX', expire)
-      return {'OK', payload}
-    `;
-    const res = (await client.eval(
-      script,
-      2,
-      this.lockKey(quoteId),
-      this.consumedKey(quoteId),
-      Date.now(),
-      expectedUserId ?? '',
-      this.consumedTtlSec,
-    )) as [string] | [string, string];
-    if (!Array.isArray(res) || res.length === 0) {
-      return { status: 'NOT_FOUND' };
-    }
-    if (res[0] === 'OK') {
-      return { status: 'OK', payload: JSON.parse(res[1]) as LockedQuotePayload };
-    }
-    return { status: res[0] as ConsumeResult['status'] };
+    return ;
+    // this.ensureRedis();
+    // const client = this.redis.getCommandClient();
+    // const script = `
+    //   local payload = redis.call('GET', KEYS[1])
+    //   if not payload then return {'NOT_FOUND'} end
+    //   local decoded = cjson.decode(payload)
+    //   if ARGV[2] and ARGV[2] ~= '' then
+    //     if decoded['userId'] ~= ARGV[2] then return {'FORBIDDEN'} end
+    //   end
+    //   if redis.call('EXISTS', KEYS[2]) == 1 then return {'ALREADY_CONSUMED'} end
+    //   local ttl = redis.call('TTL', KEYS[1])
+    //   local expire = tonumber(ARGV[3])
+    //   if ttl and ttl > 0 and ttl < expire then expire = ttl end
+    //   redis.call('SET', KEYS[2], '1', 'EX', expire)
+    //   return {'OK', payload}
+    // `;
+    // const res = (await client.eval(
+    //   script,
+    //   2,
+    //   this.lockKey(quoteId),
+    //   this.consumedKey(quoteId),
+    //   Date.now(),
+    //   expectedUserId ?? '',
+    //   this.consumedTtlSec,
+    // )) as [string] | [string, string];
+    // if (!Array.isArray(res) || res?.length === 0) {
+    //   return { status: 'NOT_FOUND' };
+    // }
+    // if (res[0] === 'OK') {
+    //   return { status: 'OK', payload: JSON.parse(res[1]) as LockedQuotePayload };
+    // }
+    // return { status: res[0] as ConsumeResult['status'] };
   }
 
   async consumeLock(quoteId: string): Promise<LockedQuotePayload> {
