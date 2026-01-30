@@ -1,5 +1,13 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsEnum, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { RequestPurpose } from '@prisma/client';
+
+const RequestPurposeEnum =
+  (RequestPurpose as any) ??
+  ({
+    DIRECT: 'DIRECT',
+    P2P: 'P2P',
+  } as const);
 
 export class CreateDepositDto {
   /** @deprecated userId is derived from the authenticated user. */
@@ -11,6 +19,11 @@ export class CreateDepositDto {
   @ApiProperty({ example: '1000000', description: 'Deposit amount in IRR as a decimal string.' })
   @IsNumberString()
   amount!: string;
+
+  @ApiProperty({ required: false, enum: RequestPurposeEnum, description: 'Purpose of the deposit request.' })
+  @IsOptional()
+  @IsEnum(RequestPurposeEnum)
+  purpose?: RequestPurpose;
 
   @ApiProperty({ example: 'bank-transfer', description: 'Deposit method, e.g. bank-transfer or card-to-card.' })
   @IsString()
