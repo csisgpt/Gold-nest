@@ -10,6 +10,7 @@ import {
   TxRefType,
   WithdrawRequest,
   WithdrawStatus,
+  WithdrawalChannel,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
@@ -42,6 +43,18 @@ const RequestPurposeEnum =
   ({
     DIRECT: 'DIRECT',
     P2P: 'P2P',
+  } as const);
+const WithdrawStatusEnum =
+  (WithdrawStatus as any) ??
+  ({
+    WAITING_ASSIGNMENT: 'WAITING_ASSIGNMENT',
+    PENDING: 'PENDING',
+  } as const);
+const WithdrawalChannelEnum =
+  (WithdrawalChannel as any) ??
+  ({
+    USER_TO_USER: 'USER_TO_USER',
+    USER_TO_ORG: 'USER_TO_ORG',
   } as const);
 
 @Injectable()
@@ -87,19 +100,45 @@ export class WithdrawalsService {
         }
 
         const purpose = dto.purpose ?? RequestPurposeEnum.DIRECT;
+        if (purpose === RequestPurposeEnum.P2P && !dto.payoutDestinationId) {
+          throw new BadRequestException({
+            code: 'P2P_WITHDRAWAL_DESTINATION_REQUIRED',
+            message: 'P2P withdrawal requires a payout destination.',
+          });
+        }
+
+        const channel = purpose === RequestPurposeEnum.P2P
+          ? dto.channel ?? WithdrawalChannelEnum.USER_TO_USER
+          : null;
+
         const destinationSnapshot = dto.payoutDestinationId
-          ? await this.paymentDestinationsService.resolvePayoutDestinationForUser(user.id, dto.payoutDestinationId)
+          ? channel === WithdrawalChannelEnum.USER_TO_ORG
+            ? await this.paymentDestinationsService.resolveCollectionDestination(dto.payoutDestinationId)
+            : await this.paymentDestinationsService.resolvePayoutDestinationForUser(user.id, dto.payoutDestinationId)
           : this.paymentDestinationsService.buildLegacySnapshot({
               iban: dto.iban,
               cardNumber: dto.cardNumber,
               bankName: dto.bankName,
             });
 
+        if (purpose === RequestPurposeEnum.P2P && !destinationSnapshot) {
+          throw new BadRequestException({
+            code: 'P2P_WITHDRAWAL_DESTINATION_REQUIRED',
+            message: 'P2P withdrawal requires a payout destination.',
+          });
+        }
+
+        const status = purpose === RequestPurposeEnum.P2P
+          ? WithdrawStatusEnum.WAITING_ASSIGNMENT
+          : WithdrawStatusEnum.PENDING;
+
         const withdraw = await tx.withdrawRequest.create({
           data: {
             userId: user.id,
             amount: amountDecimal,
             purpose,
+            channel,
+            status,
             bankName: dto.bankName,
             iban: dto.iban,
             cardNumber: dto.cardNumber,

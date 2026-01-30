@@ -36,6 +36,12 @@ export class DepositsService {
       DIRECT: 'DIRECT',
       P2P: 'P2P',
     } as const);
+  private readonly depositStatusEnum =
+    (DepositStatus as any) ??
+    ({
+      WAITING_ASSIGNMENT: 'WAITING_ASSIGNMENT',
+      PENDING: 'PENDING',
+    } as const);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -51,12 +57,17 @@ export class DepositsService {
       const amountDecimal = new Decimal(dto.amount);
       const purpose = dto.purpose ?? this.requestPurposeEnum.DIRECT;
 
+      const status = purpose === this.requestPurposeEnum.P2P
+        ? this.depositStatusEnum.WAITING_ASSIGNMENT
+        : this.depositStatusEnum.PENDING;
+
       const deposit = await tx.depositRequest.create({
         data: {
           userId: user.id,
           amount: amountDecimal,
           method: dto.method,
           purpose,
+          status,
           remainingAmount: purpose === this.requestPurposeEnum.P2P ? amountDecimal : null,
           refNo: dto.refNo,
           note: dto.note,

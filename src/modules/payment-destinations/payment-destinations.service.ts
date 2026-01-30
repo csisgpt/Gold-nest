@@ -245,6 +245,28 @@ export class PaymentDestinationsService {
     };
   }
 
+  async resolveCollectionDestination(destinationId: string): Promise<PaymentDestinationSnapshot> {
+    const destination = await this.prisma.paymentDestination.findUnique({ where: { id: destinationId } });
+    if (!destination || destination.deletedAt) throw new NotFoundException('Destination not found');
+    if (destination.ownerUserId !== null || destination.direction !== PaymentDestinationDirectionEnum.COLLECTION) {
+      throw new BadRequestException({ code: 'P2P_DESTINATION_INVALID', message: 'Destination is not a system collection account.' });
+    }
+    if (destination.status !== PaymentDestinationStatusEnum.ACTIVE) {
+      throw new BadRequestException({ code: 'P2P_DESTINATION_INACTIVE', message: 'Destination is not active.' });
+    }
+
+    const decryptedValue = decryptDestinationValue(destination.encryptedValue);
+
+    return {
+      type: destination.type,
+      value: decryptedValue,
+      maskedValue: destination.maskedValue,
+      bankName: destination.bankName ?? null,
+      ownerName: destination.ownerName ?? null,
+      title: destination.title ?? null,
+    };
+  }
+
   buildLegacySnapshot(params: {
     iban?: string | null;
     cardNumber?: string | null;

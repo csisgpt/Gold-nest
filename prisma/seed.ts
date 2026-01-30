@@ -26,16 +26,39 @@ import {
     KycLevel,
     MarketProductType,
     TradeType,
+    RequestPurpose,
+    PaymentDestinationDirection,
+    PaymentDestinationType,
+    WithdrawalChannel,
+    P2PAllocationStatus,
+    PaymentMethod,
+    AttachmentLinkEntityType,
+    AttachmentLinkKind,
 } from '@prisma/client';
 import { faker } from '@faker-js/faker/locale/fa';
 import * as bcrypt from 'bcrypt';
 import { Decimal } from '@prisma/client/runtime/library';
+import {
+    encryptDestinationValue,
+    hashDestinationValue,
+    maskDestinationValue,
+    normalizeDestinationValue,
+} from '../src/modules/payment-destinations/payment-destinations.crypto';
 
 const prisma = new PrismaClient();
 
 const NUM_CLIENTS = 12;
 const NUM_FAKE_TRADES = 6;
 const HOUSE_USER_ID = process.env.HOUSE_USER_ID || 'house-system-user';
+
+function buildDestinationPayload(value: string) {
+    const normalized = normalizeDestinationValue(value);
+    return {
+        encryptedValue: encryptDestinationValue(normalized),
+        encryptedValueHash: hashDestinationValue(normalized),
+        maskedValue: maskDestinationValue(normalized),
+    };
+}
 
 async function main() {
     console.log('--- Start Seeding GoldNest Application ---');
@@ -805,6 +828,233 @@ async function main() {
     }
     // 💡 رفع خطای TS1128: این خط اضافی از اجرای قبلی حذف شد
     // }
+
+    // --- ۱۰. P2P withdrawals/deposits/allocations demo ---
+    console.log('10. Creating P2P demo data...');
+
+    const receiver1 = clients[0];
+    const receiver2 = clients[1];
+    const payer1 = clients[2];
+    const payer2 = clients[3];
+
+    const destination1Value = faker.finance.iban({ formatted: false });
+    const destination2Value = faker.finance.creditCardNumber();
+    const destination3Value = faker.finance.iban({ formatted: false });
+    const destination4Value = faker.finance.creditCardNumber();
+
+    const destination1 = await prisma.paymentDestination.create({
+        data: {
+            ownerUserId: receiver1.id,
+            direction: PaymentDestinationDirection.PAYOUT,
+            type: PaymentDestinationType.IBAN,
+            bankName: 'Mellat',
+            ownerName: receiver1.fullName,
+            title: 'حساب اصلی',
+            isDefault: true,
+            ...buildDestinationPayload(destination1Value),
+        },
+    });
+
+    await prisma.paymentDestination.create({
+        data: {
+            ownerUserId: receiver1.id,
+            direction: PaymentDestinationDirection.PAYOUT,
+            type: PaymentDestinationType.CARD,
+            bankName: 'Tejarat',
+            ownerName: receiver1.fullName,
+            title: 'کارت پشتیبان',
+            ...buildDestinationPayload(destination2Value),
+        },
+    });
+
+    const destination3 = await prisma.paymentDestination.create({
+        data: {
+            ownerUserId: receiver2.id,
+            direction: PaymentDestinationDirection.PAYOUT,
+            type: PaymentDestinationType.IBAN,
+            bankName: 'Saman',
+            ownerName: receiver2.fullName,
+            title: 'حساب اصلی',
+            isDefault: true,
+            ...buildDestinationPayload(destination3Value),
+        },
+    });
+
+    await prisma.paymentDestination.create({
+        data: {
+            ownerUserId: receiver2.id,
+            direction: PaymentDestinationDirection.PAYOUT,
+            type: PaymentDestinationType.CARD,
+            bankName: 'Pasargad',
+            ownerName: receiver2.fullName,
+            title: 'کارت پشتیبان',
+            ...buildDestinationPayload(destination4Value),
+        },
+    });
+
+    await prisma.paymentDestination.create({
+        data: {
+            ownerUserId: null,
+            direction: PaymentDestinationDirection.COLLECTION,
+            type: PaymentDestinationType.IBAN,
+            bankName: 'Central Bank',
+            ownerName: 'GoldNest Org',
+            title: 'حساب سازمان',
+            ...buildDestinationPayload(faker.finance.iban({ formatted: false })),
+        },
+    });
+
+    const p2pWithdrawal1 = await prisma.withdrawRequest.create({
+        data: {
+            userId: receiver1.id,
+            amount: new Decimal(5000000),
+            purpose: RequestPurpose.P2P,
+            channel: WithdrawalChannel.USER_TO_USER,
+            status: WithdrawStatus.WAITING_ASSIGNMENT,
+            payoutDestinationId: destination1.id,
+            destinationSnapshot: {
+                type: PaymentDestinationType.IBAN,
+                value: destination1Value,
+                maskedValue: maskDestinationValue(destination1Value),
+                bankName: 'Mellat',
+                ownerName: receiver1.fullName,
+            },
+        },
+    });
+
+    const p2pWithdrawal2 = await prisma.withdrawRequest.create({
+        data: {
+            userId: receiver2.id,
+            amount: new Decimal(6000000),
+            purpose: RequestPurpose.P2P,
+            channel: WithdrawalChannel.USER_TO_USER,
+            status: WithdrawStatus.PARTIALLY_ASSIGNED,
+            payoutDestinationId: destination3.id,
+            destinationSnapshot: {
+                type: PaymentDestinationType.IBAN,
+                value: destination3Value,
+                maskedValue: maskDestinationValue(destination3Value),
+                bankName: 'Saman',
+                ownerName: receiver2.fullName,
+            },
+            assignedAmountTotal: new Decimal(4000000),
+            settledAmountTotal: new Decimal(0),
+        },
+    });
+
+    const depositOffer1 = await prisma.depositRequest.create({
+        data: {
+            userId: payer1.id,
+            amount: new Decimal(2000000),
+            method: 'bank-transfer',
+            purpose: RequestPurpose.P2P,
+            status: DepositStatus.FULLY_ASSIGNED,
+            remainingAmount: new Decimal(0),
+            assignedAmountTotal: new Decimal(2000000),
+            settledAmountTotal: new Decimal(0),
+        },
+    });
+
+    const depositOffer2 = await prisma.depositRequest.create({
+        data: {
+            userId: payer2.id,
+            amount: new Decimal(1500000),
+            method: 'card-to-card',
+            purpose: RequestPurpose.P2P,
+            status: DepositStatus.PARTIALLY_ASSIGNED,
+            remainingAmount: new Decimal(500000),
+            assignedAmountTotal: new Decimal(1000000),
+            settledAmountTotal: new Decimal(0),
+        },
+    });
+
+    const depositOffer3 = await prisma.depositRequest.create({
+        data: {
+            userId: payer1.id,
+            amount: new Decimal(1000000),
+            method: 'bank-transfer',
+            purpose: RequestPurpose.P2P,
+            status: DepositStatus.FULLY_ASSIGNED,
+            remainingAmount: new Decimal(0),
+            assignedAmountTotal: new Decimal(1000000),
+            settledAmountTotal: new Decimal(0),
+        },
+    });
+
+    const allocationAssigned = await prisma.p2PAllocation.create({
+        data: {
+            withdrawalId: p2pWithdrawal2.id,
+            depositId: depositOffer1.id,
+            amount: new Decimal(2000000),
+            status: P2PAllocationStatus.ASSIGNED,
+            paymentCode: faker.string.alphanumeric(8).toUpperCase(),
+            expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 12),
+            destinationSnapshot: p2pWithdrawal2.destinationSnapshot,
+            paymentMethod: PaymentMethod.UNKNOWN,
+        },
+    });
+
+    const proofFile = await prisma.file.create({
+        data: {
+            uploadedById: payer2.id,
+            storageKey: faker.system.fileName(),
+            fileName: 'p2p-proof.png',
+            mimeType: 'image/png',
+            sizeBytes: faker.number.int({ min: 5000, max: 15000 }),
+            label: 'رسید واریز',
+        },
+    });
+
+    const allocationProof = await prisma.p2PAllocation.create({
+        data: {
+            withdrawalId: p2pWithdrawal2.id,
+            depositId: depositOffer2.id,
+            amount: new Decimal(1000000),
+            status: P2PAllocationStatus.PROOF_SUBMITTED,
+            paymentCode: faker.string.alphanumeric(8).toUpperCase(),
+            expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 6),
+            destinationSnapshot: p2pWithdrawal2.destinationSnapshot,
+            paymentMethod: PaymentMethod.CARD_TO_CARD,
+            payerBankRef: 'REF-001',
+            payerPaidAt: new Date(),
+            proofSubmittedAt: new Date(),
+        },
+    });
+
+    await prisma.attachmentLink.create({
+        data: {
+            entityType: AttachmentLinkEntityType.P2P_ALLOCATION,
+            entityId: allocationProof.id,
+            kind: AttachmentLinkKind.P2P_PROOF,
+            fileId: proofFile.id,
+            uploaderUserId: payer2.id,
+        },
+    });
+
+    const allocationConfirmed = await prisma.p2PAllocation.create({
+        data: {
+            withdrawalId: p2pWithdrawal2.id,
+            depositId: depositOffer3.id,
+            amount: new Decimal(1000000),
+            status: P2PAllocationStatus.RECEIVER_CONFIRMED,
+            paymentCode: faker.string.alphanumeric(8).toUpperCase(),
+            expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+            destinationSnapshot: p2pWithdrawal2.destinationSnapshot,
+            paymentMethod: PaymentMethod.SATNA,
+            payerBankRef: 'REF-002',
+            payerPaidAt: new Date(Date.now() - 1000 * 60 * 30),
+            proofSubmittedAt: new Date(Date.now() - 1000 * 60 * 30),
+            receiverConfirmedAt: new Date(Date.now() - 1000 * 60 * 10),
+        },
+    });
+
+    console.log('P2P demo IDs:', {
+        p2pWithdrawal1: p2pWithdrawal1.id,
+        p2pWithdrawal2: p2pWithdrawal2.id,
+        allocationAssigned: allocationAssigned.id,
+        allocationProof: allocationProof.id,
+        allocationConfirmed: allocationConfirmed.id,
+    });
 
 
     console.log('--- Seeding finished successfully! ---');

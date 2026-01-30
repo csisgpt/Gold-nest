@@ -1,12 +1,19 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsArray, IsEnum, IsNumberString, IsOptional, IsString } from 'class-validator';
-import { RequestPurpose } from '@prisma/client';
+import { RequestPurpose, WithdrawalChannel } from '@prisma/client';
 
 const RequestPurposeEnum =
   (RequestPurpose as any) ??
   ({
     DIRECT: 'DIRECT',
     P2P: 'P2P',
+  } as const);
+
+const WithdrawalChannelEnum =
+  (WithdrawalChannel as any) ??
+  ({
+    USER_TO_USER: 'USER_TO_USER',
+    USER_TO_ORG: 'USER_TO_ORG',
   } as const);
 
 export class CreateWithdrawalDto {
@@ -24,6 +31,11 @@ export class CreateWithdrawalDto {
   @IsOptional()
   @IsEnum(RequestPurposeEnum)
   purpose?: RequestPurpose;
+
+  @ApiProperty({ required: false, enum: WithdrawalChannelEnum, description: 'Channel for P2P withdrawal.' })
+  @IsOptional()
+  @IsEnum(WithdrawalChannelEnum)
+  channel?: WithdrawalChannel;
 
   @ApiProperty({ required: false, example: 'Mellat', description: 'Destination bank name.' })
   @IsOptional()

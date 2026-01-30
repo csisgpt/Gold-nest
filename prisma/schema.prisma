@@ -183,6 +183,13 @@ enum DepositStatus {
   REJECTED
   CANCELLED
   REVERSED
+  CREATED
+  WAITING_ASSIGNMENT
+  PARTIALLY_ASSIGNED
+  FULLY_ASSIGNED
+  PARTIALLY_SETTLED
+  SETTLED
+  EXPIRED
 }
 
 enum WithdrawStatus {
@@ -191,6 +198,14 @@ enum WithdrawStatus {
   REJECTED
   CANCELLED
   REVERSED
+  CREATED
+  VALIDATED
+  WAITING_ASSIGNMENT
+  PARTIALLY_ASSIGNED
+  FULLY_ASSIGNED
+  PARTIALLY_SETTLED
+  SETTLED
+  EXPIRED
 }
 
 enum RequestPurpose {
@@ -221,6 +236,19 @@ enum PaymentDestinationStatus {
   DISABLED
 }
 
+enum WithdrawalChannel {
+  USER_TO_USER
+  USER_TO_ORG
+}
+
+enum PaymentMethod {
+  CARD_TO_CARD
+  SATNA
+  PAYA
+  TRANSFER
+  UNKNOWN
+}
+
 enum P2PAllocationStatus {
   ASSIGNED
   PROOF_SUBMITTED
@@ -230,6 +258,20 @@ enum P2PAllocationStatus {
   DISPUTED
   CANCELLED
   EXPIRED
+}
+
+enum AttachmentLinkEntityType {
+  P2P_ALLOCATION
+  WITHDRAWAL
+  DEPOSIT
+  REMITTANCE
+}
+
+enum AttachmentLinkKind {
+  P2P_PROOF
+  DISPUTE_EVIDENCE
+  ADMIN_NOTE
+  OTHER
 }
 
 enum GoldLotStatus {
@@ -719,13 +761,13 @@ model DepositRequest {
   user   User   @relation("UserDeposits", fields: [userId], references: [id])
   userId String
 
-  amount Decimal       @db.Decimal(24, 2)
+  amount Decimal       @db.Decimal(18, 0)
   method String
   status DepositStatus @default(PENDING)
   purpose RequestPurpose @default(DIRECT)
-  remainingAmount    Decimal? @db.Decimal(24, 2)
-  assignedAmountTotal Decimal @default(0) @db.Decimal(24, 2)
-  settledAmountTotal  Decimal @default(0) @db.Decimal(24, 2)
+  remainingAmount    Decimal? @db.Decimal(18, 0)
+  assignedAmountTotal Decimal @default(0) @db.Decimal(18, 0)
+  settledAmountTotal  Decimal @default(0) @db.Decimal(18, 0)
 
   refNo         String?
   note          String?
@@ -737,6 +779,9 @@ model DepositRequest {
   accountTxId String?    @unique
 
   allocations P2PAllocation[]
+
+  @@index([purpose, status, createdAt])
+  @@index([userId, createdAt])
 }
 
 model WithdrawRequest {
@@ -747,9 +792,10 @@ model WithdrawRequest {
   user   User   @relation("UserWithdraws", fields: [userId], references: [id])
   userId String
 
-  amount Decimal        @db.Decimal(24, 2)
+  amount Decimal        @db.Decimal(18, 0)
   status WithdrawStatus @default(PENDING)
   purpose RequestPurpose @default(DIRECT)
+  channel WithdrawalChannel?
 
   bankName   String?
   iban       String?
@@ -757,8 +803,8 @@ model WithdrawRequest {
   payoutDestinationId String?
   payoutDestination   PaymentDestination? @relation(fields: [payoutDestinationId], references: [id])
   destinationSnapshot Json?
-  assignedAmountTotal Decimal @default(0) @db.Decimal(24, 2)
-  settledAmountTotal  Decimal @default(0) @db.Decimal(24, 2)
+  assignedAmountTotal Decimal @default(0) @db.Decimal(18, 0)
+  settledAmountTotal  Decimal @default(0) @db.Decimal(18, 0)
 
   note          String?
   processedAt   DateTime?
@@ -774,6 +820,9 @@ model WithdrawRequest {
   @@unique([userId, idempotencyKey])
 
   allocations P2PAllocation[]
+
+  @@index([purpose, status, createdAt])
+  @@index([userId, createdAt])
 }
 
 model PaymentDestination {
@@ -812,20 +861,23 @@ model P2PAllocation {
   deposit      DepositRequest @relation(fields: [depositId], references: [id])
   depositId    String
 
-  amount Decimal @db.Decimal(24, 2)
+  amount Decimal @db.Decimal(18, 0)
   status P2PAllocationStatus @default(ASSIGNED)
   paymentCode String @unique
   expiresAt DateTime
   destinationSnapshot Json
 
+  paymentMethod PaymentMethod @default(UNKNOWN)
   payerBankRef String?
   payerProofFileId String?
+  proofSubmittedAt DateTime?
   payerPaidAt DateTime?
   receiverConfirmedAt DateTime?
   receiverDisputedAt DateTime?
   receiverDisputeReason String?
   adminVerifiedAt DateTime?
   adminVerifierId String?
+  adminNote String?
   settledAt DateTime?
   withdrawerAccountTxId String?
   payerAccountTxId String?
@@ -833,6 +885,26 @@ model P2PAllocation {
   @@index([withdrawalId, status])
   @@index([depositId, status])
   @@index([expiresAt])
+  @@index([status, expiresAt])
+}
+
+model AttachmentLink {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  entityType AttachmentLinkEntityType
+  entityId   String
+  kind       AttachmentLinkKind
+
+  file   File   @relation(fields: [fileId], references: [id])
+  fileId String
+
+  uploaderUserId String?
+  uploaderUser   User? @relation(fields: [uploaderUserId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([fileId])
+  @@index([kind])
 }
 
 model P2PAssignmentIdempotency {

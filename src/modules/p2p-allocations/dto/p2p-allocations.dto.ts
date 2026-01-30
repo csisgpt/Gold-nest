@@ -1,7 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsBoolean, IsEnum, IsISO8601, IsNumberString, IsOptional, IsString, ValidateNested } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsISO8601,
+  IsNumberString,
+  IsOptional,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
-import { P2PAllocationStatus } from '@prisma/client';
+import { PaymentDestinationType, PaymentMethod, P2PAllocationStatus, WithdrawStatus, DepositStatus } from '@prisma/client';
 import { ListQueryDto } from '../../../common/pagination/dto/list-query.dto';
 
 const P2PAllocationStatusEnum =
@@ -17,69 +26,243 @@ const P2PAllocationStatusEnum =
     EXPIRED: 'EXPIRED',
   } as const);
 
-export enum P2PWithdrawalAdminStatus {
-  WAITING_MATCH = 'WAITING_MATCH',
-  PARTIAL = 'PARTIAL',
-  SETTLED = 'SETTLED',
+const PaymentMethodEnum =
+  (PaymentMethod as any) ??
+  ({
+    CARD_TO_CARD: 'CARD_TO_CARD',
+    SATNA: 'SATNA',
+    PAYA: 'PAYA',
+    TRANSFER: 'TRANSFER',
+    UNKNOWN: 'UNKNOWN',
+  } as const);
+
+const PaymentDestinationTypeEnum =
+  (PaymentDestinationType as any) ??
+  ({
+    IBAN: 'IBAN',
+    CARD: 'CARD',
+    ACCOUNT: 'ACCOUNT',
+  } as const);
+
+export enum P2PWithdrawalListSort {
+  CREATED_AT_DESC = 'createdAt_desc',
+  CREATED_AT_ASC = 'createdAt_asc',
+  AMOUNT_DESC = 'amount_desc',
+  AMOUNT_ASC = 'amount_asc',
+  REMAINING_DESC = 'remainingToAssign_desc',
+  REMAINING_ASC = 'remainingToAssign_asc',
+  PRIORITY = 'priority',
+}
+
+export enum P2PCandidateSort {
+  REMAINING_DESC = 'remaining_desc',
+  CREATED_AT_ASC = 'createdAt_asc',
+  CREATED_AT_DESC = 'createdAt_desc',
+}
+
+export enum P2PAllocationSort {
+  CREATED_AT_DESC = 'createdAt_desc',
+  EXPIRES_AT_ASC = 'expiresAt_asc',
+  PAID_AT_DESC = 'paidAt_desc',
+  AMOUNT_DESC = 'amount_desc',
 }
 
 export class AdminP2PWithdrawalsQueryDto extends ListQueryDto {
-  @ApiPropertyOptional({ enum: P2PWithdrawalAdminStatus })
+  @ApiPropertyOptional({ description: 'Comma-separated status list' })
   @IsOptional()
-  @IsEnum(P2PWithdrawalAdminStatus)
-  status?: P2PWithdrawalAdminStatus;
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  userId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  mobile?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  amountMin?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  amountMax?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  remainingToAssignMin?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  createdFrom?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  createdTo?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  destinationBank?: string;
+
+  @ApiPropertyOptional({ enum: PaymentDestinationTypeEnum })
+  @IsOptional()
+  @IsEnum(PaymentDestinationTypeEnum)
+  destinationType?: PaymentDestinationType;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  hasDispute?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  hasProof?: boolean;
+
+  @ApiPropertyOptional({ enum: P2PWithdrawalListSort })
+  @IsOptional()
+  @IsEnum(P2PWithdrawalListSort)
+  sort?: P2PWithdrawalListSort;
 }
 
-export class P2PWithdrawalAdminListItemDto {
-  @ApiProperty()
-  id!: string;
+export class AdminP2PWithdrawalCandidatesQueryDto extends ListQueryDto {
+  @ApiPropertyOptional({ description: 'Comma-separated status list' })
+  @IsOptional()
+  @IsString()
+  status?: string;
 
-  @ApiProperty()
-  userSummary!: Record<string, any>;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  userId?: string;
 
-  @ApiProperty()
-  amount!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  mobile?: string;
 
-  @ApiProperty()
-  assignedTotal!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  remainingMin?: string;
 
-  @ApiProperty()
-  settledTotal!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  createdFrom?: string;
 
-  @ApiProperty()
-  remainingToAssign!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  createdTo?: string;
 
-  @ApiProperty()
-  remainingToSettle!: string;
-
-  @ApiPropertyOptional({ nullable: true })
-  destinationMasked?: string | null;
-
-  @ApiProperty({ enum: P2PWithdrawalAdminStatus })
-  status!: P2PWithdrawalAdminStatus;
-
-  @ApiProperty()
-  createdAt!: Date;
+  @ApiPropertyOptional({ enum: P2PCandidateSort })
+  @IsOptional()
+  @IsEnum(P2PCandidateSort)
+  sort?: P2PCandidateSort;
 }
 
-export class P2PWithdrawalCandidatesItemDto {
-  @ApiProperty()
-  id!: string;
+export class AdminP2PAllocationsQueryDto extends ListQueryDto {
+  @ApiPropertyOptional({ description: 'Comma-separated status list' })
+  @IsOptional()
+  @IsString()
+  status?: string;
 
-  @ApiProperty()
-  userSummary!: Record<string, any>;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  withdrawalId?: string;
 
-  @ApiProperty()
-  requestedAmount!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  depositId?: string;
 
-  @ApiProperty()
-  remainingAmount!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  payerUserId?: string;
 
-  @ApiProperty()
-  status!: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  receiverUserId?: string;
 
-  @ApiProperty()
-  createdAt!: Date;
+  @ApiPropertyOptional({ enum: PaymentMethodEnum })
+  @IsOptional()
+  @IsEnum(PaymentMethodEnum)
+  method?: PaymentMethod;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  hasProof?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  receiverConfirmed?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  adminVerified?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  expired?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  createdFrom?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  createdTo?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  paidFrom?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsISO8601()
+  paidTo?: string;
+
+  @ApiPropertyOptional({ enum: P2PAllocationSort })
+  @IsOptional()
+  @IsEnum(P2PAllocationSort)
+  sort?: P2PAllocationSort;
+}
+
+export class P2PAllocationQueryDto extends ListQueryDto {
+  @ApiPropertyOptional({ description: 'Comma-separated status list' })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumberString()
+  expiresSoon?: string;
+
+  @ApiPropertyOptional({ enum: P2PAllocationSort })
+  @IsOptional()
+  @IsEnum(P2PAllocationSort)
+  sort?: P2PAllocationSort;
 }
 
 export class P2PAssignItemDto {
@@ -87,7 +270,7 @@ export class P2PAssignItemDto {
   @IsString()
   depositId!: string;
 
-  @ApiProperty({ description: 'Assigned amount as decimal string.' })
+  @ApiProperty({ description: 'Assigned amount as integer string.' })
   @IsNumberString()
   amount!: string;
 }
@@ -100,113 +283,24 @@ export class P2PAssignRequestDto {
   items!: P2PAssignItemDto[];
 }
 
-export class P2PAllocationAdminViewDto {
-  @ApiProperty()
-  id!: string;
-
-  @ApiProperty()
-  withdrawalId!: string;
-
-  @ApiProperty()
-  depositId!: string;
-
-  @ApiProperty()
-  amount!: string;
-
-  @ApiProperty({ enum: P2PAllocationStatusEnum })
-  status!: P2PAllocationStatus;
-
-  @ApiProperty()
-  paymentCode!: string;
-
-  @ApiProperty()
-  expiresAt!: Date;
-
-  @ApiProperty()
-  destinationSnapshot!: Record<string, any>;
-
-  @ApiPropertyOptional({ nullable: true })
-  payerBankRef?: string | null;
-
-  @ApiPropertyOptional({ nullable: true })
-  payerProofFileId?: string | null;
-
-  @ApiPropertyOptional({ nullable: true })
-  payerPaidAt?: Date | null;
-
-  @ApiProperty()
-  createdAt!: Date;
-}
-
-export class P2PAllocationPayerViewDto {
-  @ApiProperty()
-  id!: string;
-
-  @ApiProperty()
-  amount!: string;
-
-  @ApiProperty({ enum: P2PAllocationStatusEnum })
-  status!: P2PAllocationStatus;
-
-  @ApiProperty()
-  expiresAt!: Date;
-
-  @ApiProperty()
-  paymentCode!: string;
-
-  @ApiProperty()
-  destinationToPay!: Record<string, any>;
-
-  @ApiProperty()
-  withdrawalRef!: string;
-
-  @ApiProperty()
-  createdAt!: Date;
-}
-
-export class P2PAllocationReceiverViewDto {
-  @ApiProperty()
-  id!: string;
-
-  @ApiProperty()
-  amount!: string;
-
-  @ApiProperty({ enum: P2PAllocationStatusEnum })
-  status!: P2PAllocationStatus;
-
-  @ApiProperty()
-  payerSummary!: Record<string, any>;
-
-  @ApiPropertyOptional({ nullable: true })
-  bankRef?: string | null;
-
-  @ApiPropertyOptional({ nullable: true })
-  proofFileId?: string | null;
-
-  @ApiPropertyOptional({ nullable: true })
-  paidAt?: Date | null;
-
-  @ApiProperty()
-  paymentCode!: string;
-
-  @ApiProperty()
-  createdAt!: Date;
-}
-
 export class P2PAllocationProofDto {
   @ApiProperty()
   @IsString()
   bankRef!: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  proofFileId?: string;
+  @ApiProperty({ enum: PaymentMethodEnum })
+  @IsEnum(PaymentMethodEnum)
+  method!: PaymentMethod;
 
   @ApiPropertyOptional({ description: 'ISO timestamp when payment was made.' })
   @IsOptional()
   @IsISO8601()
   paidAt?: string;
+
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @IsString({ each: true })
+  fileIds!: string[];
 }
 
 export class P2PReceiverConfirmDto {
@@ -231,9 +325,282 @@ export class P2PAdminVerifyDto {
   note?: string;
 }
 
-export class P2PAllocationQueryDto {
-  @ApiPropertyOptional({ enum: P2PAllocationStatusEnum })
-  @IsOptional()
-  @IsEnum(P2PAllocationStatusEnum)
-  status?: P2PAllocationStatus;
+export class P2PListMetaDto {
+  @ApiPropertyOptional()
+  total?: number;
+
+  @ApiPropertyOptional()
+  nextCursor?: string | null;
+
+  @ApiProperty()
+  limit!: number;
+
+  @ApiPropertyOptional()
+  sort?: string;
+
+  @ApiPropertyOptional()
+  filtersApplied?: Record<string, any>;
+}
+
+export class P2PListResponseDto<T> {
+  @ApiProperty({ isArray: true })
+  data!: T[];
+
+  @ApiProperty({ type: () => P2PListMetaDto })
+  meta!: P2PListMetaDto;
+}
+
+export class WithdrawalTotalsDto {
+  @ApiProperty()
+  assigned!: string;
+
+  @ApiProperty()
+  settled!: string;
+
+  @ApiProperty()
+  remainingToAssign!: string;
+
+  @ApiProperty()
+  remainingToSettle!: string;
+}
+
+export class WithdrawalActionsDto {
+  @ApiProperty()
+  canCancel!: boolean;
+
+  @ApiProperty()
+  canAssign!: boolean;
+
+  @ApiProperty()
+  canViewAllocations!: boolean;
+}
+
+export class WithdrawalDestinationDto {
+  @ApiProperty({ enum: PaymentDestinationTypeEnum })
+  type!: PaymentDestinationType;
+
+  @ApiProperty()
+  masked!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  bankName?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  title?: string | null;
+}
+
+export class WithdrawalVmDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  purpose!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  channel?: string | null;
+
+  @ApiProperty()
+  amount!: string;
+
+  @ApiProperty({ enum: WithdrawStatus })
+  status!: WithdrawStatus;
+
+  @ApiProperty({ type: () => WithdrawalTotalsDto })
+  totals!: WithdrawalTotalsDto;
+
+  @ApiPropertyOptional({ type: () => WithdrawalDestinationDto, nullable: true })
+  destination?: WithdrawalDestinationDto | null;
+
+  @ApiProperty()
+  createdAt!: Date;
+
+  @ApiProperty()
+  updatedAt!: Date;
+
+  @ApiProperty({ type: () => WithdrawalActionsDto })
+  actions!: WithdrawalActionsDto;
+}
+
+export class DepositTotalsDto {
+  @ApiProperty()
+  assigned!: string;
+
+  @ApiProperty()
+  settled!: string;
+
+  @ApiProperty()
+  remaining!: string;
+}
+
+export class DepositActionsDto {
+  @ApiProperty()
+  canCancel!: boolean;
+
+  @ApiProperty()
+  canBeAssigned!: boolean;
+}
+
+export class DepositVmDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  purpose!: string;
+
+  @ApiProperty()
+  requestedAmount!: string;
+
+  @ApiProperty({ enum: DepositStatus })
+  status!: DepositStatus;
+
+  @ApiProperty({ type: () => DepositTotalsDto })
+  totals!: DepositTotalsDto;
+
+  @ApiProperty()
+  createdAt!: Date;
+
+  @ApiProperty()
+  updatedAt!: Date;
+
+  @ApiProperty({ type: () => DepositActionsDto })
+  actions!: DepositActionsDto;
+}
+
+export class AllocationPaymentDto {
+  @ApiProperty({ enum: PaymentMethodEnum })
+  method!: PaymentMethod;
+
+  @ApiPropertyOptional({ nullable: true })
+  bankRef?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  paidAt?: Date | null;
+}
+
+export class AllocationAttachmentFileDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  name!: string;
+
+  @ApiProperty()
+  mime!: string;
+
+  @ApiProperty()
+  size!: number;
+}
+
+export class AllocationAttachmentDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  kind!: string;
+
+  @ApiProperty({ type: () => AllocationAttachmentFileDto })
+  file!: AllocationAttachmentFileDto;
+
+  @ApiProperty()
+  createdAt!: Date;
+}
+
+export class AllocationDestinationDto {
+  @ApiProperty({ enum: PaymentDestinationTypeEnum })
+  type!: PaymentDestinationType;
+
+  @ApiPropertyOptional({ nullable: true })
+  bankName?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  ownerName?: string | null;
+
+  @ApiProperty()
+  fullValue!: string;
+
+  @ApiProperty()
+  masked!: string;
+}
+
+export class AllocationTimestampDto {
+  @ApiPropertyOptional({ nullable: true })
+  proofSubmittedAt?: Date | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  receiverConfirmedAt?: Date | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  adminVerifiedAt?: Date | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  settledAt?: Date | null;
+}
+
+export class AllocationActionsDto {
+  @ApiProperty()
+  payerCanSubmitProof!: boolean;
+
+  @ApiProperty()
+  receiverCanConfirm!: boolean;
+
+  @ApiProperty()
+  adminCanFinalize!: boolean;
+}
+
+export class AllocationUserSummaryDto {
+  @ApiProperty()
+  userId!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  mobile?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  displayName?: string | null;
+}
+
+export class AllocationVmDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiProperty()
+  withdrawalId!: string;
+
+  @ApiProperty()
+  depositId!: string;
+
+  @ApiProperty({ type: () => AllocationUserSummaryDto })
+  payer!: AllocationUserSummaryDto;
+
+  @ApiProperty({ type: () => AllocationUserSummaryDto })
+  receiver!: AllocationUserSummaryDto;
+
+  @ApiProperty()
+  amount!: string;
+
+  @ApiProperty({ enum: P2PAllocationStatusEnum })
+  status!: P2PAllocationStatus;
+
+  @ApiProperty()
+  expiresAt!: Date;
+
+  @ApiProperty()
+  paymentCode!: string;
+
+  @ApiProperty({ type: () => AllocationPaymentDto })
+  payment!: AllocationPaymentDto;
+
+  @ApiProperty({ type: [AllocationAttachmentDto] })
+  attachments!: AllocationAttachmentDto[];
+
+  @ApiPropertyOptional({ type: () => AllocationDestinationDto, nullable: true })
+  destinationToPay?: AllocationDestinationDto | null;
+
+  @ApiProperty({ type: () => AllocationTimestampDto })
+  timestamps!: AllocationTimestampDto;
+
+  @ApiProperty()
+  createdAt!: Date;
+
+  @ApiProperty({ type: () => AllocationActionsDto })
+  actions!: AllocationActionsDto;
 }

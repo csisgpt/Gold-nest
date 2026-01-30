@@ -4,10 +4,10 @@
 P2P withdrawals let admin match withdrawal requests against user deposit offers. Allocations reserve the withdrawal funds, send destination details to payers, and settle internally once confirmed.
 
 ## High-level Flow
-1. **Withdrawal created** with `purpose=P2P` and a payout destination (preferred) or legacy bank fields.
+1. **Withdrawal created** with `purpose=P2P` and a payout destination (required).
 2. **Admin lists P2P withdrawals** and opens a withdrawal to view eligible deposit offers.
 3. **Admin assigns offers** to the withdrawal. Each assignment creates a `P2PAllocation` with an expiry.
-4. **Payer receives destination snapshot** and submits proof + bank ref.
+4. **Payer receives destination snapshot** and submits proof + bank ref + payment method.
 5. **Receiver confirms** payment (or disputes) and/or **admin verifies**, based on policy.
 6. **Admin finalizes** the allocation: reservations are consumed and ledger entries posted.
 7. **Expired/Cancelled allocations** merge reservations back to the withdrawal for future assignments.
@@ -18,11 +18,29 @@ Controlled by `P2P_CONFIRMATION_MODE`:
 - `ADMIN`: admin verification only.
 - `BOTH`: both receiver confirmation and admin verification required.
 
+## Statuses
+### Withdraw (P2P)
+- CREATED, VALIDATED, WAITING_ASSIGNMENT, PARTIALLY_ASSIGNED, FULLY_ASSIGNED, PARTIALLY_SETTLED, SETTLED, CANCELLED, EXPIRED
+
+### Deposit (P2P)
+- CREATED, WAITING_ASSIGNMENT, PARTIALLY_ASSIGNED, FULLY_ASSIGNED, PARTIALLY_SETTLED, SETTLED, CANCELLED, EXPIRED
+
+### Allocation
+- ASSIGNED, PROOF_SUBMITTED, RECEIVER_CONFIRMED, ADMIN_VERIFIED, SETTLED, DISPUTED, CANCELLED, EXPIRED
+
+## Channels & Payment Method
+- Withdrawal channel: `USER_TO_USER` (default for P2P) or `USER_TO_ORG`.
+- Allocation payment method: `CARD_TO_CARD`, `SATNA`, `PAYA`, `TRANSFER`, `UNKNOWN`.
+
+## Attachments
+Proofs are stored as attachment links (`AttachmentLink`) with metadata only. APIs return file metadata (id, name, mime, size) and never expose raw storage URLs. Payer uploads proof file IDs to attach them to the allocation.
+
 ## Endpoints
 ### Admin
 - `GET /admin/p2p/withdrawals`
 - `GET /admin/p2p/withdrawals/:id/candidates`
 - `POST /admin/p2p/withdrawals/:id/assign`
+- `GET /admin/p2p/allocations`
 - `POST /admin/p2p/allocations/:id/verify`
 - `POST /admin/p2p/allocations/:id/finalize`
 - `POST /admin/p2p/allocations/:id/cancel`
@@ -43,15 +61,26 @@ Controlled by `P2P_CONFIRMATION_MODE`:
 - `GET /admin/destinations?direction=COLLECTION`
 - `POST /admin/destinations/system`
 
-## Status Transitions
-### P2PAllocation
-- `ASSIGNED` -> `PROOF_SUBMITTED` (payer uploads proof)
-- `PROOF_SUBMITTED` -> `RECEIVER_CONFIRMED` (receiver confirms)
-- `PROOF_SUBMITTED` -> `ADMIN_VERIFIED` (admin verifies)
-- `RECEIVER_CONFIRMED` + `ADMIN_VERIFIED` -> `SETTLED` (finalized)
-- Any non-settled -> `DISPUTED` (receiver or admin rejects)
-- `ASSIGNED|PROOF_SUBMITTED` -> `EXPIRED` (worker)
-- Admin can set `CANCELLED`
+## List Filters & Sorts
+### Admin Withdrawals
+Filters: status, userId, mobile, amountMin/max, remainingToAssignMin, createdFrom/To, destinationBank, destinationType, hasDispute, hasProof.
+Sort: createdAt_desc/asc, amount_desc/asc, remainingToAssign_desc/asc, priority.
+
+### Admin Candidates (Deposits)
+Filters: status, userId, mobile, remainingMin, createdFrom/To.
+Sort: remaining_desc, createdAt_asc/desc.
+
+### Admin Allocations
+Filters: status, withdrawalId, depositId, payerUserId, receiverUserId, method, hasProof, receiverConfirmed, adminVerified, expired, createdFrom/To, paidFrom/To.
+Sort: createdAt_desc, expiresAt_asc, paidAt_desc, amount_desc.
+
+### Payer Allocations
+Filters: status (default ASSIGNED,PROOF_SUBMITTED), expiresSoon.
+Sort: expiresAt_asc, createdAt_desc.
+
+### Receiver Allocations
+Filters: status (default PROOF_SUBMITTED,DISPUTED).
+Sort: paidAt_desc (fallback createdAt_desc).
 
 ## Environment Variables
 - `P2P_ALLOCATION_TTL_MINUTES` (default 1440)

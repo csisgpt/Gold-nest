@@ -7,29 +7,20 @@ import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import {
+  AdminP2PAllocationsQueryDto,
+  AdminP2PWithdrawalCandidatesQueryDto,
   AdminP2PWithdrawalsQueryDto,
-  P2PAllocationAdminViewDto,
-  P2PAllocationPayerViewDto,
+  AllocationVmDto,
+  DepositVmDto,
+  P2PAdminVerifyDto,
   P2PAllocationProofDto,
   P2PAllocationQueryDto,
-  P2PAllocationReceiverViewDto,
   P2PAssignRequestDto,
+  P2PListResponseDto,
   P2PReceiverConfirmDto,
-  P2PAdminVerifyDto,
-  P2PWithdrawalCandidatesItemDto,
-  P2PWithdrawalAdminListItemDto,
+  WithdrawalVmDto,
 } from './dto/p2p-allocations.dto';
 import { P2PAllocationsService } from './p2p-allocations.service';
-import { PaginatedResponseDto, PaginationMetaDto } from '../../common/pagination/dto/pagination-meta.dto';
-import { ApiProperty } from '@nestjs/swagger';
-
-class PaginatedP2PWithdrawalResponseDto extends PaginatedResponseDto<P2PWithdrawalAdminListItemDto> {
-  @ApiProperty({ type: [P2PWithdrawalAdminListItemDto] })
-  items!: P2PWithdrawalAdminListItemDto[];
-
-  @ApiProperty({ type: () => PaginationMetaDto })
-  meta!: PaginationMetaDto;
-}
 
 @ApiTags('p2p-allocations')
 @ApiBearerAuth('access-token')
@@ -40,22 +31,22 @@ export class P2PAllocationsController {
 
   @Get('admin/p2p/withdrawals')
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: PaginatedP2PWithdrawalResponseDto })
+  @ApiOkResponse({ type: P2PListResponseDto<WithdrawalVmDto> })
   listAdminWithdrawals(@Query() query: AdminP2PWithdrawalsQueryDto) {
     return this.p2pService.listAdminWithdrawals(query);
   }
 
   @Get('admin/p2p/withdrawals/:id/candidates')
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: [P2PWithdrawalCandidatesItemDto] })
-  listCandidates(@Param('id') id: string) {
-    return this.p2pService.listCandidates(id);
+  @ApiOkResponse({ type: P2PListResponseDto<DepositVmDto> })
+  listCandidates(@Param('id') id: string, @Query() query: AdminP2PWithdrawalCandidatesQueryDto) {
+    return this.p2pService.listCandidates(id, query);
   }
 
   @Post('admin/p2p/withdrawals/:id/assign')
   @Roles(UserRole.ADMIN)
   @ApiHeader({ name: 'Idempotency-Key', required: false })
-  @ApiOkResponse({ type: [P2PAllocationAdminViewDto] })
+  @ApiOkResponse({ type: [AllocationVmDto] })
   assignAllocations(
     @Param('id') id: string,
     @Body() dto: P2PAssignRequestDto,
@@ -65,55 +56,58 @@ export class P2PAllocationsController {
     return this.p2pService.assignAllocations(id, dto, key);
   }
 
+  @Get('admin/p2p/allocations')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: P2PListResponseDto<AllocationVmDto> })
+  listAdminAllocations(@Query() query: AdminP2PAllocationsQueryDto) {
+    return this.p2pService.listAdminAllocations(query);
+  }
+
   @Post('admin/p2p/allocations/:id/verify')
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: P2PAllocationAdminViewDto })
+  @ApiOkResponse({ type: AllocationVmDto })
   verifyAllocation(@Param('id') id: string, @Body() dto: P2PAdminVerifyDto, @CurrentUser() admin: JwtRequestUser) {
-    return this.p2pService.adminVerify(id, admin.id, dto.approved);
+    return this.p2pService.adminVerify(id, admin.id, dto.approved, dto.note);
   }
 
   @Post('admin/p2p/allocations/:id/finalize')
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: P2PAllocationAdminViewDto })
+  @ApiOkResponse({ type: AllocationVmDto })
   finalizeAllocation(@Param('id') id: string, @CurrentUser() admin: JwtRequestUser) {
     return this.p2pService.finalizeAllocation(id, admin.id);
   }
 
   @Post('admin/p2p/allocations/:id/cancel')
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: P2PAllocationAdminViewDto })
+  @ApiOkResponse({ type: AllocationVmDto })
   cancelAllocation(@Param('id') id: string) {
     return this.p2pService.cancelAllocation(id);
   }
 
   @Get('p2p/allocations/my-as-payer')
-  @ApiOkResponse({ type: [P2PAllocationPayerViewDto] })
+  @ApiOkResponse({ type: P2PListResponseDto<AllocationVmDto> })
   listMyAsPayer(@CurrentUser() user: JwtRequestUser, @Query() query: P2PAllocationQueryDto) {
-    return this.p2pService.listMyAllocationsAsPayer(user.id, query.status);
+    return this.p2pService.listMyAllocationsAsPayer(user.id, query);
   }
 
   @Post('p2p/allocations/:id/proof')
-  @ApiOkResponse({ type: P2PAllocationPayerViewDto })
+  @ApiOkResponse({ type: AllocationVmDto })
   submitProof(
     @Param('id') id: string,
     @CurrentUser() user: JwtRequestUser,
     @Body() dto: P2PAllocationProofDto,
   ) {
-    return this.p2pService.submitPayerProof(id, user.id, {
-      bankRef: dto.bankRef,
-      proofFileId: dto.proofFileId,
-      paidAt: dto.paidAt,
-    });
+    return this.p2pService.submitPayerProof(id, user.id, dto);
   }
 
   @Get('p2p/allocations/my-as-receiver')
-  @ApiOkResponse({ type: [P2PAllocationReceiverViewDto] })
+  @ApiOkResponse({ type: P2PListResponseDto<AllocationVmDto> })
   listMyAsReceiver(@CurrentUser() user: JwtRequestUser, @Query() query: P2PAllocationQueryDto) {
-    return this.p2pService.listMyAllocationsAsReceiver(user.id, query.status);
+    return this.p2pService.listMyAllocationsAsReceiver(user.id, query);
   }
 
   @Post('p2p/allocations/:id/receiver-confirm')
-  @ApiOkResponse({ type: P2PAllocationReceiverViewDto })
+  @ApiOkResponse({ type: AllocationVmDto })
   receiverConfirm(
     @Param('id') id: string,
     @CurrentUser() user: JwtRequestUser,
