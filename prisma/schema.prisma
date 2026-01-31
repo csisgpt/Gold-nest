@@ -618,6 +618,7 @@ model AccountTx {
   reversals    AccountTx[] @relation("AccountTxReversal")
 
   @@index([refType, refId])
+  @@unique([refType, refId, accountId])
 }
 
 model Trade {
@@ -849,6 +850,7 @@ model PaymentDestination {
   withdrawals WithdrawRequest[]
 
   @@index([ownerUserId, direction, status])
+  @@index([ownerUserId, direction, type, encryptedValueHash])
 }
 
 model P2PAllocation {
@@ -869,7 +871,6 @@ model P2PAllocation {
 
   paymentMethod PaymentMethod @default(UNKNOWN)
   payerBankRef String?
-  payerProofFileId String?
   proofSubmittedAt DateTime?
   payerPaidAt DateTime?
   receiverConfirmedAt DateTime?
@@ -1048,6 +1049,7 @@ model File {
   label String?
 
   attachments Attachment[]
+  attachmentLinks AttachmentLink[]
 }
 
 model Attachment {

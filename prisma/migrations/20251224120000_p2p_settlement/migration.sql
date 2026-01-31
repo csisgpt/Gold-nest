@@ -81,6 +81,7 @@ CREATE TABLE "PaymentDestination" (
 );
 
 CREATE INDEX "PaymentDestination_ownerUserId_direction_status_idx" ON "PaymentDestination"("ownerUserId", "direction", "status");
+CREATE INDEX "PaymentDestination_ownerUserId_direction_type_hash_idx" ON "PaymentDestination"("ownerUserId", "direction", "type", "encryptedValueHash");
 
 -- P2P allocations
 CREATE TABLE "P2PAllocation" (
@@ -96,7 +97,6 @@ CREATE TABLE "P2PAllocation" (
   "destinationSnapshot" JSONB NOT NULL,
   "paymentMethod" "PaymentMethod" NOT NULL DEFAULT 'UNKNOWN',
   "payerBankRef" TEXT,
-  "payerProofFileId" TEXT,
   "proofSubmittedAt" TIMESTAMP(3),
   "payerPaidAt" TIMESTAMP(3),
   "receiverConfirmedAt" TIMESTAMP(3),
@@ -153,6 +153,9 @@ CREATE INDEX "DepositRequest_purpose_status_createdAt_idx" ON "DepositRequest"("
 CREATE INDEX "DepositRequest_userId_createdAt_idx" ON "DepositRequest"("userId", "createdAt");
 CREATE INDEX "WithdrawRequest_purpose_status_createdAt_idx" ON "WithdrawRequest"("purpose", "status", "createdAt");
 CREATE INDEX "WithdrawRequest_userId_createdAt_idx" ON "WithdrawRequest"("userId", "createdAt");
+
+-- AccountTx unique guard
+CREATE UNIQUE INDEX "AccountTx_refType_refId_accountId_key" ON "AccountTx"("refType", "refId", "accountId");
 
 -- FKs
 ALTER TABLE "WithdrawRequest"

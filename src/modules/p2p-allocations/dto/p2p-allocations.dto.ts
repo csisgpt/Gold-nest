@@ -52,6 +52,7 @@ export enum P2PWithdrawalListSort {
   REMAINING_DESC = 'remainingToAssign_desc',
   REMAINING_ASC = 'remainingToAssign_asc',
   PRIORITY = 'priority',
+  NEAREST_EXPIRE_ASC = 'nearestExpire_asc',
 }
 
 export enum P2PCandidateSort {
@@ -100,6 +101,11 @@ export class AdminP2PWithdrawalsQueryDto extends ListQueryDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsNumberString()
+  remainingToAssignMax?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsISO8601()
   createdFrom?: string;
 
@@ -127,6 +133,11 @@ export class AdminP2PWithdrawalsQueryDto extends ListQueryDto {
   @IsOptional()
   @IsBoolean()
   hasProof?: boolean;
+
+  @ApiPropertyOptional({ description: 'Allocation expiring within N minutes.' })
+  @IsOptional()
+  @IsNumberString()
+  expiringSoonMinutes?: string;
 
   @ApiPropertyOptional({ enum: P2PWithdrawalListSort })
   @IsOptional()
@@ -164,6 +175,11 @@ export class AdminP2PWithdrawalCandidatesQueryDto extends ListQueryDto {
   @IsOptional()
   @IsISO8601()
   createdTo?: string;
+
+  @ApiPropertyOptional({ description: 'Exclude a specific user from candidates.' })
+  @IsOptional()
+  @IsString()
+  excludeUserId?: string;
 
   @ApiPropertyOptional({ enum: P2PCandidateSort })
   @IsOptional()
@@ -221,6 +237,16 @@ export class AdminP2PAllocationsQueryDto extends ListQueryDto {
   @IsOptional()
   @IsBoolean()
   expired?: boolean;
+
+  @ApiPropertyOptional({ description: 'Allocation expiring within N minutes.' })
+  @IsOptional()
+  @IsNumberString()
+  expiresSoonMinutes?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankRef?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -411,6 +437,12 @@ export class WithdrawalVmDto {
   @ApiPropertyOptional({ type: () => WithdrawalDestinationDto, nullable: true })
   destination?: WithdrawalDestinationDto | null;
 
+  @ApiProperty({
+    description: 'Computed flags for ops UI.',
+    type: () => WithdrawalFlagsDto,
+  })
+  flags!: WithdrawalFlagsDto;
+
   @ApiProperty()
   createdAt!: Date;
 
@@ -464,6 +496,9 @@ export class DepositVmDto {
 
   @ApiProperty({ type: () => DepositActionsDto })
   actions!: DepositActionsDto;
+
+  @ApiProperty({ type: () => DepositFlagsDto })
+  flags!: DepositFlagsDto;
 }
 
 export class AllocationPaymentDto {
@@ -515,8 +550,11 @@ export class AllocationDestinationDto {
   @ApiPropertyOptional({ nullable: true })
   ownerName?: string | null;
 
-  @ApiProperty()
-  fullValue!: string;
+  @ApiPropertyOptional({ nullable: true })
+  title?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  fullValue?: string | null;
 
   @ApiProperty()
   masked!: string;
@@ -595,12 +633,76 @@ export class AllocationVmDto {
   @ApiPropertyOptional({ type: () => AllocationDestinationDto, nullable: true })
   destinationToPay?: AllocationDestinationDto | null;
 
+  @ApiPropertyOptional()
+  expiresInSeconds?: number;
+
+  @ApiPropertyOptional()
+  destinationCopyText?: string;
+
   @ApiProperty({ type: () => AllocationTimestampDto })
   timestamps!: AllocationTimestampDto;
+
+  @ApiProperty({ type: () => AllocationFlagsDto })
+  flags!: AllocationFlagsDto;
 
   @ApiProperty()
   createdAt!: Date;
 
   @ApiProperty({ type: () => AllocationActionsDto })
   actions!: AllocationActionsDto;
+}
+
+export class WithdrawalFlagsDto {
+  @ApiProperty()
+  hasDispute!: boolean;
+
+  @ApiProperty()
+  hasProof!: boolean;
+
+  @ApiProperty()
+  hasExpiringAllocations!: boolean;
+
+  @ApiProperty()
+  isUrgent!: boolean;
+}
+
+export class DepositFlagsDto {
+  @ApiProperty()
+  isFullyAvailable!: boolean;
+
+  @ApiProperty()
+  isExpiring!: boolean;
+}
+
+export class AllocationFlagsDto {
+  @ApiProperty()
+  isExpired!: boolean;
+
+  @ApiProperty()
+  expiresSoon!: boolean;
+
+  @ApiProperty()
+  hasProof!: boolean;
+
+  @ApiProperty()
+  isFinalizable!: boolean;
+}
+
+export class P2POpsSummaryDto {
+  @ApiProperty()
+  withdrawals!: {
+    waitingAssignmentCount: number;
+    partiallyAssignedCount: number;
+    fullyAssignedCount: number;
+  };
+
+  @ApiProperty()
+  allocations!: {
+    expiringSoonCount: number;
+    proofSubmittedCount: number;
+    receiverConfirmedCount: number;
+    adminVerifiedCount: number;
+    disputedCount: number;
+    finalizableCount: number;
+  };
 }

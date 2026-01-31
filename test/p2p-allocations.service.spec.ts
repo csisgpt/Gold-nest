@@ -128,7 +128,6 @@ function makeFakePrisma() {
           createdAt: new Date(),
           updatedAt: new Date(),
           payerBankRef: null,
-          payerProofFileId: null,
           payerPaidAt: null,
           proofSubmittedAt: null,
           paymentMethod: PaymentMethod.UNKNOWN,

@@ -17,6 +17,7 @@ import {
   P2PAllocationQueryDto,
   P2PAssignRequestDto,
   P2PListResponseDto,
+  P2POpsSummaryDto,
   P2PReceiverConfirmDto,
   WithdrawalVmDto,
 } from './dto/p2p-allocations.dto';
@@ -61,6 +62,13 @@ export class P2PAllocationsController {
   @ApiOkResponse({ type: P2PListResponseDto<AllocationVmDto> })
   listAdminAllocations(@Query() query: AdminP2PAllocationsQueryDto) {
     return this.p2pService.listAdminAllocations(query);
+  }
+
+  @Get('admin/p2p/ops-summary')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: P2POpsSummaryDto, description: 'Operational summary for P2P flows.' })
+  getOpsSummary() {
+    return this.p2pService.getOpsSummary();
   }
 
   @Post('admin/p2p/allocations/:id/verify')

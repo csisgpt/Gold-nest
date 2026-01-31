@@ -33,7 +33,13 @@ Controlled by `P2P_CONFIRMATION_MODE`:
 - Allocation payment method: `CARD_TO_CARD`, `SATNA`, `PAYA`, `TRANSFER`, `UNKNOWN`.
 
 ## Attachments
-Proofs are stored as attachment links (`AttachmentLink`) with metadata only. APIs return file metadata (id, name, mime, size) and never expose raw storage URLs. Payer uploads proof file IDs to attach them to the allocation.
+Proofs are stored as attachment links (`AttachmentLink`) with metadata only. APIs return file metadata (id, name, mime, size) and never expose raw storage URLs. Payer uploads proof file IDs to attach them to the allocation. File preview/download is authorized for:
+- Admins
+- Payer (deposit owner)
+- Receiver (withdrawal owner)
+Other users cannot access proof files; the UI must call Files API for preview/download.
+
+Destination values are masked in admin/receiver lists. Full destination values are only returned to the payer for allocations assigned to them.
 
 ## Endpoints
 ### Admin
@@ -41,6 +47,7 @@ Proofs are stored as attachment links (`AttachmentLink`) with metadata only. API
 - `GET /admin/p2p/withdrawals/:id/candidates`
 - `POST /admin/p2p/withdrawals/:id/assign`
 - `GET /admin/p2p/allocations`
+- `GET /admin/p2p/ops-summary`
 - `POST /admin/p2p/allocations/:id/verify`
 - `POST /admin/p2p/allocations/:id/finalize`
 - `POST /admin/p2p/allocations/:id/cancel`
@@ -63,15 +70,15 @@ Proofs are stored as attachment links (`AttachmentLink`) with metadata only. API
 
 ## List Filters & Sorts
 ### Admin Withdrawals
-Filters: status, userId, mobile, amountMin/max, remainingToAssignMin, createdFrom/To, destinationBank, destinationType, hasDispute, hasProof.
-Sort: createdAt_desc/asc, amount_desc/asc, remainingToAssign_desc/asc, priority.
+Filters: status, userId, mobile, amountMin/max, remainingToAssignMin/Max, createdFrom/To, destinationBank, destinationType, hasDispute, hasProof, expiringSoonMinutes.
+Sort: priority (default), createdAt_desc/asc, amount_desc/asc, remainingToAssign_desc/asc, nearestExpire_asc.
 
 ### Admin Candidates (Deposits)
-Filters: status, userId, mobile, remainingMin, createdFrom/To.
+Filters: status, userId, mobile, remainingMin, createdFrom/To, excludeUserId.
 Sort: remaining_desc, createdAt_asc/desc.
 
 ### Admin Allocations
-Filters: status, withdrawalId, depositId, payerUserId, receiverUserId, method, hasProof, receiverConfirmed, adminVerified, expired, createdFrom/To, paidFrom/To.
+Filters: status, withdrawalId, depositId, payerUserId, receiverUserId, method, hasProof (proof attachments), bankRef, receiverConfirmed, adminVerified, expired, expiresSoonMinutes, createdFrom/To, paidFrom/To.
 Sort: createdAt_desc, expiresAt_asc, paidAt_desc, amount_desc.
 
 ### Payer Allocations
@@ -79,10 +86,14 @@ Filters: status (default ASSIGNED,PROOF_SUBMITTED), expiresSoon.
 Sort: expiresAt_asc, createdAt_desc.
 
 ### Receiver Allocations
-Filters: status (default PROOF_SUBMITTED,DISPUTED).
-Sort: paidAt_desc (fallback createdAt_desc).
+Filters: status (default PROOF_SUBMITTED), expiresSoon.
+Sort: paidAt_desc (fallback updatedAt_desc).
 
 ## Environment Variables
 - `P2P_ALLOCATION_TTL_MINUTES` (default 1440)
 - `P2P_CONFIRMATION_MODE` (default RECEIVER)
 - `DESTINATION_ENCRYPTION_KEY` (required for secure encryption)
+
+## Ops Dashboard Tips
+- Use `GET /admin/p2p/ops-summary` for fast counts.
+- Recommended tabs: waiting assignment, expiring soon, proof submitted, disputes, finalizable.

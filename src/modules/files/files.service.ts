@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import {
   AttachmentEntityType,
+  AttachmentLinkEntityType,
   Prisma,
   PrismaClient,
   UserRole,
@@ -114,7 +115,7 @@ export class FilesService {
   async getFileAuthorized(fileId: string, actor: JwtRequestUser) {
     const file = await this.prisma.file.findUnique({
       where: { id: fileId },
-      include: { attachments: true },
+      include: { attachments: true, attachmentLinks: true },
     });
     if (!file) {
       throw new NotFoundException('File not found');
@@ -122,7 +123,7 @@ export class FilesService {
     if (actor?.role === UserRole.ADMIN) return file;
     if (file.uploadedById === actor?.id) return file;
 
-    if (file.attachments.length === 0) {
+    if (file.attachments.length === 0 && file.attachmentLinks.length === 0) {
       throw new ForbiddenException('You do not have access to this file');
     }
 
@@ -130,6 +131,14 @@ export class FilesService {
       file.attachments,
       actor.id,
     );
+
+    if (!isLinked && file.attachmentLinks.length > 0) {
+      const isLinkOwner = await this.isActorOwnerOfAttachmentLinks(
+        file.attachmentLinks,
+        actor.id,
+      );
+      if (isLinkOwner) return file;
+    }
 
     if (!isLinked) {
       throw new ForbiddenException('You do not have access to this file');
@@ -252,7 +261,7 @@ export class FilesService {
   async deleteFileAsUser(fileId: string, actor: JwtRequestUser) {
     const file = await this.prisma.file.findUnique({
       where: { id: fileId },
-      include: { _count: { select: { attachments: true } } },
+      include: { _count: { select: { attachments: true, attachmentLinks: true } } },
     });
 
     if (!file) {
@@ -263,7 +272,7 @@ export class FilesService {
       throw new ForbiddenException('You do not have access to this file');
     }
 
-    if (file._count.attachments > 0) {
+    if (file._count.attachments > 0 || file._count.attachmentLinks > 0) {
       throw new ConflictException('File is attached and cannot be deleted');
     }
 
@@ -275,20 +284,21 @@ export class FilesService {
   async deleteFileAsAdmin(fileId: string, query: DeleteFileQueryDto) {
     const file = await this.prisma.file.findUnique({
       where: { id: fileId },
-      include: { _count: { select: { attachments: true } } },
+      include: { _count: { select: { attachments: true, attachmentLinks: true } } },
     });
 
     if (!file) {
       throw new NotFoundException('File not found');
     }
 
-    if (file._count.attachments > 0 && !query.force) {
+    if ((file._count.attachments > 0 || file._count.attachmentLinks > 0) && !query.force) {
       throw new ConflictException('File is attached and cannot be deleted');
     }
 
     await this.prisma.$transaction(async (tx) => {
       if (query.force) {
         await tx.attachment.deleteMany({ where: { fileId } });
+        await tx.attachmentLink.deleteMany({ where: { fileId } });
       }
 
       await tx.file.delete({ where: { id: fileId } });
@@ -452,6 +462,29 @@ export class FilesService {
     }
 
     return false;
+  }
+
+  private async isActorOwnerOfAttachmentLinks(
+    attachmentLinks: { entityType: AttachmentLinkEntityType; entityId: string }[],
+    actorId: string,
+  ): Promise<boolean> {
+    const allocationIds = attachmentLinks
+      .filter((link) => link.entityType === AttachmentLinkEntityType.P2P_ALLOCATION)
+      .map((link) => link.entityId);
+    if (allocationIds.length === 0) return false;
+
+    const allocations = await this.prisma.p2PAllocation.findMany({
+      where: { id: { in: allocationIds } },
+      select: {
+        id: true,
+        deposit: { select: { userId: true } },
+        withdrawal: { select: { userId: true } },
+      },
+    });
+
+    return allocations.some(
+      (allocation) => allocation.deposit.userId === actorId || allocation.withdrawal.userId === actorId,
+    );
   }
 
 }

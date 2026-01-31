@@ -44,6 +44,9 @@ import { deriveDepositP2PStatus, deriveWithdrawP2PStatus } from './p2p-status.ut
 import { maskDestinationValue } from '../payment-destinations/payment-destinations.crypto';
 
 const DEFAULT_TTL_MINUTES = 1440;
+const DEFAULT_EXPIRING_SOON_MINUTES = 60;
+const URGENT_AGE_HOURS = 24;
+const URGENT_REMAINING_THRESHOLD = new Decimal(10_000_000);
 const P2PAllocationStatusEnum =
   (P2PAllocationStatus as any) ??
   ({
@@ -125,6 +128,12 @@ export class P2PAllocationsService {
     return Number.isFinite(value) && value > 0 ? value : DEFAULT_TTL_MINUTES;
   }
 
+  private getExpiringSoonThreshold(minutes?: string): Date {
+    const parsed = Number(minutes ?? DEFAULT_EXPIRING_SOON_MINUTES);
+    const clamped = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXPIRING_SOON_MINUTES;
+    return new Date(Date.now() + clamped * 60_000);
+  }
+
   private getConfirmationMode(): P2PConfirmationMode {
     const raw = String(process.env.P2P_CONFIRMATION_MODE ?? 'RECEIVER').toUpperCase();
     if (raw === 'ADMIN') return P2PConfirmationModeEnum.ADMIN;
@@ -177,6 +186,12 @@ export class P2PAllocationsService {
 
   private allocationExpired(allocation: { expiresAt: Date }): boolean {
     return allocation.expiresAt.getTime() <= Date.now();
+  }
+
+  private allocationExpiresSoon(allocation: { expiresAt: Date }, threshold?: Date): boolean {
+    const check = threshold ?? this.getExpiringSoonThreshold();
+    const now = Date.now();
+    return allocation.expiresAt.getTime() <= check.getTime() && allocation.expiresAt.getTime() > now;
   }
 
   private generatePaymentCode(): string {
@@ -240,10 +255,20 @@ export class P2PAllocationsService {
     cardNumber: string | null;
     createdAt: Date;
     updatedAt: Date;
+    flags?: {
+      hasDispute?: boolean;
+      hasProof?: boolean;
+      hasExpiringAllocations?: boolean;
+    };
   }): WithdrawalVmDto {
     const remainingToAssign = subDec(withdrawal.amount, withdrawal.assignedAmountTotal);
     const remainingToSettle = subDec(withdrawal.amount, withdrawal.settledAmountTotal);
-    const destinationSnapshot = withdrawal.destinationSnapshot as { maskedValue?: string; type?: PaymentDestinationType } | null;
+    const destinationSnapshot = withdrawal.destinationSnapshot as {
+      maskedValue?: string;
+      type?: PaymentDestinationType;
+      title?: string | null;
+      bankName?: string | null;
+    } | null;
     const masked = destinationSnapshot?.maskedValue
       ?? (withdrawal.iban ? maskDestinationValue(withdrawal.iban) : withdrawal.cardNumber ? maskDestinationValue(withdrawal.cardNumber) : null);
 
@@ -251,6 +276,14 @@ export class P2PAllocationsService {
     const closed = [WithdrawStatusEnum.CANCELLED, WithdrawStatusEnum.EXPIRED, WithdrawStatusEnum.SETTLED].includes(status);
     const canAssign = remainingToAssign.gt(0) && !closed;
     const canCancel = withdrawal.settledAmountTotal.eq(0) && !closed;
+    const hasExpiringAllocations = withdrawal.flags?.hasExpiringAllocations ?? false;
+    const hasDispute = withdrawal.flags?.hasDispute ?? false;
+    const hasProof = withdrawal.flags?.hasProof ?? false;
+    const urgentAgeCutoff = new Date(Date.now() - URGENT_AGE_HOURS * 60 * 60 * 1000);
+    const isUrgent =
+      hasExpiringAllocations ||
+      remainingToAssign.gt(URGENT_REMAINING_THRESHOLD) ||
+      withdrawal.createdAt < urgentAgeCutoff;
 
     return {
       id: withdrawal.id,
@@ -268,10 +301,16 @@ export class P2PAllocationsService {
         ? {
             type: destinationSnapshot?.type ?? (withdrawal.iban ? PaymentDestinationTypeEnum.IBAN : PaymentDestinationTypeEnum.CARD),
             masked,
-            bankName: withdrawal.bankName ?? null,
-            title: null,
+            bankName: destinationSnapshot?.bankName ?? withdrawal.bankName ?? null,
+            title: destinationSnapshot?.title ?? null,
           }
         : null,
+      flags: {
+        hasDispute,
+        hasProof,
+        hasExpiringAllocations,
+        isUrgent,
+      },
       createdAt: withdrawal.createdAt,
       updatedAt: withdrawal.updatedAt,
       actions: {
@@ -295,6 +334,7 @@ export class P2PAllocationsService {
   }): DepositVmDto {
     const remaining = dec(deposit.remainingAmount ?? deposit.amount);
     const closed = [DepositStatusEnum.CANCELLED, DepositStatusEnum.EXPIRED, DepositStatusEnum.SETTLED].includes(deposit.status);
+    const isFullyAvailable = remaining.eq(deposit.amount);
 
     return {
       id: deposit.id,
@@ -312,35 +352,49 @@ export class P2PAllocationsService {
         canCancel: deposit.settledAmountTotal.eq(0) && !closed,
         canBeAssigned: remaining.gt(0) && !closed,
       },
+      flags: {
+        isFullyAvailable,
+        isExpiring: deposit.status === DepositStatusEnum.EXPIRED,
+      },
     };
   }
 
   private buildAllocationVm(params: {
     allocation: any;
     attachments: AllocationAttachmentDto[];
-    includeDestination: boolean;
+    destinationMode: 'full' | 'masked' | 'none';
+    includePayerExtras?: boolean;
+    expiresSoonThreshold?: Date;
   }): AllocationVmDto {
-    const { allocation, attachments, includeDestination } = params;
+    const { allocation, attachments, destinationMode, includePayerExtras, expiresSoonThreshold } = params;
     const snapshot = allocation.destinationSnapshot as {
       type: PaymentDestinationType;
       value?: string;
       maskedValue?: string;
       bankName?: string | null;
       ownerName?: string | null;
+      title?: string | null;
     };
 
-    const destination: AllocationDestinationDto | null = includeDestination
-      ? {
-          type: snapshot.type,
-          bankName: snapshot.bankName ?? null,
-          ownerName: snapshot.ownerName ?? null,
-          fullValue: snapshot.value ?? '',
-          masked: snapshot.maskedValue ?? maskDestinationValue(snapshot.value ?? ''),
-        }
-      : null;
+    const destination: AllocationDestinationDto | null =
+      destinationMode === 'none'
+        ? null
+        : {
+            type: snapshot.type,
+            bankName: snapshot.bankName ?? null,
+            ownerName: snapshot.ownerName ?? null,
+            title: snapshot.title ?? null,
+            fullValue: destinationMode === 'full' ? snapshot.value ?? '' : null,
+            masked: snapshot.maskedValue ?? maskDestinationValue(snapshot.value ?? ''),
+          };
 
     const expired = this.allocationExpired(allocation);
+    const expiresSoon = this.allocationExpiresSoon(allocation, expiresSoonThreshold);
     const adminCanFinalize = this.isFinalizable(allocation) && !expired && allocation.status !== P2PAllocationStatusEnum.SETTLED;
+    const hasProof = attachments.length > 0 || allocation.proofSubmittedAt != null;
+    const expiresInSeconds = includePayerExtras
+      ? Math.max(0, Math.floor((allocation.expiresAt.getTime() - Date.now()) / 1000))
+      : undefined;
 
     return {
       id: allocation.id,
@@ -367,11 +421,21 @@ export class P2PAllocationsService {
       },
       attachments,
       destinationToPay: destination,
+      expiresInSeconds,
+      destinationCopyText: includePayerExtras
+        ? this.buildDestinationCopyText(snapshot)
+        : undefined,
       timestamps: {
         proofSubmittedAt: allocation.proofSubmittedAt ?? null,
         receiverConfirmedAt: allocation.receiverConfirmedAt ?? null,
         adminVerifiedAt: allocation.adminVerifiedAt ?? null,
         settledAt: allocation.settledAt ?? null,
+      },
+      flags: {
+        isExpired: expired,
+        expiresSoon,
+        hasProof,
+        isFinalizable: this.isFinalizable(allocation) && !expired,
       },
       createdAt: allocation.createdAt,
       actions: {
@@ -416,100 +480,222 @@ export class P2PAllocationsService {
     return map;
   }
 
-  async listAdminWithdrawals(query: AdminP2PWithdrawalsQueryDto): Promise<P2PListResponseDto<WithdrawalVmDto>> {
-    const { skip, take, page, limit } = this.paginationService.getSkipTake(query.page, query.limit);
-    const statusList = this.parseStatusFilter(query.status);
-    const allocationsFilter =
-      query.hasDispute && query.hasProof
-        ? { some: { AND: [{ status: P2PAllocationStatusEnum.DISPUTED }, { proofSubmittedAt: { not: null } }] } }
-        : query.hasDispute
-          ? { some: { status: P2PAllocationStatusEnum.DISPUTED } }
-          : query.hasProof
-            ? { some: { proofSubmittedAt: { not: null } } }
-            : undefined;
+  private buildDestinationCopyText(snapshot?: {
+    title?: string | null;
+    bankName?: string | null;
+    ownerName?: string | null;
+    value?: string;
+  }): string | undefined {
+    if (!snapshot?.value) return undefined;
+    const parts = [];
+    if (snapshot.title) parts.push(snapshot.title);
+    if (snapshot.bankName) parts.push(snapshot.bankName);
+    if (snapshot.ownerName) parts.push(snapshot.ownerName);
+    parts.push(snapshot.value);
+    return parts.join('\n');
+  }
 
-    const where: Prisma.WithdrawRequestWhereInput = {
-      purpose: RequestPurposeEnum.P2P,
-      status: statusList ? { in: statusList as WithdrawStatus[] } : undefined,
-      userId: query.userId,
-      amount: {
-        gte: query.amountMin ? new Decimal(query.amountMin) : undefined,
-        lte: query.amountMax ? new Decimal(query.amountMax) : undefined,
+  private buildFinalizableWhere(): Prisma.P2PAllocationWhereInput {
+    const base = {
+      status: {
+        notIn: [
+          P2PAllocationStatusEnum.SETTLED,
+          P2PAllocationStatusEnum.CANCELLED,
+          P2PAllocationStatusEnum.EXPIRED,
+          P2PAllocationStatusEnum.DISPUTED,
+        ],
       },
-      createdAt:
-        query.createdFrom || query.createdTo
-          ? { gte: query.createdFrom ? new Date(query.createdFrom) : undefined, lte: query.createdTo ? new Date(query.createdTo) : undefined }
-          : undefined,
-      user: query.mobile ? { mobile: { contains: query.mobile, mode: 'insensitive' as const } } : undefined,
-      bankName: query.destinationBank ? { contains: query.destinationBank, mode: 'insensitive' as const } : undefined,
-      destinationSnapshot: query.destinationType
-        ? {
-            path: ['type'],
-            equals: query.destinationType,
-          }
-        : undefined,
-      allocations: allocationsFilter,
+      expiresAt: { gt: new Date() },
+    } as Prisma.P2PAllocationWhereInput;
+
+    const mode = this.getConfirmationMode();
+    if (mode === P2PConfirmationModeEnum.RECEIVER) {
+      return { ...base, receiverConfirmedAt: { not: null } };
+    }
+    if (mode === P2PConfirmationModeEnum.ADMIN) {
+      return { ...base, adminVerifiedAt: { not: null } };
+    }
+    return {
+      ...base,
+      receiverConfirmedAt: { not: null },
+      adminVerifiedAt: { not: null },
     };
+  }
 
-    const orderBy: Prisma.WithdrawRequestOrderByWithRelationInput[] = [{ createdAt: 'desc' }];
-    if (query.sort === P2PWithdrawalListSort.CREATED_AT_ASC) orderBy.unshift({ createdAt: 'asc' });
-    if (query.sort === P2PWithdrawalListSort.AMOUNT_ASC) orderBy.unshift({ amount: 'asc' });
-    if (query.sort === P2PWithdrawalListSort.AMOUNT_DESC) orderBy.unshift({ amount: 'desc' });
+  async listAdminWithdrawals(query: AdminP2PWithdrawalsQueryDto): Promise<P2PListResponseDto<WithdrawalVmDto>> {
+    const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+    const statusList = this.parseStatusFilter(query.status);
+    const expiringThreshold = this.getExpiringSoonThreshold(query.expiringSoonMinutes);
+    const applyExpiringFilter = query.expiringSoonMinutes !== undefined;
 
-    const [items, totalCount] = await this.prisma.$transaction([
-      this.prisma.withdrawRequest.findMany({
-        where,
-        orderBy,
-        skip,
-        take,
-        select: {
-          id: true,
-          purpose: true,
-          channel: true,
-          amount: true,
-          status: true,
-          assignedAmountTotal: true,
-          settledAmountTotal: true,
-          destinationSnapshot: true,
-          bankName: true,
-          iban: true,
-          cardNumber: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      }),
-      this.prisma.withdrawRequest.count({ where }),
+    const baseFilters: Prisma.Sql[] = [Prisma.sql`w."purpose" = ${RequestPurposeEnum.P2P}`];
+    if (statusList?.length) baseFilters.push(Prisma.sql`w."status" IN (${Prisma.join(statusList)})`);
+    if (query.userId) baseFilters.push(Prisma.sql`w."userId" = ${query.userId}`);
+    if (query.amountMin) baseFilters.push(Prisma.sql`w."amount" >= ${new Decimal(query.amountMin)}`);
+    if (query.amountMax) baseFilters.push(Prisma.sql`w."amount" <= ${new Decimal(query.amountMax)}`);
+    if (query.createdFrom) baseFilters.push(Prisma.sql`w."createdAt" >= ${new Date(query.createdFrom)}`);
+    if (query.createdTo) baseFilters.push(Prisma.sql`w."createdAt" <= ${new Date(query.createdTo)}`);
+    if (query.mobile) baseFilters.push(Prisma.sql`u."mobile" ILIKE ${`%${query.mobile}%`}`);
+    if (query.destinationBank) {
+      baseFilters.push(Prisma.sql`w."bankName" ILIKE ${`%${query.destinationBank}%`}`);
+    }
+    if (query.destinationType) {
+      baseFilters.push(Prisma.sql`w."destinationSnapshot"->>'type' = ${query.destinationType}`);
+    }
+
+    const baseWhere = Prisma.join(baseFilters, Prisma.sql` AND `);
+    const proofStatusList = Prisma.join([
+      P2PAllocationStatusEnum.PROOF_SUBMITTED,
+      P2PAllocationStatusEnum.RECEIVER_CONFIRMED,
+      P2PAllocationStatusEnum.ADMIN_VERIFIED,
+      P2PAllocationStatusEnum.SETTLED,
+    ]);
+    const expiringSql = Prisma.sql`BOOL_OR(a."status" IN (${Prisma.join([
+      P2PAllocationStatusEnum.ASSIGNED,
+      P2PAllocationStatusEnum.PROOF_SUBMITTED,
+    ])}) AND a."expiresAt" <= ${expiringThreshold})`;
+
+    const baseQuery = Prisma.sql`
+      WITH base AS (
+        SELECT
+          w.id,
+          w."purpose",
+          w."channel",
+          w."amount",
+          w."status",
+          w."assignedAmountTotal",
+          w."settledAmountTotal",
+          w."destinationSnapshot",
+          w."bankName",
+          w."iban",
+          w."cardNumber",
+          w."createdAt",
+          w."updatedAt",
+          (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
+          MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
+            P2PAllocationStatusEnum.ASSIGNED,
+            P2PAllocationStatusEnum.PROOF_SUBMITTED,
+          ])})) AS "nearestExpire",
+          BOOL_OR(a."status" = ${P2PAllocationStatusEnum.DISPUTED}) AS "hasDispute",
+          BOOL_OR(al.id IS NOT NULL OR a."status" IN (${proofStatusList})) AS "hasProof",
+          ${expiringSql} AS "hasExpiring"
+        FROM "WithdrawRequest" w
+        JOIN "User" u ON u.id = w."userId"
+        LEFT JOIN "P2PAllocation" a ON a."withdrawalId" = w.id
+        LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}
+          AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}
+          AND al."entityId" = a.id
+        WHERE ${baseWhere}
+        GROUP BY w.id, w."purpose", w."channel", w."amount", w."status", w."assignedAmountTotal", w."settledAmountTotal",
+          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt"
+      )
+      SELECT * FROM base
+      WHERE 1=1
+      ${query.remainingToAssignMin ? Prisma.sql`AND base."remainingToAssign" >= ${new Decimal(query.remainingToAssignMin)}` : Prisma.empty}
+      ${query.remainingToAssignMax ? Prisma.sql`AND base."remainingToAssign" <= ${new Decimal(query.remainingToAssignMax)}` : Prisma.empty}
+      ${query.hasDispute !== undefined ? Prisma.sql`AND base."hasDispute" = ${query.hasDispute}` : Prisma.empty}
+      ${query.hasProof !== undefined ? Prisma.sql`AND base."hasProof" = ${query.hasProof}` : Prisma.empty}
+      ${applyExpiringFilter ? Prisma.sql`AND base."hasExpiring" = true` : Prisma.empty}
+    `;
+
+    const orderBy = (() => {
+      if (query.sort === P2PWithdrawalListSort.CREATED_AT_ASC) return Prisma.sql`ORDER BY base."createdAt" ASC`;
+      if (query.sort === P2PWithdrawalListSort.AMOUNT_ASC) return Prisma.sql`ORDER BY base."amount" ASC`;
+      if (query.sort === P2PWithdrawalListSort.AMOUNT_DESC) return Prisma.sql`ORDER BY base."amount" DESC`;
+      if (query.sort === P2PWithdrawalListSort.REMAINING_ASC) return Prisma.sql`ORDER BY base."remainingToAssign" ASC`;
+      if (query.sort === P2PWithdrawalListSort.REMAINING_DESC) return Prisma.sql`ORDER BY base."remainingToAssign" DESC`;
+      if (query.sort === P2PWithdrawalListSort.PRIORITY || !query.sort) {
+        return Prisma.sql`ORDER BY base."createdAt" ASC, base."remainingToAssign" DESC`;
+      }
+      if (query.sort === P2PWithdrawalListSort.NEAREST_EXPIRE_ASC) {
+        return Prisma.sql`ORDER BY base."nearestExpire" ASC NULLS LAST`;
+      }
+      return Prisma.sql`ORDER BY base."createdAt" DESC`;
+    })();
+
+    const countQuery = Prisma.sql`SELECT COUNT(*)::int AS count FROM (${baseQuery}) AS base`;
+    const idsQuery = Prisma.sql`
+      SELECT base.id FROM (${baseQuery}) AS base
+      ${orderBy}
+      LIMIT ${take} OFFSET ${skip}
+    `;
+
+    const [countRows, idRows] = await this.prisma.$transaction([
+      this.prisma.$queryRaw<{ count: number }[]>(countQuery),
+      this.prisma.$queryRaw<{ id: string }[]>(idsQuery),
     ]);
 
-    let mapped = items.map((withdrawal) => this.buildWithdrawalVm(withdrawal));
-    let filteredTotal = totalCount;
-
-    if (query.remainingToAssignMin) {
-      const min = new Decimal(query.remainingToAssignMin);
-      mapped = mapped.filter((item) => new Decimal(item.totals.remainingToAssign).gte(min));
-      filteredTotal = mapped.length;
+    const ids = idRows.map((row) => row.id);
+    if (ids.length === 0) {
+      return {
+        data: [],
+        meta: this.buildListMeta({
+          total: countRows[0]?.count ?? 0,
+          limit,
+          sort: query.sort ?? P2PWithdrawalListSort.PRIORITY,
+          filtersApplied: {
+            status: statusList,
+            userId: query.userId,
+            mobile: query.mobile,
+            amountMin: query.amountMin,
+            amountMax: query.amountMax,
+            remainingToAssignMin: query.remainingToAssignMin,
+            remainingToAssignMax: query.remainingToAssignMax,
+            hasDispute: query.hasDispute,
+            hasProof: query.hasProof,
+            expiringSoonMinutes: query.expiringSoonMinutes,
+          },
+        }),
+      };
     }
 
-    if (query.sort === P2PWithdrawalListSort.REMAINING_ASC) {
-      mapped.sort((a, b) => new Decimal(a.totals.remainingToAssign).cmp(b.totals.remainingToAssign));
-    }
-    if (query.sort === P2PWithdrawalListSort.REMAINING_DESC) {
-      mapped.sort((a, b) => new Decimal(b.totals.remainingToAssign).cmp(a.totals.remainingToAssign));
-    }
-    if (query.sort === P2PWithdrawalListSort.PRIORITY) {
-      mapped.sort((a, b) => {
-        const dateDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-        if (dateDiff !== 0) return dateDiff;
-        return new Decimal(b.totals.remainingToAssign).cmp(a.totals.remainingToAssign);
-      });
-    }
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        purpose: RequestPurpose;
+        channel: WithdrawalChannel | null;
+        amount: Decimal;
+        status: WithdrawStatus;
+        assignedAmountTotal: Decimal;
+        settledAmountTotal: Decimal;
+        destinationSnapshot: any;
+        bankName: string | null;
+        iban: string | null;
+        cardNumber: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        hasDispute: boolean;
+        hasProof: boolean;
+        hasExpiring: boolean;
+      }>
+    >(Prisma.sql`
+      SELECT * FROM (${baseQuery}) AS base WHERE base.id IN (${Prisma.join(ids)})
+    `);
+
+    const rowMap = new Map(rows.map((row) => [row.id, row]));
+    const data = ids
+      .map((id) => rowMap.get(id))
+      .filter(Boolean)
+      .map((row) =>
+        this.buildWithdrawalVm({
+          ...row!,
+          amount: new Decimal(row!.amount),
+          assignedAmountTotal: new Decimal(row!.assignedAmountTotal),
+          settledAmountTotal: new Decimal(row!.settledAmountTotal),
+          flags: {
+            hasDispute: row!.hasDispute,
+            hasProof: row!.hasProof,
+            hasExpiringAllocations: row!.hasExpiring,
+          },
+        }),
+      );
 
     return {
-      data: mapped,
+      data,
       meta: this.buildListMeta({
-        total: filteredTotal,
+        total: countRows[0]?.count ?? 0,
         limit,
-        sort: query.sort ?? P2PWithdrawalListSort.CREATED_AT_DESC,
+        sort: query.sort ?? P2PWithdrawalListSort.PRIORITY,
         filtersApplied: {
           status: statusList,
           userId: query.userId,
@@ -517,8 +703,10 @@ export class P2PAllocationsService {
           amountMin: query.amountMin,
           amountMax: query.amountMax,
           remainingToAssignMin: query.remainingToAssignMin,
+          remainingToAssignMax: query.remainingToAssignMax,
           hasDispute: query.hasDispute,
           hasProof: query.hasProof,
+          expiringSoonMinutes: query.expiringSoonMinutes,
         },
       }),
     };
@@ -535,10 +723,11 @@ export class P2PAllocationsService {
     }
 
     const statusList = this.parseStatusFilter(query.status);
+    const excludeUserId = query.excludeUserId ?? withdrawal.userId;
     const where: Prisma.DepositRequestWhereInput = {
       purpose: RequestPurposeEnum.P2P,
       status: statusList ? { in: statusList as DepositStatus[] } : undefined,
-      userId: query.userId,
+      userId: query.userId ?? (excludeUserId ? { not: excludeUserId } : undefined),
       remainingAmount: { gt: new Decimal(0) },
       createdAt:
         query.createdFrom || query.createdTo
@@ -591,6 +780,7 @@ export class P2PAllocationsService {
           userId: query.userId,
           mobile: query.mobile,
           remainingMin: query.remainingMin,
+          excludeUserId,
         },
       }),
     };
@@ -598,60 +788,116 @@ export class P2PAllocationsService {
 
   async listAdminAllocations(query: AdminP2PAllocationsQueryDto): Promise<P2PListResponseDto<AllocationVmDto>> {
     const statusList = this.parseStatusFilter(query.status);
-    const where: Prisma.P2PAllocationWhereInput = {
-      status: statusList ? { in: statusList as P2PAllocationStatus[] } : undefined,
-      withdrawalId: query.withdrawalId,
-      depositId: query.depositId,
-      paymentMethod: query.method,
-      proofSubmittedAt: query.hasProof ? { not: null } : undefined,
-      receiverConfirmedAt: query.receiverConfirmed ? { not: null } : undefined,
-      adminVerifiedAt: query.adminVerified ? { not: null } : undefined,
-      expiresAt: query.expired ? { lt: new Date() } : undefined,
-      createdAt:
-        query.createdFrom || query.createdTo
-          ? { gte: query.createdFrom ? new Date(query.createdFrom) : undefined, lte: query.createdTo ? new Date(query.createdTo) : undefined }
-          : undefined,
-      payerPaidAt:
-        query.paidFrom || query.paidTo
-          ? { gte: query.paidFrom ? new Date(query.paidFrom) : undefined, lte: query.paidTo ? new Date(query.paidTo) : undefined }
-          : undefined,
-      deposit: query.payerUserId ? { userId: query.payerUserId } : undefined,
-      withdrawal: query.receiverUserId ? { userId: query.receiverUserId } : undefined,
-    };
-
     const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+    const expiringThreshold = this.getExpiringSoonThreshold(query.expiresSoonMinutes);
+    const applyExpiringFilter = query.expiresSoonMinutes !== undefined;
 
-    const orderBy: Prisma.P2PAllocationOrderByWithRelationInput[] = [{ createdAt: 'desc' }];
-    if (query.sort === P2PAllocationSort.EXPIRES_AT_ASC) orderBy.unshift({ expiresAt: 'asc' });
-    if (query.sort === P2PAllocationSort.PAID_AT_DESC) orderBy.unshift({ payerPaidAt: 'desc' });
-    if (query.sort === P2PAllocationSort.AMOUNT_DESC) orderBy.unshift({ amount: 'desc' });
+    const filters: Prisma.Sql[] = [];
+    if (statusList?.length) filters.push(Prisma.sql`a."status" IN (${Prisma.join(statusList)})`);
+    if (query.withdrawalId) filters.push(Prisma.sql`a."withdrawalId" = ${query.withdrawalId}`);
+    if (query.depositId) filters.push(Prisma.sql`a."depositId" = ${query.depositId}`);
+    if (query.method) filters.push(Prisma.sql`a."paymentMethod" = ${query.method}`);
+    if (query.bankRef) filters.push(Prisma.sql`a."payerBankRef" ILIKE ${`%${query.bankRef}%`}`);
+    if (query.receiverConfirmed !== undefined) {
+      filters.push(
+        Prisma.sql`a."receiverConfirmedAt" IS ${query.receiverConfirmed ? Prisma.sql`NOT NULL` : Prisma.sql`NULL`}`,
+      );
+    }
+    if (query.adminVerified !== undefined) {
+      filters.push(
+        Prisma.sql`a."adminVerifiedAt" IS ${query.adminVerified ? Prisma.sql`NOT NULL` : Prisma.sql`NULL`}`,
+      );
+    }
+    if (query.createdFrom) filters.push(Prisma.sql`a."createdAt" >= ${new Date(query.createdFrom)}`);
+    if (query.createdTo) filters.push(Prisma.sql`a."createdAt" <= ${new Date(query.createdTo)}`);
+    if (query.paidFrom) filters.push(Prisma.sql`a."payerPaidAt" >= ${new Date(query.paidFrom)}`);
+    if (query.paidTo) filters.push(Prisma.sql`a."payerPaidAt" <= ${new Date(query.paidTo)}`);
+    if (query.payerUserId) filters.push(Prisma.sql`d."userId" = ${query.payerUserId}`);
+    if (query.receiverUserId) filters.push(Prisma.sql`w."userId" = ${query.receiverUserId}`);
+    if (query.expired) {
+      filters.push(
+        Prisma.sql`a."status" IN (${Prisma.join([
+          P2PAllocationStatusEnum.ASSIGNED,
+          P2PAllocationStatusEnum.PROOF_SUBMITTED,
+        ])}) AND a."expiresAt" < ${new Date()}`,
+      );
+    }
+    if (applyExpiringFilter) {
+      filters.push(
+        Prisma.sql`a."status" IN (${Prisma.join([
+          P2PAllocationStatusEnum.ASSIGNED,
+          P2PAllocationStatusEnum.PROOF_SUBMITTED,
+        ])}) AND a."expiresAt" <= ${expiringThreshold}`,
+      );
+    }
 
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.p2PAllocation.findMany({
-        where,
-        orderBy,
-        skip,
-        take,
-        include: {
-          deposit: { include: { user: true } },
-          withdrawal: { include: { user: true } },
-        },
-      }),
-      this.prisma.p2PAllocation.count({ where }),
+    const whereClause = filters.length ? Prisma.join(filters, Prisma.sql` AND `) : Prisma.sql`true`;
+
+    const baseQuery = Prisma.sql`
+      SELECT
+        a.id,
+        a."expiresAt",
+        a."payerPaidAt",
+        a."amount",
+        a."createdAt"
+      FROM "P2PAllocation" a
+      JOIN "DepositRequest" d ON d.id = a."depositId"
+      JOIN "WithdrawRequest" w ON w.id = a."withdrawalId"
+      LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}
+        AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}
+        AND al."entityId" = a.id
+      WHERE ${whereClause}
+      ${query.hasProof !== undefined ? Prisma.sql`AND ${(query.hasProof ? Prisma.sql`al.id IS NOT NULL` : Prisma.sql`al.id IS NULL`)}` : Prisma.empty}
+      GROUP BY a.id, a."expiresAt", a."payerPaidAt", a."amount", a."createdAt"
+    `;
+
+    const orderBy = (() => {
+      if (query.sort === P2PAllocationSort.EXPIRES_AT_ASC) return Prisma.sql`ORDER BY base."expiresAt" ASC`;
+      if (query.sort === P2PAllocationSort.PAID_AT_DESC) return Prisma.sql`ORDER BY base."payerPaidAt" DESC NULLS LAST`;
+      if (query.sort === P2PAllocationSort.AMOUNT_DESC) return Prisma.sql`ORDER BY base."amount" DESC`;
+      return Prisma.sql`ORDER BY base."createdAt" DESC`;
+    })();
+
+    const countQuery = Prisma.sql`SELECT COUNT(*)::int AS count FROM (${baseQuery}) AS base`;
+    const idsQuery = Prisma.sql`
+      SELECT base.id FROM (${baseQuery}) AS base
+      ${orderBy}
+      LIMIT ${take} OFFSET ${skip}
+    `;
+
+    const [countRows, idRows] = await this.prisma.$transaction([
+      this.prisma.$queryRaw<{ count: number }[]>(countQuery),
+      this.prisma.$queryRaw<{ id: string }[]>(idsQuery),
     ]);
 
+    const ids = idRows.map((row) => row.id);
+    const items = ids.length
+      ? await this.prisma.p2PAllocation.findMany({
+          where: { id: { in: ids } },
+          include: {
+            deposit: { include: { user: true } },
+            withdrawal: { include: { user: true } },
+          },
+        })
+      : [];
+
     const attachmentMap = await this.loadAllocationAttachments(items.map((item) => item.id));
+    const itemMap = new Map(items.map((item) => [item.id, item]));
 
     return {
-      data: items.map((allocation) =>
-        this.buildAllocationVm({
-          allocation,
-          attachments: attachmentMap.get(allocation.id) ?? [],
-          includeDestination: true,
-        }),
-      ),
+      data: ids
+        .map((id) => itemMap.get(id))
+        .filter(Boolean)
+        .map((allocation) =>
+          this.buildAllocationVm({
+            allocation,
+            attachments: attachmentMap.get(allocation!.id) ?? [],
+            destinationMode: 'masked',
+            expiresSoonThreshold: expiringThreshold,
+          }),
+        ),
       meta: this.buildListMeta({
-        total,
+        total: countRows[0]?.count ?? 0,
         limit,
         sort: query.sort ?? P2PAllocationSort.CREATED_AT_DESC,
         filtersApplied: {
@@ -660,6 +906,10 @@ export class P2PAllocationsService {
           depositId: query.depositId,
           payerUserId: query.payerUserId,
           receiverUserId: query.receiverUserId,
+          hasProof: query.hasProof,
+          expired: query.expired,
+          expiresSoonMinutes: query.expiresSoonMinutes,
+          bankRef: query.bankRef,
         },
       }),
     };
@@ -713,7 +963,7 @@ export class P2PAllocationsService {
           });
         }
 
-        const destinationSnapshot = withdrawal.destinationSnapshot
+        let destinationSnapshot = withdrawal.destinationSnapshot
           ?? this.paymentDestinationsService.buildLegacySnapshot({
               iban: withdrawal.iban,
               cardNumber: withdrawal.cardNumber,
@@ -724,6 +974,24 @@ export class P2PAllocationsService {
             code: 'P2P_WITHDRAWAL_MISSING_DESTINATION',
             message: 'Withdrawal destination is missing.',
           });
+        }
+
+        if (withdrawal.payoutDestinationId && !destinationSnapshot.title) {
+          const channel = withdrawal.channel ?? WithdrawalChannelEnum.USER_TO_USER;
+          const resolved = channel === WithdrawalChannelEnum.USER_TO_ORG
+            ? await this.paymentDestinationsService.resolveCollectionDestination(withdrawal.payoutDestinationId)
+            : await this.paymentDestinationsService.resolvePayoutDestinationForUser(
+                withdrawal.userId,
+                withdrawal.payoutDestinationId,
+              );
+          destinationSnapshot = {
+            ...resolved,
+            value: destinationSnapshot.value ?? resolved.value,
+            maskedValue: destinationSnapshot.maskedValue ?? resolved.maskedValue,
+            bankName: destinationSnapshot.bankName ?? resolved.bankName,
+            ownerName: destinationSnapshot.ownerName ?? resolved.ownerName,
+            title: resolved.title ?? destinationSnapshot.title ?? null,
+          };
         }
 
         const now = new Date();
@@ -817,7 +1085,7 @@ export class P2PAllocationsService {
             this.buildAllocationVm({
               allocation,
               attachments: [],
-              includeDestination: true,
+              destinationMode: 'masked',
             }),
           );
         }
@@ -849,7 +1117,7 @@ export class P2PAllocationsService {
     };
 
     if (query.expiresSoon) {
-      const threshold = new Date(Date.now() + Number(query.expiresSoon) * 60_000);
+      const threshold = this.getExpiringSoonThreshold(query.expiresSoon);
       where.expiresAt = { lte: threshold };
     }
 
@@ -872,13 +1140,16 @@ export class P2PAllocationsService {
     ]);
 
     const attachmentMap = await this.loadAllocationAttachments(items.map((item) => item.id));
+    const expiresSoonThreshold = this.getExpiringSoonThreshold(query.expiresSoon);
 
     return {
       data: items.map((allocation) =>
         this.buildAllocationVm({
           allocation,
           attachments: attachmentMap.get(allocation.id) ?? [],
-          includeDestination: true,
+          destinationMode: 'full',
+          includePayerExtras: true,
+          expiresSoonThreshold,
         }),
       ),
       meta: this.buildListMeta({
@@ -964,7 +1235,8 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: updated,
         attachments: attachments.get(updated.id) ?? [],
-        includeDestination: true,
+        destinationMode: 'full',
+        includePayerExtras: true,
       });
     });
   }
@@ -973,14 +1245,19 @@ export class P2PAllocationsService {
     userId: string,
     query: P2PAllocationQueryDto,
   ): Promise<P2PListResponseDto<AllocationVmDto>> {
-    const statusList = this.parseStatusFilter(query.status ?? 'PROOF_SUBMITTED,DISPUTED');
+    const statusList = this.parseStatusFilter(query.status ?? 'PROOF_SUBMITTED');
     const where: Prisma.P2PAllocationWhereInput = {
       status: statusList ? { in: statusList as P2PAllocationStatus[] } : undefined,
       withdrawal: { userId },
     };
 
+    if (query.expiresSoon) {
+      const threshold = this.getExpiringSoonThreshold(query.expiresSoon);
+      where.expiresAt = { lte: threshold };
+    }
+
     const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
-    const orderBy: Prisma.P2PAllocationOrderByWithRelationInput[] = [{ createdAt: 'desc' }];
+    const orderBy: Prisma.P2PAllocationOrderByWithRelationInput[] = [{ updatedAt: 'desc' }];
     if (query.sort === P2PAllocationSort.PAID_AT_DESC) orderBy.unshift({ payerPaidAt: 'desc' });
 
     const [items, total] = await this.prisma.$transaction([
@@ -998,13 +1275,15 @@ export class P2PAllocationsService {
     ]);
 
     const attachmentMap = await this.loadAllocationAttachments(items.map((item) => item.id));
+    const expiresSoonThreshold = this.getExpiringSoonThreshold(query.expiresSoon);
 
     return {
       data: items.map((allocation) =>
         this.buildAllocationVm({
           allocation,
           attachments: attachmentMap.get(allocation.id) ?? [],
-          includeDestination: false,
+          destinationMode: 'none',
+          expiresSoonThreshold,
         }),
       ),
       meta: this.buildListMeta({
@@ -1013,6 +1292,7 @@ export class P2PAllocationsService {
         sort: query.sort ?? P2PAllocationSort.PAID_AT_DESC,
         filtersApplied: {
           status: statusList,
+          expiresSoon: query.expiresSoon,
         },
       }),
     };
@@ -1062,7 +1342,7 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: updated,
         attachments: attachments.get(updated.id) ?? [],
-        includeDestination: false,
+        destinationMode: 'none',
       });
     });
   }
@@ -1104,7 +1384,7 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: updated,
         attachments: attachments.get(updated.id) ?? [],
-        includeDestination: true,
+        destinationMode: 'masked',
       });
     });
   }
@@ -1129,7 +1409,7 @@ export class P2PAllocationsService {
         return this.buildAllocationVm({
           allocation: current,
           attachments: attachments.get(allocationId) ?? [],
-          includeDestination: true,
+          destinationMode: 'masked',
         });
       }
 
@@ -1148,6 +1428,19 @@ export class P2PAllocationsService {
       }
 
       this.ensureFinalizable(allocation);
+
+      if (allocation.withdrawerAccountTxId || allocation.payerAccountTxId) {
+        const current = await tx.p2PAllocation.findUnique({
+          where: { id: allocationId },
+          include: { withdrawal: { include: { user: true } }, deposit: { include: { user: true } } },
+        });
+        const attachments = await this.loadAllocationAttachments([allocationId]);
+        return this.buildAllocationVm({
+          allocation: current,
+          attachments: attachments.get(allocationId) ?? [],
+          destinationMode: 'masked',
+        });
+      }
 
       await this.accountsService.consumeFunds({
         userId: allocation.withdrawal.userId,
@@ -1237,7 +1530,7 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: reloaded,
         attachments: attachments.get(allocation.id) ?? [],
-        includeDestination: true,
+        destinationMode: 'masked',
       });
     });
   }
@@ -1262,7 +1555,7 @@ export class P2PAllocationsService {
         return this.buildAllocationVm({
           allocation: reloaded,
           attachments: attachments.get(allocation.id) ?? [],
-          includeDestination: true,
+          destinationMode: 'masked',
         });
       }
 
@@ -1314,9 +1607,75 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: reloaded,
         attachments: attachments.get(updated.id) ?? [],
-        includeDestination: true,
+        destinationMode: 'masked',
       });
     });
+  }
+
+  async getOpsSummary() {
+    const expiringThreshold = this.getExpiringSoonThreshold();
+    const [
+      waitingAssignmentCount,
+      partiallyAssignedCount,
+      fullyAssignedCount,
+      expiringSoonCount,
+      proofSubmittedCount,
+      receiverConfirmedCount,
+      adminVerifiedCount,
+      disputedCount,
+      finalizableCount,
+    ] = await this.prisma.$transaction([
+      this.prisma.withdrawRequest.count({
+        where: { purpose: RequestPurposeEnum.P2P, status: WithdrawStatusEnum.WAITING_ASSIGNMENT },
+      }),
+      this.prisma.withdrawRequest.count({
+        where: { purpose: RequestPurposeEnum.P2P, status: WithdrawStatusEnum.PARTIALLY_ASSIGNED },
+      }),
+      this.prisma.withdrawRequest.count({
+        where: { purpose: RequestPurposeEnum.P2P, status: WithdrawStatusEnum.FULLY_ASSIGNED },
+      }),
+      this.prisma.p2PAllocation.count({
+        where: {
+          status: { in: [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED] },
+          expiresAt: { lte: expiringThreshold },
+        },
+      }),
+      this.prisma.p2PAllocation.count({
+        where: { status: P2PAllocationStatusEnum.PROOF_SUBMITTED },
+      }),
+      this.prisma.p2PAllocation.count({
+        where: {
+          receiverConfirmedAt: { not: null },
+          status: { not: P2PAllocationStatusEnum.SETTLED },
+        },
+      }),
+      this.prisma.p2PAllocation.count({
+        where: {
+          adminVerifiedAt: { not: null },
+          status: { not: P2PAllocationStatusEnum.SETTLED },
+        },
+      }),
+      this.prisma.p2PAllocation.count({
+        where: { status: P2PAllocationStatusEnum.DISPUTED },
+      }),
+      this.prisma.p2PAllocation.count({ where: this.buildFinalizableWhere() }),
+    ]);
+
+    return {
+      withdrawals: {
+        waitingAssignmentCount,
+        partiallyAssignedCount,
+        fullyAssignedCount,
+      },
+      allocations: {
+        expiringSoonCount,
+        proofSubmittedCount,
+        receiverConfirmedCount,
+        adminVerifiedCount,
+        disputedCount,
+        finalizableCount,
+      },
+    };
   }
 
   async expireAllocations(): Promise<number> {

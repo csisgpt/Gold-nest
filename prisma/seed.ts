@@ -918,6 +918,7 @@ async function main() {
                 maskedValue: maskDestinationValue(destination1Value),
                 bankName: 'Mellat',
                 ownerName: receiver1.fullName,
+                title: 'حساب اصلی',
             },
         },
     });
@@ -936,8 +937,30 @@ async function main() {
                 maskedValue: maskDestinationValue(destination3Value),
                 bankName: 'Saman',
                 ownerName: receiver2.fullName,
+                title: 'حساب اصلی',
             },
-            assignedAmountTotal: new Decimal(4000000),
+            assignedAmountTotal: new Decimal(4500000),
+            settledAmountTotal: new Decimal(0),
+        },
+    });
+
+    const p2pWithdrawal3 = await prisma.withdrawRequest.create({
+        data: {
+            userId: receiver1.id,
+            amount: new Decimal(2000000),
+            purpose: RequestPurpose.P2P,
+            channel: WithdrawalChannel.USER_TO_USER,
+            status: WithdrawStatus.FULLY_ASSIGNED,
+            payoutDestinationId: destination1.id,
+            destinationSnapshot: {
+                type: PaymentDestinationType.IBAN,
+                value: destination1Value,
+                maskedValue: maskDestinationValue(destination1Value),
+                bankName: 'Mellat',
+                ownerName: receiver1.fullName,
+                title: 'حساب اصلی',
+            },
+            assignedAmountTotal: new Decimal(2000000),
             settledAmountTotal: new Decimal(0),
         },
     });
@@ -981,6 +1004,32 @@ async function main() {
         },
     });
 
+    const depositOffer5 = await prisma.depositRequest.create({
+        data: {
+            userId: payer1.id,
+            amount: new Decimal(500000),
+            method: 'bank-transfer',
+            purpose: RequestPurpose.P2P,
+            status: DepositStatus.FULLY_ASSIGNED,
+            remainingAmount: new Decimal(0),
+            assignedAmountTotal: new Decimal(500000),
+            settledAmountTotal: new Decimal(0),
+        },
+    });
+
+    const depositOffer4 = await prisma.depositRequest.create({
+        data: {
+            userId: payer2.id,
+            amount: new Decimal(2000000),
+            method: 'card-to-card',
+            purpose: RequestPurpose.P2P,
+            status: DepositStatus.FULLY_ASSIGNED,
+            remainingAmount: new Decimal(0),
+            assignedAmountTotal: new Decimal(2000000),
+            settledAmountTotal: new Decimal(0),
+        },
+    });
+
     const allocationAssigned = await prisma.p2PAllocation.create({
         data: {
             withdrawalId: p2pWithdrawal2.id,
@@ -988,7 +1037,7 @@ async function main() {
             amount: new Decimal(2000000),
             status: P2PAllocationStatus.ASSIGNED,
             paymentCode: faker.string.alphanumeric(8).toUpperCase(),
-            expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 12),
+            expiresAt: new Date(Date.now() + 1000 * 60 * 45),
             destinationSnapshot: p2pWithdrawal2.destinationSnapshot,
             paymentMethod: PaymentMethod.UNKNOWN,
         },
@@ -1048,12 +1097,72 @@ async function main() {
         },
     });
 
+    const allocationProof2 = await prisma.p2PAllocation.create({
+        data: {
+            withdrawalId: p2pWithdrawal3.id,
+            depositId: depositOffer4.id,
+            amount: new Decimal(2000000),
+            status: P2PAllocationStatus.PROOF_SUBMITTED,
+            paymentCode: faker.string.alphanumeric(8).toUpperCase(),
+            expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 8),
+            destinationSnapshot: p2pWithdrawal3.destinationSnapshot,
+            paymentMethod: PaymentMethod.TRANSFER,
+            payerBankRef: 'REF-003',
+            payerPaidAt: new Date(Date.now() - 1000 * 60 * 40),
+            proofSubmittedAt: new Date(Date.now() - 1000 * 60 * 35),
+        },
+    });
+
+    const disputeFile = await prisma.file.create({
+        data: {
+            uploadedById: receiver2.id,
+            storageKey: faker.system.fileName(),
+            fileName: 'p2p-dispute.pdf',
+            mimeType: 'application/pdf',
+            sizeBytes: faker.number.int({ min: 10000, max: 50000 }),
+            label: 'اعتراض',
+        },
+    });
+
+    const allocationDisputed = await prisma.p2PAllocation.create({
+        data: {
+            withdrawalId: p2pWithdrawal2.id,
+            depositId: depositOffer5.id,
+            amount: new Decimal(500000),
+            status: P2PAllocationStatus.DISPUTED,
+            paymentCode: faker.string.alphanumeric(8).toUpperCase(),
+            expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 4),
+            destinationSnapshot: p2pWithdrawal2.destinationSnapshot,
+            paymentMethod: PaymentMethod.PAYA,
+            payerBankRef: 'REF-004',
+            payerPaidAt: new Date(Date.now() - 1000 * 60 * 50),
+            proofSubmittedAt: new Date(Date.now() - 1000 * 60 * 45),
+            receiverDisputedAt: new Date(Date.now() - 1000 * 60 * 20),
+            receiverDisputeReason: 'پرداخت ناقص بود',
+        },
+    });
+
+    await prisma.attachmentLink.create({
+        data: {
+            entityType: AttachmentLinkEntityType.P2P_ALLOCATION,
+            entityId: allocationDisputed.id,
+            kind: AttachmentLinkKind.DISPUTE_EVIDENCE,
+            fileId: disputeFile.id,
+            uploaderUserId: receiver2.id,
+        },
+    });
+
     console.log('P2P demo IDs:', {
         p2pWithdrawal1: p2pWithdrawal1.id,
         p2pWithdrawal2: p2pWithdrawal2.id,
+        p2pWithdrawal3: p2pWithdrawal3.id,
         allocationAssigned: allocationAssigned.id,
         allocationProof: allocationProof.id,
+        allocationProof2: allocationProof2.id,
         allocationConfirmed: allocationConfirmed.id,
+        allocationDisputed: allocationDisputed.id,
+        proofFile: proofFile.id,
+        disputeFile: disputeFile.id,
     });
 
 
