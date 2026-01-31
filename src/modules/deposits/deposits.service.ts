@@ -9,6 +9,7 @@ import { DecisionDto } from './dto/decision.dto';
 import { CreateDepositDto } from './dto/create-deposit.dto';
 import { TahesabOutboxService } from '../tahesab/tahesab-outbox.service';
 import { TahesabIntegrationConfigService } from '../tahesab/tahesab-integration.config';
+import { RequestPurpose } from '@prisma/client';
 import { SabteKolOrMovaghat } from '../tahesab/tahesab.methods';
 import { SimpleVoucherDto } from '../tahesab/tahesab-documents.service';
 import { runInTx } from '../../common/db/tx.util';
@@ -29,6 +30,19 @@ import { AdminDepositDetailDto } from './dto/response/admin-deposit-detail.dto';
 export class DepositsService {
   private readonly logger = new Logger(DepositsService.name);
 
+  private readonly requestPurposeEnum =
+    (RequestPurpose as any) ??
+    ({
+      DIRECT: 'DIRECT',
+      P2P: 'P2P',
+    } as const);
+  private readonly depositStatusEnum =
+    (DepositStatus as any) ??
+    ({
+      WAITING_ASSIGNMENT: 'WAITING_ASSIGNMENT',
+      PENDING: 'PENDING',
+    } as const);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
@@ -40,11 +54,21 @@ export class DepositsService {
 
   async createForUser(user: JwtRequestUser, dto: CreateDepositDto) {
     return runInTx(this.prisma, async (tx) => {
+      const amountDecimal = new Decimal(dto.amount);
+      const purpose = dto.purpose ?? this.requestPurposeEnum.DIRECT;
+
+      const status = purpose === this.requestPurposeEnum.P2P
+        ? this.depositStatusEnum.WAITING_ASSIGNMENT
+        : this.depositStatusEnum.PENDING;
+
       const deposit = await tx.depositRequest.create({
         data: {
           userId: user.id,
-          amount: new Decimal(dto.amount),
+          amount: amountDecimal,
           method: dto.method,
+          purpose,
+          status,
+          remainingAmount: purpose === this.requestPurposeEnum.P2P ? amountDecimal : null,
           refNo: dto.refNo,
           note: dto.note,
         },

@@ -6,9 +6,11 @@ import {
   PolicyAction,
   PolicyMetric,
   PolicyPeriod,
+  RequestPurpose,
   TxRefType,
   WithdrawRequest,
   WithdrawStatus,
+  WithdrawalChannel,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
@@ -34,6 +36,26 @@ import {
 } from './withdrawals.admin.mapper';
 import { AdminWithdrawalDetailDto } from './dto/response/admin-withdrawal-detail.dto';
 import { LimitsService } from '../policy/limits.service';
+import { PaymentDestinationsService } from '../payment-destinations/payment-destinations.service';
+
+const RequestPurposeEnum =
+  (RequestPurpose as any) ??
+  ({
+    DIRECT: 'DIRECT',
+    P2P: 'P2P',
+  } as const);
+const WithdrawStatusEnum =
+  (WithdrawStatus as any) ??
+  ({
+    WAITING_ASSIGNMENT: 'WAITING_ASSIGNMENT',
+    PENDING: 'PENDING',
+  } as const);
+const WithdrawalChannelEnum =
+  (WithdrawalChannel as any) ??
+  ({
+    USER_TO_USER: 'USER_TO_USER',
+    USER_TO_ORG: 'USER_TO_ORG',
+  } as const);
 
 @Injectable()
 export class WithdrawalsService {
@@ -44,6 +66,7 @@ export class WithdrawalsService {
     private readonly accountsService: AccountsService,
     private readonly limitsService: LimitsService,
     private readonly filesService: FilesService,
+    private readonly paymentDestinationsService: PaymentDestinationsService,
     private readonly tahesabOutbox: TahesabOutboxService,
     private readonly tahesabIntegration: TahesabIntegrationConfigService,
     private readonly paginationService: PaginationService,
@@ -76,13 +99,51 @@ export class WithdrawalsService {
           throw new BadRequestException('Insufficient capacity for withdrawal');
         }
 
+        const purpose = dto.purpose ?? RequestPurposeEnum.DIRECT;
+        if (purpose === RequestPurposeEnum.P2P && !dto.payoutDestinationId) {
+          throw new BadRequestException({
+            code: 'P2P_WITHDRAWAL_DESTINATION_REQUIRED',
+            message: 'P2P withdrawal requires a payout destination.',
+          });
+        }
+
+        const channel = purpose === RequestPurposeEnum.P2P
+          ? dto.channel ?? WithdrawalChannelEnum.USER_TO_USER
+          : null;
+
+        const destinationSnapshot = dto.payoutDestinationId
+          ? channel === WithdrawalChannelEnum.USER_TO_ORG
+            ? await this.paymentDestinationsService.resolveCollectionDestination(dto.payoutDestinationId)
+            : await this.paymentDestinationsService.resolvePayoutDestinationForUser(user.id, dto.payoutDestinationId)
+          : this.paymentDestinationsService.buildLegacySnapshot({
+              iban: dto.iban,
+              cardNumber: dto.cardNumber,
+              bankName: dto.bankName,
+            });
+
+        if (purpose === RequestPurposeEnum.P2P && !destinationSnapshot) {
+          throw new BadRequestException({
+            code: 'P2P_WITHDRAWAL_DESTINATION_REQUIRED',
+            message: 'P2P withdrawal requires a payout destination.',
+          });
+        }
+
+        const status = purpose === RequestPurposeEnum.P2P
+          ? WithdrawStatusEnum.WAITING_ASSIGNMENT
+          : WithdrawStatusEnum.PENDING;
+
         const withdraw = await tx.withdrawRequest.create({
           data: {
             userId: user.id,
             amount: amountDecimal,
+            purpose,
+            channel,
+            status,
             bankName: dto.bankName,
             iban: dto.iban,
             cardNumber: dto.cardNumber,
+            payoutDestinationId: dto.payoutDestinationId ?? undefined,
+            destinationSnapshot: destinationSnapshot ?? undefined,
             note: dto.note,
             idempotencyKey,
           },
@@ -141,11 +202,14 @@ export class WithdrawalsService {
     );
   }
 
-  findMy(userId: string) {
-    return this.prisma.withdrawRequest.findMany({
+  async findMy(userId: string) {
+    const withdrawals = await this.prisma.withdrawRequest.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
+      select: withdrawalWithUserSelect,
     });
+
+    return WithdrawalsMapper.toResponses(withdrawals as WithdrawalWithUser[]);
   }
 
   async findByStatus(status?: WithdrawStatus) {

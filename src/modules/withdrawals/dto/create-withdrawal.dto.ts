@@ -1,5 +1,20 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsEnum, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { RequestPurpose, WithdrawalChannel } from '@prisma/client';
+
+const RequestPurposeEnum =
+  (RequestPurpose as any) ??
+  ({
+    DIRECT: 'DIRECT',
+    P2P: 'P2P',
+  } as const);
+
+const WithdrawalChannelEnum =
+  (WithdrawalChannel as any) ??
+  ({
+    USER_TO_USER: 'USER_TO_USER',
+    USER_TO_ORG: 'USER_TO_ORG',
+  } as const);
 
 export class CreateWithdrawalDto {
   /** @deprecated userId is taken from the authenticated user. */
@@ -11,6 +26,16 @@ export class CreateWithdrawalDto {
   @ApiProperty({ example: '5000000', description: 'Withdrawal amount in IRR as a decimal string.' })
   @IsNumberString()
   amount!: string;
+
+  @ApiProperty({ required: false, enum: RequestPurposeEnum, description: 'Purpose of the withdrawal request.' })
+  @IsOptional()
+  @IsEnum(RequestPurposeEnum)
+  purpose?: RequestPurpose;
+
+  @ApiProperty({ required: false, enum: WithdrawalChannelEnum, description: 'Channel for P2P withdrawal.' })
+  @IsOptional()
+  @IsEnum(WithdrawalChannelEnum)
+  channel?: WithdrawalChannel;
 
   @ApiProperty({ required: false, example: 'Mellat', description: 'Destination bank name.' })
   @IsOptional()
@@ -30,6 +55,11 @@ export class CreateWithdrawalDto {
   @IsOptional()
   @IsString()
   cardNumber?: string;
+
+  @ApiProperty({ required: false, example: 'dest-123', description: 'Payout destination ID (preferred for P2P).' })
+  @IsOptional()
+  @IsString()
+  payoutDestinationId?: string;
 
   @ApiProperty({ required: false, example: 'Urgent payout requested.', description: 'Optional note from user.' })
   @IsOptional()

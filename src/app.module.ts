@@ -28,6 +28,8 @@ import { ProductProviderMappingsModule } from './modules/product-provider-mappin
 import { PriceOverridesModule } from './modules/price-overrides/price-overrides.module';
 import { UserSettingsModule } from './modules/user-settings/user-settings.module';
 import { MarketModule } from './modules/market/market.module';
+import { PaymentDestinationsModule } from './modules/payment-destinations/payment-destinations.module';
+import { P2PAllocationsModule } from './modules/p2p-allocations/p2p-allocations.module';
 
 @Module({
   imports: [
@@ -56,6 +58,8 @@ import { MarketModule } from './modules/market/market.module';
     UserSettingsModule,
     MarketModule,
     RedisModule,
+    PaymentDestinationsModule,
+    P2PAllocationsModule,
     ThrottlerModule.forRoot({
       ttl: 60,
       limit: 60,

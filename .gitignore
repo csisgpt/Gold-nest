@@ -4,3 +4,5 @@ dist
 .env
 uploads
 .prisma
+.yarn
+.yarnrc.yml

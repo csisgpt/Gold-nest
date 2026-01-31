@@ -1,6 +1,34 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { WithdrawStatus } from '@prisma/client';
+import { PaymentDestinationType, RequestPurpose, WithdrawStatus } from '@prisma/client';
 import { UserMinimalDto, UserSafeDto } from '../../../../common/dto/user.dto';
+
+const PaymentDestinationTypeEnum =
+  (PaymentDestinationType as any) ??
+  ({
+    IBAN: 'IBAN',
+    CARD: 'CARD',
+    ACCOUNT: 'ACCOUNT',
+  } as const);
+const RequestPurposeEnum =
+  (RequestPurpose as any) ??
+  ({
+    DIRECT: 'DIRECT',
+    P2P: 'P2P',
+  } as const);
+
+export class WithdrawalDestinationDto {
+  @ApiProperty({ enum: PaymentDestinationTypeEnum })
+  type!: PaymentDestinationType;
+
+  @ApiProperty()
+  maskedValue!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  bankName?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  ownerNameMasked?: string | null;
+}
 
 export class WithdrawalResponseDto {
   @ApiProperty()
@@ -17,6 +45,12 @@ export class WithdrawalResponseDto {
 
   @ApiProperty({ enum: WithdrawStatus })
   status!: WithdrawStatus;
+
+  @ApiProperty({ enum: RequestPurposeEnum })
+  purpose!: RequestPurpose;
+
+  @ApiPropertyOptional({ type: () => WithdrawalDestinationDto, nullable: true })
+  destination?: WithdrawalDestinationDto | null;
 
   @ApiPropertyOptional({ nullable: true })
   bankName?: string | null;

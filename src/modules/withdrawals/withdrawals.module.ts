@@ -9,9 +9,19 @@ import { PaginationModule } from '../../common/pagination/pagination.module';
 import { PolicyModule } from '../policy/policy.module';
 import { UserSettingsModule } from '../user-settings/user-settings.module';
 import { WithdrawAccessGuard } from './guards/withdraw-access.guard';
+import { PaymentDestinationsModule } from '../payment-destinations/payment-destinations.module';
 
 @Module({
-  imports: [PrismaModule, AccountsModule, FilesModule, TahesabModule, PaginationModule, PolicyModule, UserSettingsModule],
+  imports: [
+    PrismaModule,
+    AccountsModule,
+    FilesModule,
+    TahesabModule,
+    PaginationModule,
+    PolicyModule,
+    UserSettingsModule,
+    PaymentDestinationsModule,
+  ],
   controllers: [WithdrawalsController],
   providers: [WithdrawalsService, WithdrawAccessGuard],
   exports: [WithdrawalsService],
