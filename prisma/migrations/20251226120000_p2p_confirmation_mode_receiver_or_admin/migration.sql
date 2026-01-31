@@ -1,0 +1,2 @@
+-- Add RECEIVER_OR_ADMIN to P2PConfirmationMode enum
+ALTER TYPE "P2PConfirmationMode" ADD VALUE IF NOT EXISTS 'RECEIVER_OR_ADMIN';

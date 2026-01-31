@@ -222,6 +222,7 @@ enum P2PConfirmationMode {
   RECEIVER
   ADMIN
   BOTH
+  RECEIVER_OR_ADMIN
 }
 
 enum PaymentDestinationDirection {
@@ -407,6 +408,8 @@ model User {
 
   goldLots GoldLot[]
   files    File[]    @relation("FilesUploadedBy")
+  paymentDestinations PaymentDestination[] @relation("PaymentDestinationOwner")
+  attachmentLinksUploaded AttachmentLink[] @relation("AttachmentLinkUploader")
 
   createdPriceOverrides AdminPriceOverride[] @relation("AdminPriceOverrideCreatedBy")
   revokedPriceOverrides AdminPriceOverride[] @relation("AdminPriceOverrideRevokedBy")
@@ -839,7 +842,7 @@ model PaymentDestination {
   deletedAt DateTime?
 
   ownerUserId String?
-  ownerUser   User? @relation(fields: [ownerUserId], references: [id])
+  ownerUser   User? @relation("PaymentDestinationOwner", fields: [ownerUserId], references: [id])
 
   direction PaymentDestinationDirection
   type      PaymentDestinationType
@@ -907,7 +910,7 @@ model AttachmentLink {
   fileId String
 
   uploaderUserId String?
-  uploaderUser   User? @relation(fields: [uploaderUserId], references: [id])
+  uploaderUser   User? @relation("AttachmentLinkUploader", fields: [uploaderUserId], references: [id])
 
   @@index([entityType, entityId])
   @@index([fileId])

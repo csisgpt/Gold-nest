@@ -4,7 +4,6 @@ import {
   PaymentDestinationType,
   PaymentMethod,
   P2PAllocationStatus,
-  P2PConfirmationMode,
   Prisma,
   RequestPurpose,
   TxRefType,
@@ -81,13 +80,12 @@ const WithdrawStatusEnum =
     EXPIRED: 'EXPIRED',
     SETTLED: 'SETTLED',
   } as const);
-const P2PConfirmationModeEnum =
-  (P2PConfirmationMode as any) ??
-  ({
-    RECEIVER: 'RECEIVER',
-    ADMIN: 'ADMIN',
-    BOTH: 'BOTH',
-  } as const);
+const P2PConfirmationModeEnum = {
+  RECEIVER: 'RECEIVER',
+  ADMIN: 'ADMIN',
+  BOTH: 'BOTH',
+  RECEIVER_OR_ADMIN: 'RECEIVER_OR_ADMIN',
+} as const;
 const PaymentMethodEnum =
   (PaymentMethod as any) ??
   ({
@@ -110,6 +108,16 @@ const WithdrawalChannelEnum =
     USER_TO_USER: 'USER_TO_USER',
     USER_TO_ORG: 'USER_TO_ORG',
   } as const);
+
+type P2PConfirmationModeType = 'RECEIVER' | 'ADMIN' | 'BOTH' | 'RECEIVER_OR_ADMIN';
+type PaymentDestinationSnapshot = {
+  type: PaymentDestinationType;
+  value?: string;
+  maskedValue?: string;
+  bankName?: string | null;
+  ownerName?: string | null;
+  title?: string | null;
+};
 
 @Injectable()
 export class P2PAllocationsService {
@@ -134,10 +142,13 @@ export class P2PAllocationsService {
     return new Date(Date.now() + clamped * 60_000);
   }
 
-  private getConfirmationMode(): P2PConfirmationMode {
+  private getConfirmationMode(): P2PConfirmationModeType {
     const raw = String(process.env.P2P_CONFIRMATION_MODE ?? 'RECEIVER').toUpperCase();
     if (raw === 'ADMIN') return P2PConfirmationModeEnum.ADMIN;
     if (raw === 'BOTH') return P2PConfirmationModeEnum.BOTH;
+    if (raw === 'RECEIVER_OR_ADMIN' || raw === 'RECEIVER-OR-ADMIN') {
+      return P2PConfirmationModeEnum.RECEIVER_OR_ADMIN;
+    }
     return P2PConfirmationModeEnum.RECEIVER;
   }
 
@@ -146,6 +157,9 @@ export class P2PAllocationsService {
     receiverConfirmedAt: Date | null;
     adminVerifiedAt: Date | null;
   }) {
+    if (allocation.status === P2PAllocationStatusEnum.DISPUTED) {
+      throw new BadRequestException('Allocation cannot be finalized');
+    }
     const mode = this.getConfirmationMode();
     if (mode === P2PConfirmationModeEnum.RECEIVER) {
       if (allocation.status !== P2PAllocationStatusEnum.RECEIVER_CONFIRMED) {
@@ -159,6 +173,13 @@ export class P2PAllocationsService {
         throw new BadRequestException({
           code: 'P2P_ALLOCATION_NOT_FINALIZABLE',
           message: 'Allocation is not verified by admin yet.',
+        });
+      }
+    } else if (mode === P2PConfirmationModeEnum.RECEIVER_OR_ADMIN) {
+      if (!allocation.receiverConfirmedAt && !allocation.adminVerifiedAt) {
+        throw new BadRequestException({
+          code: 'P2P_ALLOCATION_NOT_FINALIZABLE',
+          message: 'Allocation requires receiver or admin confirmation.',
         });
       }
     } else {
@@ -390,10 +411,12 @@ export class P2PAllocationsService {
             masked: snapshot.maskedValue ?? maskDestinationValue(snapshot.value ?? ''),
           };
 
-    const expired = this.allocationExpired(allocation);
-    const expiresSoon = this.allocationExpiresSoon(allocation, expiresSoonThreshold);
-    const adminCanFinalize = this.isFinalizable(allocation) && !expired && allocation.status !== P2PAllocationStatusEnum.SETTLED;
+    const expired = allocation.status === P2PAllocationStatusEnum.ASSIGNED && this.allocationExpired(allocation);
+    const expiresSoon = allocation.status === P2PAllocationStatusEnum.ASSIGNED
+      && this.allocationExpiresSoon(allocation, expiresSoonThreshold);
+    const adminCanFinalize = this.isFinalizable(allocation) && allocation.status !== P2PAllocationStatusEnum.SETTLED;
     const hasProof = attachments.length > 0 || allocation.proofSubmittedAt != null;
+    const proofAttempts = attachments.filter((attachment) => attachment.kind === AttachmentLinkKind.P2P_PROOF).length;
     const expiresInSeconds = includePayerExtras
       ? Math.max(0, Math.floor((allocation.expiresAt.getTime() - Date.now()) / 1000))
       : undefined;
@@ -437,11 +460,18 @@ export class P2PAllocationsService {
         isExpired: expired,
         expiresSoon,
         hasProof,
-        isFinalizable: this.isFinalizable(allocation) && !expired,
+        isFinalizable: this.isFinalizable(allocation),
       },
       createdAt: allocation.createdAt,
       actions: {
-        payerCanSubmitProof: allocation.status === P2PAllocationStatusEnum.ASSIGNED && !expired,
+        payerCanSubmitProof:
+          proofAttempts < 2
+          && [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED].includes(allocation.status)
+          && !allocation.receiverConfirmedAt
+          && !allocation.adminVerifiedAt
+          && allocation.status !== P2PAllocationStatusEnum.DISPUTED
+          && allocation.status !== P2PAllocationStatusEnum.SETTLED
+          && (allocation.status !== P2PAllocationStatusEnum.ASSIGNED || !expired),
         receiverCanConfirm: allocation.status === P2PAllocationStatusEnum.PROOF_SUBMITTED,
         adminCanFinalize,
       },
@@ -517,6 +547,12 @@ export class P2PAllocationsService {
     if (mode === P2PConfirmationModeEnum.ADMIN) {
       return { ...base, adminVerifiedAt: { not: null } };
     }
+    if (mode === P2PConfirmationModeEnum.RECEIVER_OR_ADMIN) {
+      return {
+        ...base,
+        OR: [{ receiverConfirmedAt: { not: null } }, { adminVerifiedAt: { not: null } }],
+      };
+    }
     return {
       ...base,
       receiverConfirmedAt: { not: null },
@@ -526,7 +562,7 @@ export class P2PAllocationsService {
 
   private buildOpsFinalizableWhere(): Prisma.P2PAllocationWhereInput {
     const base = {
-      status: { not: P2PAllocationStatusEnum.SETTLED },
+      status: { notIn: [P2PAllocationStatusEnum.SETTLED, P2PAllocationStatusEnum.DISPUTED] },
     } as Prisma.P2PAllocationWhereInput;
 
     const mode = this.getConfirmationMode();
@@ -535,6 +571,12 @@ export class P2PAllocationsService {
     }
     if (mode === P2PConfirmationModeEnum.ADMIN) {
       return { ...base, adminVerifiedAt: { not: null } };
+    }
+    if (mode === P2PConfirmationModeEnum.RECEIVER_OR_ADMIN) {
+      return {
+        ...base,
+        OR: [{ receiverConfirmedAt: { not: null } }, { adminVerifiedAt: { not: null } }],
+      };
     }
     return {
       ...base,
@@ -569,7 +611,7 @@ export class P2PAllocationsService {
       baseFilters.push(Prisma.sql`w."destinationSnapshot"->>'type' = ${query.destinationType}`);
     }
 
-    const baseWhere = Prisma.join(baseFilters, Prisma.sql` AND `);
+    const baseWhere = Prisma.join(baseFilters, ' AND ');
     const proofStatusList = Prisma.join([
       P2PAllocationStatusEnum.PROOF_SUBMITTED,
       P2PAllocationStatusEnum.RECEIVER_CONFIRMED,
@@ -578,7 +620,6 @@ export class P2PAllocationsService {
     ]);
     const expiringSql = Prisma.sql`BOOL_OR(a."status" IN (${Prisma.join([
       P2PAllocationStatusEnum.ASSIGNED,
-      P2PAllocationStatusEnum.PROOF_SUBMITTED,
     ])}) AND a."expiresAt" <= ${expiringThreshold})`;
 
     const baseQuery = Prisma.sql`
@@ -600,7 +641,6 @@ export class P2PAllocationsService {
           (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
           MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
             P2PAllocationStatusEnum.ASSIGNED,
-            P2PAllocationStatusEnum.PROOF_SUBMITTED,
           ])})) AS "nearestExpire",
           BOOL_OR(a."status" = ${P2PAllocationStatusEnum.DISPUTED}) AS "hasDispute",
           BOOL_OR(al.id IS NOT NULL OR a."status" IN (${proofStatusList})) AS "hasProof",
@@ -869,7 +909,6 @@ export class P2PAllocationsService {
       filters.push(
         Prisma.sql`a."status" IN (${Prisma.join([
           P2PAllocationStatusEnum.ASSIGNED,
-          P2PAllocationStatusEnum.PROOF_SUBMITTED,
         ])}) AND a."expiresAt" < ${new Date()}`,
       );
     }
@@ -877,12 +916,11 @@ export class P2PAllocationsService {
       filters.push(
         Prisma.sql`a."status" IN (${Prisma.join([
           P2PAllocationStatusEnum.ASSIGNED,
-          P2PAllocationStatusEnum.PROOF_SUBMITTED,
         ])}) AND a."expiresAt" <= ${expiringThreshold}`,
       );
     }
 
-    const whereClause = filters.length ? Prisma.join(filters, Prisma.sql` AND `) : Prisma.sql`true`;
+    const whereClause = filters.length ? Prisma.join(filters, ' AND ') : Prisma.sql`true`;
 
     const baseQuery = Prisma.sql`
       SELECT
@@ -989,7 +1027,7 @@ export class P2PAllocationsService {
             where: { key_withdrawalId: { key: idempotencyKey, withdrawalId } },
           });
           if (existing) {
-            return existing.responseJson as AllocationVmDto[];
+            return existing.responseJson as unknown as AllocationVmDto[];
           }
         }
 
@@ -1015,7 +1053,7 @@ export class P2PAllocationsService {
           });
         }
 
-        let destinationSnapshot = withdrawal.destinationSnapshot
+        let destinationSnapshot = withdrawal.destinationSnapshot as PaymentDestinationSnapshot | null
           ?? this.paymentDestinationsService.buildLegacySnapshot({
               iban: withdrawal.iban,
               cardNumber: withdrawal.cardNumber,
@@ -1058,7 +1096,7 @@ export class P2PAllocationsService {
               remaining: dec(deposit.remainingAmount ?? deposit.amount),
               settledTotal: dec(deposit.settledAmountTotal),
             },
-          ] as const),
+          ]),
         );
 
         for (let idx = 0; idx < dto.items.length; idx += 1) {
@@ -1171,6 +1209,10 @@ export class P2PAllocationsService {
     if (query.expiresSoon) {
       const threshold = this.getExpiringSoonThreshold(query.expiresSoon);
       where.expiresAt = { lte: threshold };
+      const allowed = statusList
+        ? statusList.filter((status) => status === P2PAllocationStatusEnum.ASSIGNED)
+        : [P2PAllocationStatusEnum.ASSIGNED];
+      where.status = { in: allowed as P2PAllocationStatus[] };
     }
 
     const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
@@ -1239,12 +1281,41 @@ export class P2PAllocationsService {
         throw new ForbiddenException({ code: 'P2P_FORBIDDEN', message: 'Forbidden' });
       }
 
-      if (allocation.status !== P2PAllocationStatusEnum.ASSIGNED) {
+      if (
+        [
+          P2PAllocationStatusEnum.CANCELLED,
+          P2PAllocationStatusEnum.EXPIRED,
+          P2PAllocationStatusEnum.SETTLED,
+          P2PAllocationStatusEnum.DISPUTED,
+        ].includes(allocation.status)
+      ) {
         throw new BadRequestException('Allocation is not assignable');
       }
 
-      if (this.allocationExpired(allocation)) {
+      if (![P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED].includes(allocation.status)) {
+        throw new BadRequestException('Allocation is not assignable');
+      }
+
+      if (allocation.receiverConfirmedAt || allocation.adminVerifiedAt) {
+        throw new BadRequestException('Allocation is not assignable');
+      }
+
+      if (allocation.status === P2PAllocationStatusEnum.ASSIGNED && this.allocationExpired(allocation)) {
         throw new BadRequestException({ code: 'P2P_ALLOCATION_EXPIRED', message: 'Allocation expired.' });
+      }
+
+      const proofAttempts = await tx.attachmentLink.count({
+        where: {
+          entityType: AttachmentLinkEntityType.P2P_ALLOCATION,
+          entityId: allocation.id,
+          kind: AttachmentLinkKind.P2P_PROOF,
+        },
+      });
+      if (proofAttempts >= 2) {
+        throw new BadRequestException({
+          code: 'P2P_PROOF_MAX_ATTEMPTS_REACHED',
+          message: 'Maximum proof attempts reached.',
+        });
       }
 
       const files = await tx.file.findMany({
@@ -1306,6 +1377,10 @@ export class P2PAllocationsService {
     if (query.expiresSoon) {
       const threshold = this.getExpiringSoonThreshold(query.expiresSoon);
       where.expiresAt = { lte: threshold };
+      const allowed = statusList
+        ? statusList.filter((status) => status === P2PAllocationStatusEnum.ASSIGNED)
+        : [P2PAllocationStatusEnum.ASSIGNED];
+      where.status = { in: allowed as P2PAllocationStatus[] };
     }
 
     const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
@@ -1475,7 +1550,7 @@ export class P2PAllocationsService {
         throw new BadRequestException('Allocation cannot be finalized');
       }
 
-      if (this.allocationExpired(allocation)) {
+      if (allocation.status === P2PAllocationStatusEnum.ASSIGNED && this.allocationExpired(allocation)) {
         throw new BadRequestException({ code: 'P2P_ALLOCATION_EXPIRED', message: 'Allocation expired.' });
       }
 
@@ -1691,7 +1766,7 @@ export class P2PAllocationsService {
       `),
       this.prisma.p2PAllocation.count({
         where: {
-          status: { in: [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED] },
+          status: { in: [P2PAllocationStatusEnum.ASSIGNED] },
           expiresAt: { lte: expiringThreshold },
         },
       }),
@@ -1719,7 +1794,7 @@ export class P2PAllocationsService {
     const expired = await this.prisma.p2PAllocation.findMany({
       where: {
         expiresAt: { lt: now },
-        status: { in: [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED] },
+        status: { in: [P2PAllocationStatusEnum.ASSIGNED] },
       },
       select: { id: true },
     });
@@ -1737,7 +1812,7 @@ export class P2PAllocationsService {
         if (!allocation) return;
         await this.lockWithdrawRow(tx, allocation.withdrawalId);
         await this.lockDepositRows(tx, [allocation.depositId]);
-        if (![P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED].includes(allocation.status)) {
+        if (![P2PAllocationStatusEnum.ASSIGNED].includes(allocation.status)) {
           return;
         }
 
