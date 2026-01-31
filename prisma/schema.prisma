@@ -177,6 +177,11 @@ enum AccountTxType {
   CUSTODY
 }
 
+enum AccountTxEntrySide {
+  DEBIT
+  CREDIT
+}
+
 enum DepositStatus {
   PENDING
   APPROVED
@@ -601,6 +606,7 @@ model AccountTx {
   delta Decimal @db.Decimal(24, 6)
 
   type    AccountTxType
+  entrySide AccountTxEntrySide @default(CREDIT)
   refType TxRefType
   refId   String?
 
@@ -618,7 +624,7 @@ model AccountTx {
   reversals    AccountTx[] @relation("AccountTxReversal")
 
   @@index([refType, refId])
-  @@unique([refType, refId, accountId])
+  @@unique([refType, refId, accountId, entrySide])
 }
 
 model Trade {
@@ -850,7 +856,7 @@ model PaymentDestination {
   withdrawals WithdrawRequest[]
 
   @@index([ownerUserId, direction, status])
-  @@index([ownerUserId, direction, type, encryptedValueHash])
+  @@unique([ownerUserId, direction, type, encryptedValueHash])
 }
 
 model P2PAllocation {

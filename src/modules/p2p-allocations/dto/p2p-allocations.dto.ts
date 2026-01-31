@@ -7,6 +7,9 @@ import {
   IsNumberString,
   IsOptional,
   IsString,
+  IsInt,
+  Matches,
+  Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -43,6 +46,8 @@ const PaymentDestinationTypeEnum =
     CARD: 'CARD',
     ACCOUNT: 'ACCOUNT',
   } as const);
+
+const integerStringPattern = /^\d+$/;
 
 export enum P2PWithdrawalListSort {
   CREATED_AT_DESC = 'createdAt_desc',
@@ -87,21 +92,25 @@ export class AdminP2PWithdrawalsQueryDto extends ListQueryDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumberString()
+  @Matches(integerStringPattern)
   amountMin?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumberString()
+  @Matches(integerStringPattern)
   amountMax?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumberString()
+  @Matches(integerStringPattern)
   remainingToAssignMin?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumberString()
+  @Matches(integerStringPattern)
   remainingToAssignMax?: string;
 
   @ApiPropertyOptional()
@@ -139,6 +148,13 @@ export class AdminP2PWithdrawalsQueryDto extends ListQueryDto {
   @IsNumberString()
   expiringSoonMinutes?: string;
 
+  @ApiPropertyOptional({ default: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  offset?: number;
+
   @ApiPropertyOptional({ enum: P2PWithdrawalListSort })
   @IsOptional()
   @IsEnum(P2PWithdrawalListSort)
@@ -164,6 +180,7 @@ export class AdminP2PWithdrawalCandidatesQueryDto extends ListQueryDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumberString()
+  @Matches(integerStringPattern)
   remainingMin?: string;
 
   @ApiPropertyOptional()
@@ -247,6 +264,11 @@ export class AdminP2PAllocationsQueryDto extends ListQueryDto {
   @IsOptional()
   @IsString()
   bankRef?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankRefSearch?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -360,6 +382,9 @@ export class P2PListMetaDto {
 
   @ApiProperty()
   limit!: number;
+
+  @ApiPropertyOptional()
+  offset?: number;
 
   @ApiPropertyOptional()
   sort?: string;
@@ -690,19 +715,20 @@ export class AllocationFlagsDto {
 
 export class P2POpsSummaryDto {
   @ApiProperty()
-  withdrawals!: {
-    waitingAssignmentCount: number;
-    partiallyAssignedCount: number;
-    fullyAssignedCount: number;
-  };
+  withdrawalsWaitingAssignmentCount!: number;
 
   @ApiProperty()
-  allocations!: {
-    expiringSoonCount: number;
-    proofSubmittedCount: number;
-    receiverConfirmedCount: number;
-    adminVerifiedCount: number;
-    disputedCount: number;
-    finalizableCount: number;
-  };
+  withdrawalsPartiallyAssignedCount!: number;
+
+  @ApiProperty()
+  allocationsExpiringSoonCount!: number;
+
+  @ApiProperty()
+  allocationsProofSubmittedCount!: number;
+
+  @ApiProperty()
+  allocationsDisputedCount!: number;
+
+  @ApiProperty()
+  allocationsFinalizableCount!: number;
 }
