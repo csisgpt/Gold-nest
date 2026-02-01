@@ -95,7 +95,7 @@ export class WithdrawalsService {
         }
 
         const usable = this.accountsService.getUsableCapacity(account);
-        if (usable.lt(amountDecimal)) {
+        if (usable < amountDecimal) {
           throw new BadRequestException('Insufficient capacity for withdrawal');
         }
 

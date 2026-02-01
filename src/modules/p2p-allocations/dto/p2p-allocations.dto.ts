@@ -426,6 +426,20 @@ export class WithdrawalActionsDto {
   canViewAllocations!: boolean;
 }
 
+export class WithdrawalFlagsDto {
+  @ApiProperty()
+  hasDispute!: boolean;
+
+  @ApiProperty()
+  hasProof!: boolean;
+
+  @ApiProperty()
+  hasExpiringAllocations!: boolean;
+
+  @ApiProperty()
+  isUrgent!: boolean;
+}
+
 export class WithdrawalDestinationDto {
   @ApiProperty({ enum: PaymentDestinationTypeEnum })
   type!: PaymentDestinationType;
@@ -495,6 +509,15 @@ export class DepositActionsDto {
 
   @ApiProperty()
   canBeAssigned!: boolean;
+}
+
+
+export class DepositFlagsDto {
+  @ApiProperty()
+  isFullyAvailable!: boolean;
+
+  @ApiProperty()
+  isExpiring!: boolean;
 }
 
 export class DepositVmDto {
@@ -621,6 +644,22 @@ export class AllocationUserSummaryDto {
   displayName?: string | null;
 }
 
+
+export class AllocationFlagsDto {
+  @ApiProperty()
+  isExpired!: boolean;
+
+  @ApiProperty()
+  expiresSoon!: boolean;
+
+  @ApiProperty()
+  hasProof!: boolean;
+
+  @ApiProperty()
+  isFinalizable!: boolean;
+}
+
+
 export class AllocationVmDto {
   @ApiProperty()
   id!: string;
@@ -677,41 +716,8 @@ export class AllocationVmDto {
   actions!: AllocationActionsDto;
 }
 
-export class WithdrawalFlagsDto {
-  @ApiProperty()
-  hasDispute!: boolean;
 
-  @ApiProperty()
-  hasProof!: boolean;
 
-  @ApiProperty()
-  hasExpiringAllocations!: boolean;
-
-  @ApiProperty()
-  isUrgent!: boolean;
-}
-
-export class DepositFlagsDto {
-  @ApiProperty()
-  isFullyAvailable!: boolean;
-
-  @ApiProperty()
-  isExpiring!: boolean;
-}
-
-export class AllocationFlagsDto {
-  @ApiProperty()
-  isExpired!: boolean;
-
-  @ApiProperty()
-  expiresSoon!: boolean;
-
-  @ApiProperty()
-  hasProof!: boolean;
-
-  @ApiProperty()
-  isFinalizable!: boolean;
-}
 
 export class P2POpsSummaryDto {
   @ApiProperty()

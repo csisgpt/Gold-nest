@@ -596,8 +596,8 @@ export class P2PAllocationsService {
     const expiringThreshold = this.getExpiringSoonThreshold(query.expiringSoonMinutes);
     const applyExpiringFilter = query.expiringSoonMinutes !== undefined;
 
-    const baseFilters: Prisma.Sql[] = [Prisma.sql`w."purpose" = ${RequestPurposeEnum.P2P}`];
-    if (statusList?.length) baseFilters.push(Prisma.sql`w."status" IN (${Prisma.join(statusList)})`);
+    const baseFilters: Prisma.Sql[] = [Prisma.sql`w."purpose" = ${RequestPurposeEnum.P2P}::"RequestPurpose"`];
+    if (statusList?.length) baseFilters.push(Prisma.sql`w."status" IN (${Prisma.join(statusList.map((s) => Prisma.sql`${s}::"WithdrawStatus"`))})`);
     if (query.userId) baseFilters.push(Prisma.sql`w."userId" = ${query.userId}`);
     if (query.amountMin) baseFilters.push(Prisma.sql`w."amount" >= ${new Decimal(query.amountMin)}`);
     if (query.amountMax) baseFilters.push(Prisma.sql`w."amount" <= ${new Decimal(query.amountMax)}`);
@@ -612,14 +612,18 @@ export class P2PAllocationsService {
     }
 
     const baseWhere = Prisma.join(baseFilters, ' AND ');
-    const proofStatusList = Prisma.join([
+    const proofStatusValues = [
       P2PAllocationStatusEnum.PROOF_SUBMITTED,
       P2PAllocationStatusEnum.RECEIVER_CONFIRMED,
       P2PAllocationStatusEnum.ADMIN_VERIFIED,
       P2PAllocationStatusEnum.SETTLED,
-    ]);
+    ];
+    // ⚠️ Postgres enum cast: prevents `"P2PAllocationStatus" = text` errors in $queryRaw
+    const proofStatusList = Prisma.join(
+      proofStatusValues.map((s) => Prisma.sql`${s}::"P2PAllocationStatus"`),
+    );
     const expiringSql = Prisma.sql`BOOL_OR(a."status" IN (${Prisma.join([
-      P2PAllocationStatusEnum.ASSIGNED,
+      Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
     ])}) AND a."expiresAt" <= ${expiringThreshold})`;
 
     const baseQuery = Prisma.sql`
@@ -640,16 +644,16 @@ export class P2PAllocationsService {
           w."updatedAt",
           (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
           MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
-            P2PAllocationStatusEnum.ASSIGNED,
+            Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
           ])})) AS "nearestExpire",
-          BOOL_OR(a."status" = ${P2PAllocationStatusEnum.DISPUTED}) AS "hasDispute",
+          BOOL_OR(a."status" = ${P2PAllocationStatusEnum.DISPUTED}::"P2PAllocationStatus") AS "hasDispute",
           BOOL_OR(al.id IS NOT NULL OR a."status" IN (${proofStatusList})) AS "hasProof",
           ${expiringSql} AS "hasExpiring"
         FROM "WithdrawRequest" w
         JOIN "User" u ON u.id = w."userId"
         LEFT JOIN "P2PAllocation" a ON a."withdrawalId" = w.id
-        LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}
-          AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}
+        LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}::"AttachmentLinkEntityType"
+          AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}::"AttachmentLinkKind"
           AND al."entityId" = a.id
         WHERE ${baseWhere}
         GROUP BY w.id, w."purpose", w."channel", w."amount", w."status", w."assignedAmountTotal", w."settledAmountTotal",
@@ -883,10 +887,14 @@ export class P2PAllocationsService {
     const applyExpiringFilter = query.expiresSoonMinutes !== undefined;
 
     const filters: Prisma.Sql[] = [];
-    if (statusList?.length) filters.push(Prisma.sql`a."status" IN (${Prisma.join(statusList)})`);
+    if (statusList?.length) {
+      filters.push(
+        Prisma.sql`a."status" IN (${Prisma.join(statusList.map((s) => Prisma.sql`${s}::"P2PAllocationStatus"`))})`,
+      );
+    }
     if (query.withdrawalId) filters.push(Prisma.sql`a."withdrawalId" = ${query.withdrawalId}`);
     if (query.depositId) filters.push(Prisma.sql`a."depositId" = ${query.depositId}`);
-    if (query.method) filters.push(Prisma.sql`a."paymentMethod" = ${query.method}`);
+    if (query.method) filters.push(Prisma.sql`a."paymentMethod" = ${query.method}::"PaymentMethod"`);
     const bankRefSearch = query.bankRefSearch ?? query.bankRef;
     if (bankRefSearch) filters.push(Prisma.sql`a."payerBankRef" ILIKE ${`%${bankRefSearch}%`}`);
     if (query.receiverConfirmed !== undefined) {
@@ -908,14 +916,14 @@ export class P2PAllocationsService {
     if (query.expired) {
       filters.push(
         Prisma.sql`a."status" IN (${Prisma.join([
-          P2PAllocationStatusEnum.ASSIGNED,
+          Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
         ])}) AND a."expiresAt" < ${new Date()}`,
       );
     }
     if (applyExpiringFilter) {
       filters.push(
         Prisma.sql`a."status" IN (${Prisma.join([
-          P2PAllocationStatusEnum.ASSIGNED,
+          Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
         ])}) AND a."expiresAt" <= ${expiringThreshold}`,
       );
     }
@@ -932,8 +940,8 @@ export class P2PAllocationsService {
       FROM "P2PAllocation" a
       JOIN "DepositRequest" d ON d.id = a."depositId"
       JOIN "WithdrawRequest" w ON w.id = a."withdrawalId"
-      LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}
-        AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}
+      LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}::"AttachmentLinkEntityType"
+        AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}::"AttachmentLinkKind"
         AND al."entityId" = a.id
       WHERE ${whereClause}
       ${query.hasProof !== undefined ? Prisma.sql`AND ${(query.hasProof ? Prisma.sql`al.id IS NOT NULL` : Prisma.sql`al.id IS NULL`)}` : Prisma.empty}
@@ -1753,14 +1761,14 @@ export class P2PAllocationsService {
       this.prisma.$queryRaw<{ count: number }[]>(Prisma.sql`
         SELECT COUNT(*)::int AS count
         FROM "WithdrawRequest" w
-        WHERE w."purpose" = ${RequestPurposeEnum.P2P}
+        WHERE w."purpose" = ${RequestPurposeEnum.P2P}::"RequestPurpose"
           AND w."assignedAmountTotal" = 0
           AND (w."amount" - w."assignedAmountTotal") > 0
       `),
       this.prisma.$queryRaw<{ count: number }[]>(Prisma.sql`
         SELECT COUNT(*)::int AS count
         FROM "WithdrawRequest" w
-        WHERE w."purpose" = ${RequestPurposeEnum.P2P}
+        WHERE w."purpose" = ${RequestPurposeEnum.P2P}::"RequestPurpose"
           AND w."assignedAmountTotal" > 0
           AND w."assignedAmountTotal" < w."amount"
       `),

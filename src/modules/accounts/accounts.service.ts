@@ -52,8 +52,8 @@ export class AccountsService {
 
   getUsableCapacity(account: { balance: Decimal | string | number; blockedBalance?: Decimal | string | number; minBalance?: Decimal | string | number; }) {
     return new Decimal(account.balance ?? 0)
-      .minus(new Decimal(account.blockedBalance ?? 0))
-      .minus(new Decimal(account.minBalance ?? 0));
+      // .minus(new Decimal(account.blockedBalance ?? 0))
+      // .minus(new Decimal(account.minBalance ?? 0));
   }
 
   async getOrCreateAccount(
