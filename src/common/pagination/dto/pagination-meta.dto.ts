@@ -2,7 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 
 export class PaginationMetaDto {
   @ApiProperty()
-  total!: number;
+  totalItems!: number;
 
   @ApiProperty()
   page!: number;
@@ -11,13 +11,13 @@ export class PaginationMetaDto {
   limit!: number;
 
   @ApiProperty()
-  pages!: number;
+  totalPages!: number;
 
   @ApiProperty()
-  hasNext!: boolean;
+  hasNextPage!: boolean;
 
   @ApiProperty()
-  hasPrev!: boolean;
+  hasPrevPage!: boolean;
 }
 
 export class PaginatedResponseDto<T> {
@@ -27,4 +27,3 @@ export class PaginatedResponseDto<T> {
   @ApiProperty({ type: () => PaginationMetaDto })
   meta!: PaginationMetaDto;
 }
-

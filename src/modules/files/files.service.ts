@@ -358,12 +358,14 @@ export class FilesService {
   }
 
   private async queryFiles(where: Prisma.FileWhereInput, query: ListFilesQueryDto) {
+    const page = Math.max(Math.trunc(query.page ?? 1), 1);
+    const limit = Math.min(Math.max(Math.trunc(query.limit ?? 20), 1), 100);
     const [items, total] = await this.prisma.$transaction([
       this.prisma.file.findMany({
         where,
         orderBy: { createdAt: 'desc' },
-        skip: (query.page - 1) * query.limit,
-        take: query.limit,
+        skip: (page - 1) * limit,
+        take: limit,
       }),
       this.prisma.file.count({ where }),
     ]);

@@ -4,6 +4,7 @@ import { FilesService } from './files.service';
 import { FilesController } from './files.controller';
 import { AdminFilesController } from './admin-files.controller';
 import { PrismaModule } from '../prisma/prisma.module';
+import { PaginationModule } from '../../common/pagination/pagination.module';
 import {
   STORAGE_PROVIDER,
 } from './storage/storage.provider';
@@ -11,7 +12,7 @@ import { LocalStorageProvider } from './storage/local.storage';
 import { FileUploadInterceptor } from './file-upload.interceptor';
   
 @Module({
-  imports: [PrismaModule, ConfigModule],
+  imports: [PrismaModule, ConfigModule, PaginationModule],
   providers: [
     FilesService,
     FileUploadInterceptor,

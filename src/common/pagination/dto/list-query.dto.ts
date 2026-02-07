@@ -1,39 +1,64 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { parseNumber } from '../query-parsers';
 
 export enum SortOrder {
   ASC = 'asc',
   DESC = 'desc',
 }
 
-function toInt(value: unknown, defaultValue: number): number {
-  const parsed = Number.parseInt(String(value), 10);
-  return Number.isNaN(parsed) ? defaultValue : parsed;
-}
-
 export class ListQueryDto<TSort extends string = string> {
-  @ApiPropertyOptional({ default: 1, minimum: 1 })
-  @Transform(({ value }) => toInt(value, 1))
+  @ApiPropertyOptional({ minimum: 1 })
+  @Transform(({ value }) => parseNumber(value, 'page'))
+  @IsOptional()
   @IsInt()
   @Min(1)
-  page = 1;
+  page?: number;
 
-  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
-  @Transform(({ value }) => Math.min(Math.max(toInt(value, 20), 1), 100))
+  @ApiPropertyOptional({ minimum: 1, maximum: 100 })
+  @Transform(({ value }) => parseNumber(value, 'limit'))
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(100)
-  limit = 20;
+  limit?: number;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ deprecated: true, description: 'Deprecated offset pagination (use page instead).' })
+  @Transform(({ value }) => parseNumber(value, 'offset'))
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  offset?: number;
+
+  @ApiPropertyOptional({ description: 'Sort expression, e.g. createdAt:desc or -createdAt.' })
+  @IsOptional()
+  @IsString()
+  sort?: string;
+
+  @ApiPropertyOptional({ deprecated: true, description: 'Deprecated alias for sort.' })
   @IsOptional()
   @IsString()
   sortBy?: TSort;
 
-  @ApiPropertyOptional({ enum: SortOrder, default: SortOrder.DESC })
-  @Transform(({ value }) => (value ? String(value).toLowerCase() : SortOrder.DESC))
+  @ApiPropertyOptional({ deprecated: true, description: 'Deprecated alias for sort.' })
+  @IsOptional()
+  @IsString()
+  orderBy?: string;
+
+  @ApiPropertyOptional({ enum: SortOrder, default: SortOrder.DESC, deprecated: true })
+  @Transform(({ value }) => (value ? String(value).toLowerCase() : undefined))
   @IsEnum(SortOrder)
   @IsOptional()
-  order: SortOrder = SortOrder.DESC;
+  order?: SortOrder;
+
+  @ApiPropertyOptional({ deprecated: true, description: 'Deprecated alias for order.' })
+  @IsOptional()
+  @IsString()
+  direction?: string;
+
+  @ApiPropertyOptional({ deprecated: true, description: 'Deprecated alias for order.' })
+  @IsOptional()
+  @IsString()
+  dir?: string;
 }

@@ -9,6 +9,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { AdminListFilesQueryDto } from './dto/list-files-query.dto';
 import { DeleteFileQueryDto } from './dto/delete-file-query.dto';
 import { FilesService } from './files.service';
+import { PaginationService } from '../../common/pagination/pagination.service';
 
 @ApiTags('admin/files')
 @ApiBearerAuth('access-token')
@@ -16,10 +17,20 @@ import { FilesService } from './files.service';
 @Roles(UserRole.ADMIN)
 @Controller('admin/files')
 export class AdminFilesController {
-  constructor(private readonly filesService: FilesService) {}
+  constructor(
+    private readonly filesService: FilesService,
+    private readonly paginationService: PaginationService,
+  ) {}
 
   @Get()
   async list(@Query() query: AdminListFilesQueryDto) {
+    const { page, limit } = this.paginationService.resolvePaging({
+      page: query.page,
+      limit: query.limit,
+      offset: query.offset,
+    });
+    query.page = page;
+    query.limit = limit;
     const { items, total } = await this.filesService.listAdminFiles(query);
     return {
       items: items.map((item) => ({
@@ -32,7 +43,7 @@ export class AdminFilesController {
         uploadedById: item.uploadedById,
         storageKey: item.storageKey,
       })),
-      meta: this.buildMeta(query.page, query.limit, total),
+      meta: this.paginationService.meta(total, page, limit),
     };
   }
 
@@ -46,8 +57,4 @@ export class AdminFilesController {
     return this.filesService.deleteFileAsAdmin(id, query);
   }
 
-  private buildMeta(page: number, limit: number, total: number) {
-    const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
-    return { page, limit, total, totalPages };
-  }
 }

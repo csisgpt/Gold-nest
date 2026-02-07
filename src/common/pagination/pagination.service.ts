@@ -3,12 +3,12 @@ import { Injectable } from '@nestjs/common';
 export interface PaginationResult<T> {
   items: T[];
   meta: {
-    total: number;
+    totalItems: number;
     page: number;
     limit: number;
-    pages: number;
-    hasNext: boolean;
-    hasPrev: boolean;
+    totalPages: number;
+    hasNextPage: boolean;
+    hasPrevPage: boolean;
   };
 }
 
@@ -28,15 +28,15 @@ export class PaginationService {
 
   meta(total: number, page = 1, limit = 20): PaginationResult<unknown>['meta'] {
     const sanitized = this.getSkipTake(page, limit);
-    const pages = sanitized.limit === 0 ? 0 : Math.ceil(total / sanitized.limit);
+    const totalPages = sanitized.limit === 0 ? 0 : Math.ceil(total / sanitized.limit);
 
     return {
-      total,
+      totalItems: total,
       page: sanitized.page,
       limit: sanitized.limit,
-      pages,
-      hasNext: sanitized.page < pages,
-      hasPrev: sanitized.page > 1,
+      totalPages,
+      hasNextPage: sanitized.page < totalPages,
+      hasPrevPage: sanitized.page > 1,
     };
   }
 
@@ -45,6 +45,28 @@ export class PaginationService {
     return {
       items,
       meta: this.meta(total, sanitized.page, sanitized.limit),
+    };
+  }
+
+  resolvePaging(params: { page?: number; limit?: number; offset?: number }): {
+    page: number;
+    limit: number;
+    offsetUsed: boolean;
+  } {
+    const limit = Math.min(Math.max(Math.trunc(params.limit ?? 20), 1), 100);
+    if (params.page === undefined && params.offset !== undefined) {
+      const offset = Math.max(Math.trunc(params.offset), 0);
+      return {
+        page: Math.floor(offset / limit) + 1,
+        limit,
+        offsetUsed: true,
+      };
+    }
+
+    return {
+      page: Math.max(Math.trunc(params.page ?? 1), 1),
+      limit,
+      offsetUsed: false,
     };
   }
 }

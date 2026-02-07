@@ -11,6 +11,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { ApiErrorCode } from './api-error-codes';
 import { ApiResponse, ApiFieldError, nowIso } from './api-response';
+import { getTraceId } from './trace-id';
 
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
@@ -18,14 +19,13 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse();
     const request = ctx.getRequest<{ traceId?: string }>();
-    const traceId = request?.traceId ?? '';
+    const traceId = getTraceId(request, response);
 
     const { status, errorCode, message, details } = this.resolveException(exception);
 
     const payload: ApiResponse<null> = {
       ok: false,
       result: null,
-      meta: undefined,
       error: {
         code: errorCode,
         message,
@@ -167,6 +167,14 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
     if (!this.isRecord(response)) {
       return [];
+    }
+
+    const details = response['details'];
+    if (Array.isArray(details)) {
+      return details.filter((item) => this.isRecord(item)).map((item) => ({
+        path: typeof item['path'] === 'string' ? item['path'] : '',
+        message: typeof item['message'] === 'string' ? item['message'] : 'Invalid input',
+      }));
     }
 
     const message = response['message'];

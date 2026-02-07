@@ -14,6 +14,7 @@ import { RolesGuard } from '../../auth/roles.guard';
 import { Roles } from '../../auth/roles.decorator';
 import { QuoteLockService } from './quote-lock.service';
 import { LockQuoteRequestDto, LockQuoteResponseDto } from './dto/lock-quote.dto';
+import { SkipWrap } from '../../../common/decorators/skip-wrap.decorator';
 
 interface StreamMessage {
   data: any;
@@ -33,16 +34,16 @@ export class MarketQuotesController {
   @ApiBearerAuth('access-token')
   @UseGuards(JwtAuthGuard)
   @Get('market/quotes')
-  list(@CurrentUser() user: any): Promise<{ ok: true; result: MarketQuotesResponseDto }> {
-    return this.quotesService.listForUser(user.sub).then((result) => ({ ok: true, result }));
+  list(@CurrentUser() user: any): Promise<MarketQuotesResponseDto> {
+    return this.quotesService.listForUser(user.sub);
   }
 
   @ApiBearerAuth('access-token')
   @UseGuards(JwtAuthGuard)
   @Get('market/quotes/:productId')
-  async getOne(@Param('productId') productId: string, @CurrentUser() user: any): Promise<{ ok: true; result: MarketQuoteItemDto }> {
+  async getOne(@Param('productId') productId: string, @CurrentUser() user: any): Promise<MarketQuoteItemDto> {
     const result = await this.quotesService.getOne(user.sub, productId);
-    return { ok: true, result };
+    return result;
   }
 
   @ApiBearerAuth('access-token')
@@ -51,7 +52,7 @@ export class MarketQuotesController {
   async lockQuote(
     @Body() body: LockQuoteRequestDto,
     @CurrentUser() user: any,
-  ): Promise<{ ok: true; result: LockQuoteResponseDto }> {
+  ): Promise<LockQuoteResponseDto> {
     const payload = await this.quoteLockService.lockQuote({
       userId: user.sub,
       productId: body.productId,
@@ -59,13 +60,10 @@ export class MarketQuotesController {
       forceNew: body.forceNew,
     });
     return {
-      ok: true,
-      result: {
-        quoteId: payload.quoteId,
-        expiresAt: payload.expiresAt,
-        executablePrice: payload.executablePrice,
-        quote: payload,
-      },
+      quoteId: payload.quoteId,
+      expiresAt: payload.expiresAt,
+      executablePrice: payload.executablePrice,
+      quote: payload,
     };
   }
 
@@ -75,22 +73,20 @@ export class MarketQuotesController {
   async getLock(
     @Param('quoteId') quoteId: string,
     @CurrentUser() user: any,
-  ): Promise<{ ok: true; result: LockQuoteResponseDto }> {
+  ): Promise<LockQuoteResponseDto> {
     const payload = await this.quoteLockService.getLockForUser(quoteId, user.sub);
     return {
-      ok: true,
-      result: {
-        quoteId: payload.quoteId,
-        expiresAt: payload.expiresAt,
-        executablePrice: payload.executablePrice,
-        quote: payload,
-      },
+      quoteId: payload.quoteId,
+      expiresAt: payload.expiresAt,
+      executablePrice: payload.executablePrice,
+      quote: payload,
     };
   }
 
   @ApiBearerAuth('access-token')
   @UseGuards(JwtAuthGuard)
   @Sse('market/quotes/stream')
+  @SkipWrap()
   sse(@CurrentUser() user: any): Observable<StreamMessage> {
     const userId = user.sub;
     const settingsPromise = this.userSettingsService.getForUser(userId);
@@ -144,6 +140,6 @@ export class MarketQuotesController {
       else noPrice++;
     }
     const last = await this.redis.getJson<{ at: string }>(LAST_TICK_KEY);
-    return { ok: true, result: { activeProducts: index.length, ok, stale, noPrice, lastTickAt: last?.at ?? null } };
+    return { activeProducts: index.length, ok, stale, noPrice, lastTickAt: last?.at ?? null };
   }
 }
