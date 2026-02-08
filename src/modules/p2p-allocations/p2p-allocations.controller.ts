@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiHeader, ApiOkResponse, ApiTags } from '@nestjs/swagger';
+import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -32,15 +33,47 @@ export class P2PAllocationsController {
 
   @Get('admin/p2p/withdrawals')
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: P2PListResponseDto<WithdrawalVmDto> })
-  listAdminWithdrawals(@Query() query: AdminP2PWithdrawalsQueryDto) {
+  @ApiOkResponse({
+    type: P2PListResponseDto<WithdrawalVmDto>,
+    description: 'List of P2P withdrawals (enveloped).',
+    content: {
+      'application/json': {
+        example: {
+          ok: true,
+          result: {
+            items: [],
+            meta: {
+              page: 1,
+              limit: 20,
+              totalItems: 0,
+              totalPages: 0,
+              hasNextPage: false,
+              hasPrevPage: false,
+            },
+          },
+          traceId: 'req_1234567890',
+          ts: '2024-01-01T00:00:00.000Z',
+        },
+      },
+    },
+  })
+  listAdminWithdrawals(
+    @Query() query: AdminP2PWithdrawalsQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    this.markDeprecatedOffset(query, res);
     return this.p2pService.listAdminWithdrawals(query);
   }
 
   @Get('admin/p2p/withdrawals/:id/candidates')
   @Roles(UserRole.ADMIN)
   @ApiOkResponse({ type: P2PListResponseDto<DepositVmDto> })
-  listCandidates(@Param('id') id: string, @Query() query: AdminP2PWithdrawalCandidatesQueryDto) {
+  listCandidates(
+    @Param('id') id: string,
+    @Query() query: AdminP2PWithdrawalCandidatesQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    this.markDeprecatedOffset(query, res);
     return this.p2pService.listCandidates(id, query);
   }
 
@@ -60,7 +93,11 @@ export class P2PAllocationsController {
   @Get('admin/p2p/allocations')
   @Roles(UserRole.ADMIN)
   @ApiOkResponse({ type: P2PListResponseDto<AllocationVmDto> })
-  listAdminAllocations(@Query() query: AdminP2PAllocationsQueryDto) {
+  listAdminAllocations(
+    @Query() query: AdminP2PAllocationsQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    this.markDeprecatedOffset(query, res);
     return this.p2pService.listAdminAllocations(query);
   }
 
@@ -94,7 +131,12 @@ export class P2PAllocationsController {
 
   @Get('p2p/allocations/my-as-payer')
   @ApiOkResponse({ type: P2PListResponseDto<AllocationVmDto> })
-  listMyAsPayer(@CurrentUser() user: JwtRequestUser, @Query() query: P2PAllocationQueryDto) {
+  listMyAsPayer(
+    @CurrentUser() user: JwtRequestUser,
+    @Query() query: P2PAllocationQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    this.markDeprecatedOffset(query, res);
     return this.p2pService.listMyAllocationsAsPayer(user.id, query);
   }
 
@@ -110,7 +152,12 @@ export class P2PAllocationsController {
 
   @Get('p2p/allocations/my-as-receiver')
   @ApiOkResponse({ type: P2PListResponseDto<AllocationVmDto> })
-  listMyAsReceiver(@CurrentUser() user: JwtRequestUser, @Query() query: P2PAllocationQueryDto) {
+  listMyAsReceiver(
+    @CurrentUser() user: JwtRequestUser,
+    @Query() query: P2PAllocationQueryDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    this.markDeprecatedOffset(query, res);
     return this.p2pService.listMyAllocationsAsReceiver(user.id, query);
   }
 
@@ -122,5 +169,11 @@ export class P2PAllocationsController {
     @Body() dto: P2PReceiverConfirmDto,
   ) {
     return this.p2pService.receiverConfirm(id, user.id, { confirmed: dto.confirmed, reason: dto.reason });
+  }
+
+  private markDeprecatedOffset(query: { offset?: number; page?: number }, res: Response) {
+    if (query.offset !== undefined && query.page === undefined) {
+      res.setHeader('X-Deprecated', 'offset');
+    }
   }
 }

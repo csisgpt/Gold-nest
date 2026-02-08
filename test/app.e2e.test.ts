@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { after, test } from 'node:test';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { BadRequestException, INestApplication, ValidationPipe } from '@nestjs/common';
+import { NestFactory, Reflector } from '@nestjs/core';
 import {
   DepositStatus,
   InstrumentType,
@@ -23,6 +23,10 @@ import {
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { AppModule } from '../src/app.module';
+import { ApiExceptionFilter } from '../src/common/http/api-exception.filter';
+import { ApiResponseInterceptor } from '../src/common/http/api-response.interceptor';
+import { SensitiveFieldsInterceptor } from '../src/common/interceptors/sensitive-fields.interceptor';
+import { flattenValidationErrors } from '../src/common/validation/validation-details';
 import { AccountsService } from '../src/modules/accounts/accounts.service';
 import { GOLD_750_INSTRUMENT_CODE, HOUSE_USER_ID, IRR_INSTRUMENT_CODE } from '../src/modules/accounts/constants';
 import { DepositsService } from '../src/modules/deposits/deposits.service';
@@ -65,7 +69,18 @@ async function bootstrapApp(): Promise<INestApplication | null> {
           transform: true,
           forbidUnknownValues: true,
           forbidNonWhitelisted: true,
+          transformOptions: { enableImplicitConversion: true },
+          exceptionFactory: (errors) =>
+            new BadRequestException({
+              message: 'Validation failed',
+              details: flattenValidationErrors(errors),
+            }),
         }),
+      );
+      app.useGlobalFilters(new ApiExceptionFilter());
+      app.useGlobalInterceptors(
+        new ApiResponseInterceptor(app.get(Reflector)),
+        new SensitiveFieldsInterceptor(),
       );
       await app.init();
       await app.listen(0);
@@ -199,6 +214,67 @@ test('Users cannot access other users\' accounts or gold lots', async (t) => {
     headers: authHeader(admin),
   });
   assert.strictEqual(adminLots.status, 200);
+});
+
+test('Success envelope wraps JSON responses', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+
+  const response = await fetch(`${baseUrl}/`);
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.strictEqual(body.ok, true);
+  assert.ok(body.result);
+  assert.strictEqual(typeof body.traceId, 'string');
+  assert.ok(/\d{4}-\d{2}-\d{2}T/.test(body.ts));
+});
+
+test('Validation errors return standard details', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const response = await fetch(`${baseUrl}/admin/product-provider-mappings`, {
+    method: 'POST',
+    headers: {
+      ...authHeader(admin),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
+
+  assert.strictEqual(response.status, 400);
+  const body = (await response.json()) as any;
+  assert.strictEqual(body.ok, false);
+  assert.ok(Array.isArray(body.error?.details));
+  assert.ok(body.error.details.length > 0);
+  assert.ok(body.error.details.every((detail: any) => typeof detail.path === 'string' && typeof detail.message === 'string'));
+});
+
+test('P2P list responses use items/meta and support offset mapping', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const response = await fetch(`${baseUrl}/admin/p2p/withdrawals?offset=0&limit=20`, {
+    headers: authHeader(admin),
+  });
+
+  assert.strictEqual(response.status, 200);
+  assert.strictEqual(response.headers.get('x-deprecated'), 'offset');
+  const body = (await response.json()) as any;
+  assert.strictEqual(body.ok, true);
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+  const meta = body.result.meta;
+  assert.ok(typeof meta.page === 'number');
+  assert.ok(typeof meta.limit === 'number');
+  assert.ok(typeof meta.totalItems === 'number');
+  assert.ok(typeof meta.totalPages === 'number');
+  assert.ok(typeof meta.hasNextPage === 'boolean');
+  assert.ok(typeof meta.hasPrevPage === 'boolean');
 });
 
 test('Redis service stays disabled without configuration', async (t) => {

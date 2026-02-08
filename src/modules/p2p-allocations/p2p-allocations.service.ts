@@ -16,6 +16,7 @@ import {
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
+import { normalizeSort } from '../../common/pagination/query-parsers';
 import { AccountsService } from '../accounts/accounts.service';
 import { LimitsService } from '../policy/limits.service';
 import { PaymentDestinationsService } from '../payment-destinations/payment-destinations.service';
@@ -32,11 +33,7 @@ import {
   DepositVmDto,
   P2PAllocationQueryDto,
   P2PAllocationProofDto,
-  P2PAllocationSort,
-  P2PCandidateSort,
-  P2PListMetaDto,
   P2PListResponseDto,
-  P2PWithdrawalListSort,
   WithdrawalVmDto,
 } from './dto/p2p-allocations.dto';
 import { deriveDepositP2PStatus, deriveWithdrawP2PStatus } from './p2p-status.util';
@@ -226,23 +223,6 @@ export class P2PAllocationsService {
       .map((item) => item.trim())
       .filter(Boolean);
     return values.length ? values : undefined;
-  }
-
-  private buildListMeta(params: {
-    limit: number;
-    sort?: string;
-    total?: number;
-    offset?: number;
-    filtersApplied?: Record<string, any>;
-  }): P2PListMetaDto {
-    return {
-      total: params.total,
-      nextCursor: null,
-      limit: params.limit,
-      offset: params.offset,
-      sort: params.sort,
-      filtersApplied: params.filtersApplied,
-    };
   }
 
   private async lockWithdrawRow(tx: Prisma.TransactionClient, withdrawalId: string) {
@@ -586,11 +566,12 @@ export class P2PAllocationsService {
   }
 
   async listAdminWithdrawals(query: AdminP2PWithdrawalsQueryDto): Promise<P2PListResponseDto<WithdrawalVmDto>> {
-    const limit = Math.min(Math.max(Number(query.limit ?? 20), 1), 100);
-    const offset = query.offset !== undefined
-      ? Math.max(Number(query.offset), 0)
-      : (Math.max(Number(query.page ?? 1), 1) - 1) * limit;
-    const skip = offset;
+    const { page, limit } = this.paginationService.resolvePaging({
+      page: query.page,
+      limit: query.limit,
+      offset: query.offset,
+    });
+    const skip = (page - 1) * limit;
     const take = limit;
     const statusList = this.parseStatusFilter(query.status);
     const expiringThreshold = this.getExpiringSoonThreshold(query.expiringSoonMinutes);
@@ -668,27 +649,39 @@ export class P2PAllocationsService {
       ${applyExpiringFilter ? Prisma.sql`AND base."hasExpiring" = true` : Prisma.empty}
     `;
 
+    const sortCandidates = normalizeSort(
+      {
+        sort: query.sort,
+        orderBy: query.orderBy,
+        sortBy: query.sortBy,
+        direction: query.direction,
+        dir: query.dir,
+        order: query.order,
+      },
+      {
+        path: 'sort',
+        allowedFields: ['createdAt', 'amount', 'remainingToAssign', 'priority', 'nearestExpire'],
+      },
+    );
+
+    const primarySort = sortCandidates[0]?.field;
+    const primaryDirection = sortCandidates[0]?.direction;
+
     const orderBy = (() => {
-      if (query.sort === P2PWithdrawalListSort.CREATED_AT_ASC) {
-        return Prisma.sql`ORDER BY base."createdAt" ASC`;
-      }
-      if (query.sort === P2PWithdrawalListSort.AMOUNT_ASC) {
-        return Prisma.sql`ORDER BY base."amount" ASC, base."createdAt" ASC`;
-      }
-      if (query.sort === P2PWithdrawalListSort.AMOUNT_DESC) {
-        return Prisma.sql`ORDER BY base."amount" DESC, base."createdAt" ASC`;
-      }
-      if (query.sort === P2PWithdrawalListSort.REMAINING_ASC) {
-        return Prisma.sql`ORDER BY base."remainingToAssign" ASC, base."createdAt" ASC`;
-      }
-      if (query.sort === P2PWithdrawalListSort.REMAINING_DESC) {
-        return Prisma.sql`ORDER BY base."remainingToAssign" DESC, base."createdAt" ASC`;
-      }
-      if (query.sort === P2PWithdrawalListSort.NEAREST_EXPIRE_ASC) {
-        return Prisma.sql`ORDER BY base."nearestExpire" ASC NULLS LAST, base."createdAt" ASC`;
-      }
-      if (query.sort === P2PWithdrawalListSort.PRIORITY || !query.sort) {
+      if (primarySort === 'priority' || !primarySort) {
         return Prisma.sql`ORDER BY base."createdAt" ASC, base."remainingToAssign" DESC`;
+      }
+      if (primarySort === 'createdAt') {
+        return Prisma.sql`ORDER BY base."createdAt" ${primaryDirection === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`}`;
+      }
+      if (primarySort === 'amount') {
+        return Prisma.sql`ORDER BY base."amount" ${primaryDirection === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`}, base."createdAt" ASC`;
+      }
+      if (primarySort === 'remainingToAssign') {
+        return Prisma.sql`ORDER BY base."remainingToAssign" ${primaryDirection === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`}, base."createdAt" ASC`;
+      }
+      if (primarySort === 'nearestExpire') {
+        return Prisma.sql`ORDER BY base."nearestExpire" ${primaryDirection === 'desc' ? Prisma.sql`DESC` : Prisma.sql`ASC`} NULLS LAST, base."createdAt" ASC`;
       }
       return Prisma.sql`ORDER BY base."createdAt" DESC`;
     })();
@@ -708,25 +701,8 @@ export class P2PAllocationsService {
     const ids = idRows.map((row) => row.id);
     if (ids.length === 0) {
       return {
-        data: [],
-        meta: this.buildListMeta({
-          total: countRows[0]?.count ?? 0,
-          limit,
-          offset,
-          sort: query.sort ?? P2PWithdrawalListSort.PRIORITY,
-          filtersApplied: {
-            status: statusList,
-            userId: query.userId,
-            mobile: query.mobile,
-            amountMin: query.amountMin,
-            amountMax: query.amountMax,
-            remainingToAssignMin: query.remainingToAssignMin,
-            remainingToAssignMax: query.remainingToAssignMax,
-            hasDispute: query.hasDispute,
-            hasProof: query.hasProof,
-            expiringSoonMinutes: query.expiringSoonMinutes,
-          },
-        }),
+        items: [],
+        meta: this.paginationService.meta(countRows[0]?.count ?? 0, page, limit),
       };
     }
 
@@ -754,7 +730,7 @@ export class P2PAllocationsService {
     `);
 
     const rowMap = new Map(rows.map((row) => [row.id, row]));
-    const data = ids
+    const items = ids
       .map((id) => rowMap.get(id))
       .filter(Boolean)
       .map((row) =>
@@ -772,25 +748,8 @@ export class P2PAllocationsService {
       );
 
     return {
-      data,
-      meta: this.buildListMeta({
-        total: countRows[0]?.count ?? 0,
-        limit,
-        offset,
-        sort: query.sort ?? P2PWithdrawalListSort.PRIORITY,
-        filtersApplied: {
-          status: statusList,
-          userId: query.userId,
-          mobile: query.mobile,
-          amountMin: query.amountMin,
-          amountMax: query.amountMax,
-          remainingToAssignMin: query.remainingToAssignMin,
-          remainingToAssignMax: query.remainingToAssignMax,
-          hasDispute: query.hasDispute,
-          hasProof: query.hasProof,
-          expiringSoonMinutes: query.expiringSoonMinutes,
-        },
-      }),
+      items,
+      meta: this.paginationService.meta(countRows[0]?.count ?? 0, page, limit),
     };
   }
 
@@ -833,11 +792,32 @@ export class P2PAllocationsService {
       where.AND = andFilters;
     }
 
+    const candidateSort = normalizeSort(
+      {
+        sort: query.sort,
+        orderBy: query.orderBy,
+        sortBy: query.sortBy,
+        direction: query.direction,
+        dir: query.dir,
+        order: query.order,
+      },
+      { path: 'sort', allowedFields: ['createdAt', 'remaining', 'remainingAmount'] },
+    );
+    const candidatePrimary = candidateSort[0];
     const orderBy: Prisma.DepositRequestOrderByWithRelationInput[] = [{ createdAt: 'desc' }];
-    if (query.sort === P2PCandidateSort.CREATED_AT_ASC) orderBy.unshift({ createdAt: 'asc' });
-    if (query.sort === P2PCandidateSort.REMAINING_DESC) orderBy.unshift({ remainingAmount: 'desc' });
+    if (candidatePrimary?.field === 'createdAt') {
+      orderBy.unshift({ createdAt: candidatePrimary.direction });
+    }
+    if (candidatePrimary?.field === 'remaining' || candidatePrimary?.field === 'remainingAmount') {
+      orderBy.unshift({ remainingAmount: candidatePrimary.direction });
+    }
 
-    const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+    const { page, limit } = this.paginationService.resolvePaging({
+      page: query.page,
+      limit: query.limit,
+      offset: query.offset,
+    });
+    const { skip, take } = this.paginationService.getSkipTake(page, limit);
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.depositRequest.findMany({
@@ -863,26 +843,19 @@ export class P2PAllocationsService {
     const mapped = items.map((deposit) => this.buildDepositVm(deposit));
 
     return {
-      data: mapped,
-      meta: this.buildListMeta({
-        total,
-        limit,
-        sort: query.sort ?? P2PCandidateSort.REMAINING_DESC,
-        filtersApplied: {
-          status: statusList,
-          userId: query.userId,
-          mobile: query.mobile,
-          remainingMin: query.remainingMin,
-          excludeUserId: query.excludeUserId,
-          excludedUserIds,
-        },
-      }),
+      items: mapped,
+      meta: this.paginationService.meta(total, page, limit),
     };
   }
 
   async listAdminAllocations(query: AdminP2PAllocationsQueryDto): Promise<P2PListResponseDto<AllocationVmDto>> {
     const statusList = this.parseStatusFilter(query.status);
-    const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+    const { page, limit } = this.paginationService.resolvePaging({
+      page: query.page,
+      limit: query.limit,
+      offset: query.offset,
+    });
+    const { skip, take } = this.paginationService.getSkipTake(page, limit);
     const expiringThreshold = this.getExpiringSoonThreshold(query.expiresSoonMinutes);
     const applyExpiringFilter = query.expiresSoonMinutes !== undefined;
 
@@ -948,11 +921,29 @@ export class P2PAllocationsService {
       GROUP BY a.id, a."expiresAt", a."payerPaidAt", a."amount", a."createdAt"
     `;
 
+    const allocationSort = normalizeSort(
+      {
+        sort: query.sort,
+        orderBy: query.orderBy,
+        sortBy: query.sortBy,
+        direction: query.direction,
+        dir: query.dir,
+        order: query.order,
+      },
+      { path: 'sort', allowedFields: ['createdAt', 'expiresAt', 'paidAt', 'amount'] },
+    );
+    const allocationPrimary = allocationSort[0];
     const orderBy = (() => {
-      if (query.sort === P2PAllocationSort.EXPIRES_AT_ASC) return Prisma.sql`ORDER BY base."expiresAt" ASC`;
-      if (query.sort === P2PAllocationSort.PAID_AT_DESC) return Prisma.sql`ORDER BY base."payerPaidAt" DESC NULLS LAST`;
-      if (query.sort === P2PAllocationSort.AMOUNT_DESC) return Prisma.sql`ORDER BY base."amount" DESC`;
-      return Prisma.sql`ORDER BY base."createdAt" DESC`;
+      if (allocationPrimary?.field === 'expiresAt') {
+        return Prisma.sql`ORDER BY base."expiresAt" ${allocationPrimary.direction === 'desc' ? Prisma.sql`DESC` : Prisma.sql`ASC`}`;
+      }
+      if (allocationPrimary?.field === 'paidAt') {
+        return Prisma.sql`ORDER BY base."payerPaidAt" ${allocationPrimary.direction === 'desc' ? Prisma.sql`DESC` : Prisma.sql`ASC`} NULLS LAST`;
+      }
+      if (allocationPrimary?.field === 'amount') {
+        return Prisma.sql`ORDER BY base."amount" ${allocationPrimary.direction === 'desc' ? Prisma.sql`DESC` : Prisma.sql`ASC`}`;
+      }
+      return Prisma.sql`ORDER BY base."createdAt" ${allocationPrimary?.direction === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`}`;
     })();
 
     const countQuery = Prisma.sql`SELECT COUNT(*)::int AS count FROM (${baseQuery}) AS base`;
@@ -982,7 +973,7 @@ export class P2PAllocationsService {
     const itemMap = new Map(items.map((item) => [item.id, item]));
 
     return {
-      data: ids
+      items: ids
         .map((id) => itemMap.get(id))
         .filter(Boolean)
         .map((allocation) =>
@@ -993,23 +984,7 @@ export class P2PAllocationsService {
             expiresSoonThreshold: expiringThreshold,
           }),
         ),
-      meta: this.buildListMeta({
-        total: countRows[0]?.count ?? 0,
-        limit,
-        sort: query.sort ?? P2PAllocationSort.CREATED_AT_DESC,
-        filtersApplied: {
-          status: statusList,
-          withdrawalId: query.withdrawalId,
-          depositId: query.depositId,
-          payerUserId: query.payerUserId,
-          receiverUserId: query.receiverUserId,
-          hasProof: query.hasProof,
-          expired: query.expired,
-          expiresSoonMinutes: query.expiresSoonMinutes,
-          bankRef: query.bankRef,
-          bankRefSearch,
-        },
-      }),
+      meta: this.paginationService.meta(countRows[0]?.count ?? 0, page, limit),
     };
   }
 
@@ -1223,9 +1198,31 @@ export class P2PAllocationsService {
       where.status = { in: allowed as P2PAllocationStatus[] };
     }
 
-    const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
-    const orderBy: Prisma.P2PAllocationOrderByWithRelationInput[] = [{ expiresAt: 'asc' }];
-    if (query.sort === P2PAllocationSort.CREATED_AT_DESC) orderBy.unshift({ createdAt: 'desc' });
+    const { page, limit } = this.paginationService.resolvePaging({
+      page: query.page,
+      limit: query.limit,
+      offset: query.offset,
+    });
+    const { skip, take } = this.paginationService.getSkipTake(page, limit);
+    const payerSort = normalizeSort(
+      {
+        sort: query.sort,
+        orderBy: query.orderBy,
+        sortBy: query.sortBy,
+        direction: query.direction,
+        dir: query.dir,
+        order: query.order,
+      },
+      { path: 'sort', allowedFields: ['createdAt', 'expiresAt', 'paidAt', 'amount'] },
+    );
+    const payerPrimary = payerSort[0];
+    const orderBy: Prisma.P2PAllocationOrderByWithRelationInput[] = [
+      { expiresAt: 'asc' },
+    ];
+    if (payerPrimary?.field === 'createdAt') orderBy.unshift({ createdAt: payerPrimary.direction });
+    if (payerPrimary?.field === 'expiresAt') orderBy.unshift({ expiresAt: payerPrimary.direction });
+    if (payerPrimary?.field === 'paidAt') orderBy.unshift({ payerPaidAt: payerPrimary.direction });
+    if (payerPrimary?.field === 'amount') orderBy.unshift({ amount: payerPrimary.direction });
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.p2PAllocation.findMany({
@@ -1245,7 +1242,7 @@ export class P2PAllocationsService {
     const expiresSoonThreshold = this.getExpiringSoonThreshold(query.expiresSoon);
 
     return {
-      data: items.map((allocation) =>
+      items: items.map((allocation) =>
         this.buildAllocationVm({
           allocation,
           attachments: attachmentMap.get(allocation.id) ?? [],
@@ -1254,15 +1251,7 @@ export class P2PAllocationsService {
           expiresSoonThreshold,
         }),
       ),
-      meta: this.buildListMeta({
-        total,
-        limit,
-        sort: query.sort ?? P2PAllocationSort.EXPIRES_AT_ASC,
-        filtersApplied: {
-          status: statusList,
-          expiresSoon: query.expiresSoon,
-        },
-      }),
+      meta: this.paginationService.meta(total, page, limit),
     };
   }
 
@@ -1391,9 +1380,28 @@ export class P2PAllocationsService {
       where.status = { in: allowed as P2PAllocationStatus[] };
     }
 
-    const { skip, take, limit } = this.paginationService.getSkipTake(query.page, query.limit);
+    const { page, limit } = this.paginationService.resolvePaging({
+      page: query.page,
+      limit: query.limit,
+      offset: query.offset,
+    });
+    const { skip, take } = this.paginationService.getSkipTake(page, limit);
+    const receiverSort = normalizeSort(
+      {
+        sort: query.sort,
+        orderBy: query.orderBy,
+        sortBy: query.sortBy,
+        direction: query.direction,
+        dir: query.dir,
+        order: query.order,
+      },
+      { path: 'sort', allowedFields: ['paidAt', 'updatedAt', 'createdAt'] },
+    );
+    const receiverPrimary = receiverSort[0];
     const orderBy: Prisma.P2PAllocationOrderByWithRelationInput[] = [{ updatedAt: 'desc' }];
-    if (query.sort === P2PAllocationSort.PAID_AT_DESC) orderBy.unshift({ payerPaidAt: 'desc' });
+    if (receiverPrimary?.field === 'paidAt') orderBy.unshift({ payerPaidAt: receiverPrimary.direction });
+    if (receiverPrimary?.field === 'createdAt') orderBy.unshift({ createdAt: receiverPrimary.direction });
+    if (receiverPrimary?.field === 'updatedAt') orderBy.unshift({ updatedAt: receiverPrimary.direction });
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.p2PAllocation.findMany({
@@ -1413,7 +1421,7 @@ export class P2PAllocationsService {
     const expiresSoonThreshold = this.getExpiringSoonThreshold(query.expiresSoon);
 
     return {
-      data: items.map((allocation) =>
+      items: items.map((allocation) =>
         this.buildAllocationVm({
           allocation,
           attachments: attachmentMap.get(allocation.id) ?? [],
@@ -1421,15 +1429,7 @@ export class P2PAllocationsService {
           expiresSoonThreshold,
         }),
       ),
-      meta: this.buildListMeta({
-        total,
-        limit,
-        sort: query.sort ?? P2PAllocationSort.PAID_AT_DESC,
-        filtersApplied: {
-          status: statusList,
-          expiresSoon: query.expiresSoon,
-        },
-      }),
+      meta: this.paginationService.meta(total, page, limit),
     };
   }
 

@@ -7,14 +7,14 @@ import {
   IsNumberString,
   IsOptional,
   IsString,
-  IsInt,
   Matches,
-  Min,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { PaymentDestinationType, PaymentMethod, P2PAllocationStatus, WithdrawStatus, DepositStatus } from '@prisma/client';
 import { ListQueryDto } from '../../../common/pagination/dto/list-query.dto';
+import { parseBoolean } from '../../../common/pagination/query-parsers';
+import { PaginationMetaDto } from '../../../common/pagination/dto/pagination-meta.dto';
 
 const P2PAllocationStatusEnum =
   (P2PAllocationStatus as any) ??
@@ -135,11 +135,13 @@ export class AdminP2PWithdrawalsQueryDto extends ListQueryDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(({ value }) => parseBoolean(value, 'hasDispute'))
   @IsBoolean()
   hasDispute?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(({ value }) => parseBoolean(value, 'hasProof'))
   @IsBoolean()
   hasProof?: boolean;
 
@@ -148,17 +150,10 @@ export class AdminP2PWithdrawalsQueryDto extends ListQueryDto {
   @IsNumberString()
   expiringSoonMinutes?: string;
 
-  @ApiPropertyOptional({ default: 0 })
+  @ApiPropertyOptional({ enum: P2PWithdrawalListSort, description: 'Sort order (legacy enum or field:direction).' })
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  offset?: number;
-
-  @ApiPropertyOptional({ enum: P2PWithdrawalListSort })
-  @IsOptional()
-  @IsEnum(P2PWithdrawalListSort)
-  sort?: P2PWithdrawalListSort;
+  @IsString()
+  sort?: string;
 }
 
 export class AdminP2PWithdrawalCandidatesQueryDto extends ListQueryDto {
@@ -198,10 +193,10 @@ export class AdminP2PWithdrawalCandidatesQueryDto extends ListQueryDto {
   @IsString()
   excludeUserId?: string;
 
-  @ApiPropertyOptional({ enum: P2PCandidateSort })
+  @ApiPropertyOptional({ enum: P2PCandidateSort, description: 'Sort order (legacy enum or field:direction).' })
   @IsOptional()
-  @IsEnum(P2PCandidateSort)
-  sort?: P2PCandidateSort;
+  @IsString()
+  sort?: string;
 }
 
 export class AdminP2PAllocationsQueryDto extends ListQueryDto {
@@ -237,21 +232,25 @@ export class AdminP2PAllocationsQueryDto extends ListQueryDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(({ value }) => parseBoolean(value, 'hasProof'))
   @IsBoolean()
   hasProof?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(({ value }) => parseBoolean(value, 'receiverConfirmed'))
   @IsBoolean()
   receiverConfirmed?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(({ value }) => parseBoolean(value, 'adminVerified'))
   @IsBoolean()
   adminVerified?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(({ value }) => parseBoolean(value, 'expired'))
   @IsBoolean()
   expired?: boolean;
 
@@ -290,10 +289,10 @@ export class AdminP2PAllocationsQueryDto extends ListQueryDto {
   @IsISO8601()
   paidTo?: string;
 
-  @ApiPropertyOptional({ enum: P2PAllocationSort })
+  @ApiPropertyOptional({ enum: P2PAllocationSort, description: 'Sort order (legacy enum or field:direction).' })
   @IsOptional()
-  @IsEnum(P2PAllocationSort)
-  sort?: P2PAllocationSort;
+  @IsString()
+  sort?: string;
 }
 
 export class P2PAllocationQueryDto extends ListQueryDto {
@@ -307,10 +306,10 @@ export class P2PAllocationQueryDto extends ListQueryDto {
   @IsNumberString()
   expiresSoon?: string;
 
-  @ApiPropertyOptional({ enum: P2PAllocationSort })
+  @ApiPropertyOptional({ enum: P2PAllocationSort, description: 'Sort order (legacy enum or field:direction).' })
   @IsOptional()
-  @IsEnum(P2PAllocationSort)
-  sort?: P2PAllocationSort;
+  @IsString()
+  sort?: string;
 }
 
 export class P2PAssignItemDto {
@@ -373,32 +372,12 @@ export class P2PAdminVerifyDto {
   note?: string;
 }
 
-export class P2PListMetaDto {
-  @ApiPropertyOptional()
-  total?: number;
-
-  @ApiPropertyOptional()
-  nextCursor?: string | null;
-
-  @ApiProperty()
-  limit!: number;
-
-  @ApiPropertyOptional()
-  offset?: number;
-
-  @ApiPropertyOptional()
-  sort?: string;
-
-  @ApiPropertyOptional()
-  filtersApplied?: Record<string, any>;
-}
-
 export class P2PListResponseDto<T> {
   @ApiProperty({ isArray: true })
-  data!: T[];
+  items!: T[];
 
-  @ApiProperty({ type: () => P2PListMetaDto })
-  meta!: P2PListMetaDto;
+  @ApiProperty({ type: () => PaginationMetaDto })
+  meta!: PaginationMetaDto;
 }
 
 export class WithdrawalTotalsDto {

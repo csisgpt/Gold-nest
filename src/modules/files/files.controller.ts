@@ -30,10 +30,11 @@ import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { FileUploadInterceptor } from './file-upload.interceptor';
-import { SkipResponseWrap } from '../../common/decorators/skip-wrap.decorator';
+import { SkipWrap } from '../../common/decorators/skip-wrap.decorator';
 import { ListFilesQueryDto } from './dto/list-files-query.dto';
 import { UserRole } from '@prisma/client';
 import { FileDownloadLinkDto } from './dto/file-download-link.dto';
+import { PaginationService } from '../../common/pagination/pagination.service';
 
 @ApiTags('files')
 @ApiBearerAuth('access-token')
@@ -41,10 +42,20 @@ import { FileDownloadLinkDto } from './dto/file-download-link.dto';
 @Controller('files')
 @ApiExtraModels(FileDownloadLinkDto)
 export class FilesController {
-  constructor(private readonly filesService: FilesService) {}
+  constructor(
+    private readonly filesService: FilesService,
+    private readonly paginationService: PaginationService,
+  ) {}
 
   @Get()
   async listMyFiles(@Query() query: ListFilesQueryDto, @CurrentUser() user: JwtRequestUser) {
+    const { page, limit } = this.paginationService.resolvePaging({
+      page: query.page,
+      limit: query.limit,
+      offset: query.offset,
+    });
+    query.page = page;
+    query.limit = limit;
     const { items, total } = await this.filesService.listMyFiles(user.id, query);
     return {
       items: items.map((item) => ({
@@ -55,7 +66,7 @@ export class FilesController {
         sizeBytes: item.sizeBytes,
         label: item.label,
       })),
-      meta: this.buildMeta(query.page, query.limit, total),
+      meta: this.paginationService.meta(total, page, limit),
     };
   }
 
@@ -133,7 +144,7 @@ export class FilesController {
   }
 
   @Get(':id/raw')
-  @SkipResponseWrap()
+  @SkipWrap()
   @ApiOperation({ summary: 'Raw file download (binary stream)' })
   @ApiProduces('application/octet-stream')
   async serveRaw(
@@ -180,8 +191,4 @@ export class FilesController {
     return this.filesService.deleteFileAsUser(id, user);
   }
 
-  private buildMeta(page: number, limit: number, total: number) {
-    const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
-    return { page, limit, total, totalPages };
-  }
 }

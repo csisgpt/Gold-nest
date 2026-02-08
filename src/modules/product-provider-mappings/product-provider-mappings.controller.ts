@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBadRequestResponse, ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -24,6 +24,24 @@ export class ProductProviderMappingsController {
   }
 
   @Post('admin/product-provider-mappings')
+  @ApiBadRequestResponse({
+    description: 'Validation error envelope.',
+    content: {
+      'application/json': {
+        example: {
+          ok: false,
+          result: null,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Validation failed',
+            details: [{ path: 'productId', message: 'productId should not be empty' }],
+          },
+          traceId: 'req_1234567890',
+          ts: '2024-01-01T00:00:00.000Z',
+        },
+      },
+    },
+  })
   create(@Body() dto: CreateProductProviderMappingDto) {
     return this.mappingsService.create(dto);
   }

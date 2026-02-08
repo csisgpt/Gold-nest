@@ -13,15 +13,12 @@ export type ApiResponse<T> =
   | {
       ok: true;
       result: T;
-      meta?: unknown;
-      error: null;
       traceId: string;
       ts: string;
     }
   | {
       ok: false;
       result: null;
-      meta?: unknown;
       error: ApiError;
       traceId: string;
       ts: string;
