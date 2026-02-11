@@ -1,32 +1,21 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AttachmentEntityType, KycLevel, PolicyAuditEntityType, UserRole, UserStatus } from '@prisma/client';
+import { ApiErrorCode } from '../../common/http/api-error-codes';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { AccountsService } from '../accounts/accounts.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { EffectiveSettingsService } from '../user-settings/effective-settings.service';
 import { AdminUsersQueryDto } from './dto/admin-users-query.dto';
+import { AdminUpdateUserDto } from './dto/admin-update-user.dto';
+import { SubmitKycDto } from './dto/submit-kyc.dto';
+import { WalletAdjustDto } from './dto/wallet-adjust.dto';
 import { FoundationContextService } from './foundation-context.service';
-import { AccountsService } from '../accounts/accounts.service';
-
-class AdminUpdateUserDto {
-  fullName?: string;
-  email?: string;
-  role?: UserRole;
-  status?: UserStatus;
-  customerGroupId?: string | null;
-  tahesabCustomerCode?: string | null;
-}
-
-class SubmitKycDto {
-  levelRequested?: KycLevel;
-  note?: string;
-  fileIds?: string[];
-}
 
 @ApiTags('foundation')
 @ApiBearerAuth('access-token')
@@ -82,7 +71,7 @@ export class FoundationController {
     const requestedLevel = body.levelRequested ?? KycLevel.BASIC;
 
     if (existing?.status === 'VERIFIED' && (existing.level === requestedLevel || existing.level === KycLevel.FULL)) {
-      throw new Error('KYC_ALREADY_VERIFIED');
+      throw new BadRequestException({ code: ApiErrorCode.KYC_ALREADY_VERIFIED, message: 'KYC already verified' });
     }
 
     const updated = await this.prisma.userKyc.upsert({
@@ -201,14 +190,29 @@ export class FoundationController {
     };
   }
 
+  @Get('admin/users/:id/wallet/accounts')
+  @Roles(UserRole.ADMIN)
+  async listAdminUserWalletAccounts(@Param('id') id: string, @Query('page') page = 1, @Query('limit') limit = 20) {
+    const { skip, take } = this.paginationService.getSkipTake(Number(page), Number(limit));
+    const where = { userId: id };
+    const [items, totalItems] = await this.prisma.$transaction([
+      this.prisma.account.findMany({ where, include: { instrument: true }, skip, take, orderBy: { createdAt: 'desc' } }),
+      this.prisma.account.count({ where }),
+    ]);
+
+    return this.paginationService.wrap(items, totalItems, Number(page), Number(limit));
+  }
+
   @Patch('admin/users/:id')
   @Roles(UserRole.ADMIN)
   async patchAdminUser(@Param('id') id: string, @Body() dto: AdminUpdateUserDto, @CurrentUser() actor: JwtRequestUser) {
     const before = await this.prisma.user.findUnique({ where: { id } });
-    if (!before) throw new Error('USER_NOT_FOUND');
+    if (!before) {
+      throw new NotFoundException({ code: ApiErrorCode.USER_NOT_FOUND, message: 'User not found' });
+    }
 
     if (before.status === UserStatus.ACTIVE && dto.status === UserStatus.PENDING_APPROVAL) {
-      throw new Error('INVALID_STATUS_TRANSITION');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_STATUS_TRANSITION, message: 'Invalid status transition' });
     }
 
     const updated = await this.prisma.user.update({
@@ -244,11 +248,7 @@ export class FoundationController {
 
   @Post('admin/users/:id/wallet/adjust')
   @Roles(UserRole.ADMIN)
-  async adjustWallet(
-    @Param('id') id: string,
-    @Body() body: { instrumentCode: string; amount: string; reason: string; externalRef?: string },
-    @CurrentUser() actor: JwtRequestUser,
-  ) {
+  async adjustWallet(@Param('id') id: string, @Body() body: WalletAdjustDto, @CurrentUser() actor: JwtRequestUser) {
     const account = await this.accountsService.getOrCreateAccount(id, body.instrumentCode);
     const out = await this.accountsService.applyTransaction({
       accountId: account.id,

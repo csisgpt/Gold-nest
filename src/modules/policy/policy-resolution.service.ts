@@ -67,13 +67,13 @@ export class PolicyResolutionService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException({ code: 'USER_NOT_FOUND', message: 'User not found' });
     }
 
     return {
       userId: user.id,
       customerGroupId: user.customerGroupId,
-      kycLevel: user.userKyc?.level ?? null,
+      kycLevel: user.userKyc?.status === 'VERIFIED' ? user.userKyc.level : KycLevel.NONE,
     } satisfies PolicyContext;
   }
 

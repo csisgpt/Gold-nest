@@ -1,10 +1,11 @@
-import { Injectable, Scope } from '@nestjs/common';
-import { PolicyAction, PolicyMetric, PolicyPeriod, UserStatus } from '@prisma/client';
+import { Injectable, NotFoundException, Scope } from '@nestjs/common';
+import { KycLevel, PolicyAction, PolicyMetric, PolicyPeriod, UserStatus } from '@prisma/client';
+import { ApiErrorCode } from '../../common/http/api-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
-import { EffectiveSettingsService } from '../user-settings/effective-settings.service';
 import { AccountsService } from '../accounts/accounts.service';
-import { PolicyResolutionService } from '../policy/policy-resolution.service';
 import { IRR_INSTRUMENT_CODE } from '../accounts/constants';
+import { PolicyResolutionService } from '../policy/policy-resolution.service';
+import { EffectiveSettingsService } from '../user-settings/effective-settings.service';
 
 @Injectable({ scope: Scope.REQUEST })
 export class FoundationContextService {
@@ -25,7 +26,9 @@ export class FoundationContextService {
       where: { id: userId },
       include: { customerGroup: true, userKyc: true },
     });
-    if (!user) throw new Error('USER_NOT_FOUND');
+    if (!user) {
+      throw new NotFoundException({ code: ApiErrorCode.USER_NOT_FOUND, message: 'User not found' });
+    }
 
     const settings = await this.settings.getEffectiveWithSources(userId);
     const result = {
@@ -105,16 +108,59 @@ export class FoundationContextService {
   async getCapabilities(userId: string) {
     const ctx = await this.getUserContext(userId);
     const reasons: Array<{ code: string; message: string }> = [];
+    const reasonCodes = new Set<string>();
+    const pushReason = (code: string, message: string) => {
+      if (reasonCodes.has(code)) return;
+      reasonCodes.add(code);
+      reasons.push({ code, message });
+    };
 
-    const canTrade = ctx.user.status === UserStatus.ACTIVE && ctx.settings.effective.tradeEnabled;
-    const canWithdraw = ctx.user.status === UserStatus.ACTIVE && ctx.settings.effective.withdrawEnabled;
+    const policyRequired = await Promise.all([
+      this.policyResolution.resolve({ action: PolicyAction.WITHDRAW_IRR, metric: PolicyMetric.NOTIONAL_IRR, period: PolicyPeriod.DAILY, context: { userId } }),
+      this.policyResolution.resolve({ action: PolicyAction.WITHDRAW_IRR, metric: PolicyMetric.NOTIONAL_IRR, period: PolicyPeriod.MONTHLY, context: { userId } }),
+      this.policyResolution.resolve({ action: PolicyAction.TRADE_BUY, metric: PolicyMetric.NOTIONAL_IRR, period: PolicyPeriod.DAILY, context: { userId } }),
+      this.policyResolution.resolve({ action: PolicyAction.TRADE_BUY, metric: PolicyMetric.NOTIONAL_IRR, period: PolicyPeriod.MONTHLY, context: { userId } }),
+      this.policyResolution.resolve({ action: PolicyAction.TRADE_SELL, metric: PolicyMetric.NOTIONAL_IRR, period: PolicyPeriod.DAILY, context: { userId } }),
+      this.policyResolution.resolve({ action: PolicyAction.TRADE_SELL, metric: PolicyMetric.NOTIONAL_IRR, period: PolicyPeriod.MONTHLY, context: { userId } }),
+    ]);
+
+    const kycOrder: KycLevel[] = [KycLevel.NONE, KycLevel.BASIC, KycLevel.FULL];
+    const maxKyc = (...levels: Array<KycLevel | null>) => {
+      return levels.reduce<KycLevel>((acc, current) => {
+        if (!current) return acc;
+        return kycOrder.indexOf(current) > kycOrder.indexOf(acc) ? current : acc;
+      }, KycLevel.NONE);
+    };
+
+    const needsKycForWithdraw = maxKyc(policyRequired[0].kycRequiredLevel, policyRequired[1].kycRequiredLevel);
+    const needsKycForTrade = maxKyc(
+      policyRequired[2].kycRequiredLevel,
+      policyRequired[3].kycRequiredLevel,
+      policyRequired[4].kycRequiredLevel,
+      policyRequired[5].kycRequiredLevel,
+    );
+
+    const effectiveUserKyc = ctx.kyc?.status === 'VERIFIED' ? ctx.kyc.level : KycLevel.NONE;
+
+    let canTrade = ctx.user.status === UserStatus.ACTIVE && ctx.settings.effective.tradeEnabled;
+    let canWithdraw = ctx.user.status === UserStatus.ACTIVE && ctx.settings.effective.withdrawEnabled;
 
     if (ctx.user.status !== UserStatus.ACTIVE) {
-      reasons.push({ code: 'USER_BLOCKED', message: 'User is not active' });
+      pushReason('USER_BLOCKED', 'User is not active');
     }
-    if (!ctx.settings.effective.tradeEnabled) reasons.push({ code: 'TRADE_DISABLED', message: 'Trade disabled in settings' });
-    if (!ctx.settings.effective.withdrawEnabled) reasons.push({ code: 'WITHDRAW_DISABLED', message: 'Withdraw disabled in settings' });
+    if (!ctx.settings.effective.tradeEnabled) pushReason('TRADE_DISABLED', 'Trade disabled in settings');
+    if (!ctx.settings.effective.withdrawEnabled) pushReason('WITHDRAW_DISABLED', 'Withdraw disabled in settings');
 
-    return { canTrade, canWithdraw, reasons };
+    if (needsKycForWithdraw !== KycLevel.NONE && kycOrder.indexOf(effectiveUserKyc) < kycOrder.indexOf(needsKycForWithdraw)) {
+      canWithdraw = false;
+      pushReason('KYC_REQUIRED', `KYC level ${needsKycForWithdraw} required for withdraw`);
+    }
+
+    if (needsKycForTrade !== KycLevel.NONE && kycOrder.indexOf(effectiveUserKyc) < kycOrder.indexOf(needsKycForTrade)) {
+      canTrade = false;
+      pushReason('KYC_REQUIRED', `KYC level ${needsKycForTrade} required for trade`);
+    }
+
+    return { canTrade, canWithdraw, reasons, needsKycForWithdraw, needsKycForTrade };
   }
 }

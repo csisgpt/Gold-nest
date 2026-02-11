@@ -2609,3 +2609,103 @@ test('Tahesab outbox list returns items/meta', async (t) => {
   assert.ok(Array.isArray(body.result?.items));
   assert.ok(body.result?.meta);
 });
+
+test('Admin tahesab outbox endpoint is mounted under /admin/tahesab/outbox', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const res = await fetch(`${baseUrl}/admin/tahesab/outbox?page=1&limit=10`, {
+    headers: authHeader(admin),
+  });
+
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.ok, true);
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+
+  const oldWrongPathRes = await fetch(`${baseUrl}/tahesab/admin/tahesab/outbox`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(oldWrongPathRes.status, 404);
+});
+
+test('Deleting unknown customer group returns GROUP_NOT_FOUND code envelope', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const admin = await createUser(prisma, UserRole.ADMIN);
+
+  const res = await fetch(`${baseUrl}/admin/customer-groups/11111111-1111-1111-1111-111111111111`, {
+    method: 'DELETE',
+    headers: authHeader(admin),
+  });
+
+  assert.strictEqual(res.status, 404);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.ok, false);
+  assert.strictEqual(body.error?.code, 'GROUP_NOT_FOUND');
+});
+
+test('Paged customer-groups endpoint returns items/meta contract', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const admin = await createUser(prisma, UserRole.ADMIN);
+
+  await prisma.customerGroup.create({
+    data: {
+      code: `T-${Date.now()}`,
+      name: 'Test Group',
+    },
+  });
+
+  const res = await fetch(`${baseUrl}/admin/customer-groups/paged?page=1&limit=10`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+});
+
+test('Overview capabilities include KYC_REQUIRED when policy requires higher KYC', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  await prisma.policyRule.create({
+    data: {
+      scopeType: 'GLOBAL',
+      action: PolicyAction.WITHDRAW_IRR,
+      metric: PolicyMetric.NOTIONAL_IRR,
+      period: PolicyPeriod.DAILY,
+      limit: new Decimal(1000000),
+      minKycLevel: 'FULL',
+      enabled: true,
+      priority: 1,
+    },
+  });
+
+  await prisma.userKyc.upsert({
+    where: { userId: user.id },
+    create: { userId: user.id, status: 'PENDING', level: 'FULL' },
+    update: { status: 'PENDING', level: 'FULL' },
+  });
+
+  const res = await fetch(`${baseUrl}/me/overview`, { headers: authHeader(user) });
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  const caps = body.result?.capabilities;
+  assert.strictEqual(caps.canWithdraw, false);
+  assert.ok(Array.isArray(caps.reasons));
+  assert.ok(caps.reasons.some((r: any) => r.code === 'KYC_REQUIRED'));
+  assert.strictEqual(caps.needsKycForWithdraw, 'FULL');
+
+  // keep admin variable used to avoid lint false positives in isolated runs
+  assert.ok(admin.id);
+});
