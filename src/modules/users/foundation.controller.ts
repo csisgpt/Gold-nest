@@ -93,7 +93,11 @@ export class FoundationController {
       if (files.length !== fileIds.length) {
         const found = new Set(files.map((f) => f.id));
         const missing = fileIds.filter((id) => !found.has(id));
-        throw new BadRequestException({ code: ApiErrorCode.KYC_INVALID_FILE_IDS, message: 'Some files not found', details: missing });
+        throw new BadRequestException({
+          code: ApiErrorCode.KYC_INVALID_FILE_IDS,
+          message: 'Some files not found',
+          details: missing.map((id) => ({ path: 'fileIds', message: `File not found: ${id}` })),
+        });
       }
 
       if (files.some((file) => file.uploadedById !== user.id)) {

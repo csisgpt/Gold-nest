@@ -18,6 +18,7 @@ import {
   UpsertCustomerGroupSettingsDto,
 } from './dto/customer-group-settings.dto';
 import { CreateCustomerGroupDto, UpdateCustomerGroupDto } from './dto/customer-group.dto';
+import { adminGroupUserRowSelect, mapAdminGroupUserRow } from './mappers/admin-group-user-row.mapper';
 
 @ApiTags('admin-customer-groups')
 @ApiBearerAuth('access-token')
@@ -213,11 +214,11 @@ export class CustomerGroupsAdminController {
 
     const { page, limit, skip, take } = this.paginationService.getSkipTake(query.page, query.limit);
     const [items, totalItems] = await this.prisma.$transaction([
-      this.prisma.user.findMany({ where, skip, take, include: { userKyc: true, customerGroup: true }, orderBy: { createdAt: 'desc' } }),
+      this.prisma.user.findMany({ where, skip, take, select: adminGroupUserRowSelect, orderBy: { createdAt: 'desc' } }),
       this.prisma.user.count({ where }),
     ]);
 
-    return this.paginationService.wrap(items, totalItems, page, limit);
+    return this.paginationService.wrap(items.map(mapAdminGroupUserRow), totalItems, page, limit);
   }
 
   @Post('admin/customer-groups/:id/users:move')

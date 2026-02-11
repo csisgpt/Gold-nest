@@ -48,8 +48,7 @@ Stable reason codes:
 - `USER_BLOCKED`
 - `SETTINGS_TRADE_DISABLED`
 - `SETTINGS_WITHDRAW_DISABLED`
-- `KYC_REQUIRED_BASIC`
-- `KYC_REQUIRED_FULL`
+- `KYC_REQUIRED` (with `meta.requiredLevel` = `BASIC|FULL`)
 - `INSUFFICIENT_AVAILABLE_IRR`
 
 ## Policy summary shape
@@ -111,7 +110,7 @@ Each leaf contains: `{ limit, kycRequiredLevel, source, ruleId }`.
       "canWithdraw": false,
       "needsKycForTrade": "BASIC",
       "needsKycForWithdraw": "FULL",
-      "reasons": [{ "code": "KYC_REQUIRED_FULL", "message": "KYC level FULL required for withdraw" }]
+      "reasons": [{ "code": "KYC_REQUIRED", "message": "KYC level FULL required for withdraw", "meta": { "requiredLevel": "FULL" } }]
     }
   }
 }

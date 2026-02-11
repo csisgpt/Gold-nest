@@ -2774,6 +2774,8 @@ test('KYC submit rejects invalid file ids with KYC_INVALID_FILE_IDS', async (t) 
   assert.strictEqual(res.status, 400);
   const body = (await res.json()) as any;
   assert.strictEqual(body.error?.code, 'KYC_INVALID_FILE_IDS');
+  assert.ok(Array.isArray(body.error?.details));
+  assert.ok(body.error.details.some((d: any) => d.path === 'fileIds'));
 });
 
 test('Me overview hides wallet balances when showBalances=false', async (t) => {
@@ -2836,4 +2838,26 @@ test('File raw endpoint returns FILE_NOT_FOUND for non-existing file', async (t)
   assert.strictEqual(res.status, 404);
   const body = (await res.json()) as any;
   assert.strictEqual(body.error?.code, 'FILE_NOT_FOUND');
+});
+
+
+test('Customer-group users list returns safe DTO rows without password leaks', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const group = await prisma.customerGroup.create({ data: { code: `G-${Date.now()}`, name: 'Group safe' } });
+  const user = await createUser(prisma, UserRole.CLIENT);
+  await prisma.user.update({ where: { id: user.id }, data: { customerGroupId: group.id } });
+
+  const res = await fetch(`${baseUrl}/admin/customer-groups/${group.id}/users?page=1&limit=10`, {
+    headers: authHeader(admin),
+  });
+
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+  assert.strictEqual(containsKeyDeep(body.result, 'password'), false);
 });

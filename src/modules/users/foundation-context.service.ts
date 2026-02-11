@@ -107,12 +107,12 @@ export class FoundationContextService {
 
   async getCapabilities(userId: string) {
     const [ctx, wallet] = await Promise.all([this.getUserContext(userId), this.getWalletSummary(userId)]);
-    const reasons: Array<{ code: string; message: string; hint?: string }> = [];
+    const reasons: Array<{ code: string; message: string; hint?: string; meta?: { requiredLevel?: KycLevel } }> = [];
     const reasonCodes = new Set<string>();
-    const pushReason = (code: string, message: string, hint?: string) => {
+    const pushReason = (code: string, message: string, hint?: string, meta?: { requiredLevel?: KycLevel }) => {
       if (reasonCodes.has(code)) return;
       reasonCodes.add(code);
-      reasons.push({ code, message, hint });
+      reasons.push({ code, message, hint, meta });
     };
 
     const policyRequired = await Promise.all([
@@ -145,14 +145,12 @@ export class FoundationContextService {
 
     if (needsKycForWithdraw !== KycLevel.NONE && kycOrder.indexOf(effectiveUserKyc) < kycOrder.indexOf(needsKycForWithdraw)) {
       canWithdraw = false;
-      const code = needsKycForWithdraw === KycLevel.FULL ? 'KYC_REQUIRED_FULL' : 'KYC_REQUIRED_BASIC';
-      pushReason(code, `KYC level ${needsKycForWithdraw} required for withdraw`, 'Submit and verify KYC to unlock withdrawals.');
+      pushReason('KYC_REQUIRED', `KYC level ${needsKycForWithdraw} required for withdraw`, 'Submit and verify KYC to unlock withdrawals.', { requiredLevel: needsKycForWithdraw });
     }
 
     if (needsKycForTrade !== KycLevel.NONE && kycOrder.indexOf(effectiveUserKyc) < kycOrder.indexOf(needsKycForTrade)) {
       canTrade = false;
-      const code = needsKycForTrade === KycLevel.FULL ? 'KYC_REQUIRED_FULL' : 'KYC_REQUIRED_BASIC';
-      pushReason(code, `KYC level ${needsKycForTrade} required for trade`, 'Submit and verify KYC to unlock trading.');
+      pushReason('KYC_REQUIRED', `KYC level ${needsKycForTrade} required for trade`, 'Submit and verify KYC to unlock trading.', { requiredLevel: needsKycForTrade });
     }
 
     const irrAvailable = wallet.summary.irrAvailable ? new Decimal(wallet.summary.irrAvailable) : new Decimal(0);
