@@ -2709,3 +2709,131 @@ test('Overview capabilities include KYC_REQUIRED when policy requires higher KYC
   // keep admin variable used to avoid lint false positives in isolated runs
   assert.ok(admin.id);
 });
+
+function containsKeyDeep(value: any, key: string): boolean {
+  if (Array.isArray(value)) return value.some((v) => containsKeyDeep(v, key));
+  if (value && typeof value === 'object') {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return true;
+    return Object.values(value).some((v) => containsKeyDeep(v, key));
+  }
+  return false;
+}
+
+test('Admin user responses never leak password fields', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  const listRes = await fetch(`${baseUrl}/admin/users?page=1&limit=10`, { headers: authHeader(admin) });
+  assert.strictEqual(listRes.status, 200);
+  const listBody = (await listRes.json()) as any;
+  assert.strictEqual(containsKeyDeep(listBody.result, 'password'), false);
+
+  const overviewRes = await fetch(`${baseUrl}/admin/users/${user.id}/overview`, { headers: authHeader(admin) });
+  assert.strictEqual(overviewRes.status, 200);
+  const overviewBody = (await overviewRes.json()) as any;
+  assert.strictEqual(containsKeyDeep(overviewBody.result, 'password'), false);
+});
+
+test('KYC submit rejects non-owned files with KYC_FILES_FORBIDDEN', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const userA = await createUser(prisma, UserRole.CLIENT);
+  const userB = await createUser(prisma, UserRole.CLIENT);
+  const fileA = await uploadTestFile(userA, 'kyc-a.txt', 'text/plain', 'aaa');
+
+  const res = await fetch(`${baseUrl}/me/kyc/submit`, {
+    method: 'POST',
+    headers: { ...authHeader(userB), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ levelRequested: 'BASIC', fileIds: [fileA.id] }),
+  });
+
+  assert.strictEqual(res.status, 403);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.error?.code, 'KYC_FILES_FORBIDDEN');
+});
+
+test('KYC submit rejects invalid file ids with KYC_INVALID_FILE_IDS', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  const res = await fetch(`${baseUrl}/me/kyc/submit`, {
+    method: 'POST',
+    headers: { ...authHeader(user), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ levelRequested: 'BASIC', fileIds: ['c0ffee00-cafe-cafe-cafe-c0ffeec0ffee'] }),
+  });
+
+  assert.strictEqual(res.status, 400);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.error?.code, 'KYC_INVALID_FILE_IDS');
+});
+
+test('Me overview hides wallet balances when showBalances=false', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const accountsService = app.get(AccountsService);
+
+  const user = await createUser(prisma, UserRole.CLIENT);
+  const irrAccount = await accountsService.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE);
+  await setAccountBalance(prisma, irrAccount.id, 12345);
+
+  await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { ...authHeader(user), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ showBalances: false }),
+  });
+
+  const res = await fetch(`${baseUrl}/me/overview`, { headers: authHeader(user) });
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  const accounts = body.result?.wallet?.accounts ?? [];
+  assert.ok(accounts.length > 0);
+  assert.strictEqual(accounts[0].balance, null);
+  assert.strictEqual(accounts[0].balancesHidden, true);
+});
+
+test('Admin overview can see balances even when user hides balances', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const accountsService = app.get(AccountsService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma, UserRole.CLIENT);
+  const irrAccount = await accountsService.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE);
+  await setAccountBalance(prisma, irrAccount.id, 42000);
+
+  await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { ...authHeader(user), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ showBalances: false }),
+  });
+
+  const res = await fetch(`${baseUrl}/admin/users/${user.id}/overview`, { headers: authHeader(admin) });
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok((body.result?.wallet?.accounts ?? []).length > 0);
+  assert.notStrictEqual(body.result.wallet.accounts[0].balance, null);
+  assert.strictEqual(body.result.wallet.summary.balancesHiddenByUserSetting, true);
+});
+
+test('File raw endpoint returns FILE_NOT_FOUND for non-existing file', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  const res = await fetch(`${baseUrl}/files/c0ffee00-cafe-cafe-cafe-c0ffeec0ffee/raw`, { headers: authHeader(user) });
+  assert.strictEqual(res.status, 404);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.error?.code, 'FILE_NOT_FOUND');
+});

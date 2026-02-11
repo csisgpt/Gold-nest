@@ -1,8 +1,9 @@
 import { Injectable, NotFoundException, Scope } from '@nestjs/common';
+import { Decimal } from '@prisma/client/runtime/library';
 import { KycLevel, PolicyAction, PolicyMetric, PolicyPeriod, UserStatus } from '@prisma/client';
 import { ApiErrorCode } from '../../common/http/api-error-codes';
 import { PrismaService } from '../prisma/prisma.service';
-import { AccountsService } from '../accounts/accounts.service';
+import { mapWalletAccountDto } from '../accounts/mappers/wallet-account.mapper';
 import { IRR_INSTRUMENT_CODE } from '../accounts/constants';
 import { PolicyResolutionService } from '../policy/policy-resolution.service';
 import { EffectiveSettingsService } from '../user-settings/effective-settings.service';
@@ -14,7 +15,6 @@ export class FoundationContextService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: EffectiveSettingsService,
-    private readonly accountsService: AccountsService,
     private readonly policyResolution: PolicyResolutionService,
   ) {}
 
@@ -53,34 +53,27 @@ export class FoundationContextService {
       this.settings.getEffective(userId),
     ]);
 
-    const balancesHidden = !includeHiddenForAdmin && !effective.showBalances;
-    const mapped = accounts.map((account) => ({
-      instrumentCode: account.instrument.code,
-      instrumentName: account.instrument.name,
-      balance: balancesHidden ? null : account.balance.toString(),
-      blockedBalance: balancesHidden ? null : account.blockedBalance.toString(),
-      minBalance: balancesHidden ? null : account.minBalance.toString(),
-      available: balancesHidden ? null : this.accountsService.getUsableCapacity(account).toString(),
-    }));
+    const balancesHiddenByUserSetting = !effective.showBalances;
+    const hideBalances = !includeHiddenForAdmin && balancesHiddenByUserSetting;
+    const mapped = accounts.map((account) => mapWalletAccountDto(account, hideBalances));
 
     const irr = accounts.find((a) => a.instrument.code === IRR_INSTRUMENT_CODE);
+    const irrAvailable = irr
+      ? new Decimal(irr.balance).minus(irr.blockedBalance).minus(irr.minBalance).toString()
+      : null;
+
     return {
       accounts: mapped,
       summary: {
-        balancesHidden,
-        irrAvailable: irr ? (balancesHidden ? null : this.accountsService.getUsableCapacity(irr).toString()) : null,
+        balancesHiddenByUserSetting,
+        irrAvailable: hideBalances ? null : irrAvailable,
       },
     };
   }
 
   async getPolicySummary(userId: string) {
     const build = async (action: PolicyAction, metric: PolicyMetric, period: PolicyPeriod) => {
-      const resolved = await this.policyResolution.resolve({
-        action,
-        metric,
-        period,
-        context: { userId },
-      });
+      const resolved = await this.policyResolution.resolve({ action, metric, period, context: { userId } });
       return {
         limit: resolved.value?.toString() ?? null,
         kycRequiredLevel: resolved.kycRequiredLevel,
@@ -89,30 +82,37 @@ export class FoundationContextService {
       };
     };
 
-    return {
-      withdraw: {
+    const summary = {
+      withdrawIrr: {
         daily: await build(PolicyAction.WITHDRAW_IRR, PolicyMetric.NOTIONAL_IRR, PolicyPeriod.DAILY),
         monthly: await build(PolicyAction.WITHDRAW_IRR, PolicyMetric.NOTIONAL_IRR, PolicyPeriod.MONTHLY),
       },
-      tradeBuy: {
+      tradeBuyNotionalIrr: {
         daily: await build(PolicyAction.TRADE_BUY, PolicyMetric.NOTIONAL_IRR, PolicyPeriod.DAILY),
         monthly: await build(PolicyAction.TRADE_BUY, PolicyMetric.NOTIONAL_IRR, PolicyPeriod.MONTHLY),
       },
-      tradeSell: {
+      tradeSellNotionalIrr: {
         daily: await build(PolicyAction.TRADE_SELL, PolicyMetric.NOTIONAL_IRR, PolicyPeriod.DAILY),
         monthly: await build(PolicyAction.TRADE_SELL, PolicyMetric.NOTIONAL_IRR, PolicyPeriod.MONTHLY),
       },
     };
+
+    return {
+      ...summary,
+      withdraw: summary.withdrawIrr,
+      tradeBuy: summary.tradeBuyNotionalIrr,
+      tradeSell: summary.tradeSellNotionalIrr,
+    };
   }
 
   async getCapabilities(userId: string) {
-    const ctx = await this.getUserContext(userId);
-    const reasons: Array<{ code: string; message: string }> = [];
+    const [ctx, wallet] = await Promise.all([this.getUserContext(userId), this.getWalletSummary(userId)]);
+    const reasons: Array<{ code: string; message: string; hint?: string }> = [];
     const reasonCodes = new Set<string>();
-    const pushReason = (code: string, message: string) => {
+    const pushReason = (code: string, message: string, hint?: string) => {
       if (reasonCodes.has(code)) return;
       reasonCodes.add(code);
-      reasons.push({ code, message });
+      reasons.push({ code, message, hint });
     };
 
     const policyRequired = await Promise.all([
@@ -133,32 +133,32 @@ export class FoundationContextService {
     };
 
     const needsKycForWithdraw = maxKyc(policyRequired[0].kycRequiredLevel, policyRequired[1].kycRequiredLevel);
-    const needsKycForTrade = maxKyc(
-      policyRequired[2].kycRequiredLevel,
-      policyRequired[3].kycRequiredLevel,
-      policyRequired[4].kycRequiredLevel,
-      policyRequired[5].kycRequiredLevel,
-    );
-
+    const needsKycForTrade = maxKyc(policyRequired[2].kycRequiredLevel, policyRequired[3].kycRequiredLevel, policyRequired[4].kycRequiredLevel, policyRequired[5].kycRequiredLevel);
     const effectiveUserKyc = ctx.kyc?.status === 'VERIFIED' ? ctx.kyc.level : KycLevel.NONE;
 
     let canTrade = ctx.user.status === UserStatus.ACTIVE && ctx.settings.effective.tradeEnabled;
     let canWithdraw = ctx.user.status === UserStatus.ACTIVE && ctx.settings.effective.withdrawEnabled;
 
-    if (ctx.user.status !== UserStatus.ACTIVE) {
-      pushReason('USER_BLOCKED', 'User is not active');
-    }
-    if (!ctx.settings.effective.tradeEnabled) pushReason('TRADE_DISABLED', 'Trade disabled in settings');
-    if (!ctx.settings.effective.withdrawEnabled) pushReason('WITHDRAW_DISABLED', 'Withdraw disabled in settings');
+    if (ctx.user.status !== UserStatus.ACTIVE) pushReason('USER_BLOCKED', 'User is not active');
+    if (!ctx.settings.effective.tradeEnabled) pushReason('SETTINGS_TRADE_DISABLED', 'Trade is disabled in user settings');
+    if (!ctx.settings.effective.withdrawEnabled) pushReason('SETTINGS_WITHDRAW_DISABLED', 'Withdraw is disabled in user settings');
 
     if (needsKycForWithdraw !== KycLevel.NONE && kycOrder.indexOf(effectiveUserKyc) < kycOrder.indexOf(needsKycForWithdraw)) {
       canWithdraw = false;
-      pushReason('KYC_REQUIRED', `KYC level ${needsKycForWithdraw} required for withdraw`);
+      const code = needsKycForWithdraw === KycLevel.FULL ? 'KYC_REQUIRED_FULL' : 'KYC_REQUIRED_BASIC';
+      pushReason(code, `KYC level ${needsKycForWithdraw} required for withdraw`, 'Submit and verify KYC to unlock withdrawals.');
     }
 
     if (needsKycForTrade !== KycLevel.NONE && kycOrder.indexOf(effectiveUserKyc) < kycOrder.indexOf(needsKycForTrade)) {
       canTrade = false;
-      pushReason('KYC_REQUIRED', `KYC level ${needsKycForTrade} required for trade`);
+      const code = needsKycForTrade === KycLevel.FULL ? 'KYC_REQUIRED_FULL' : 'KYC_REQUIRED_BASIC';
+      pushReason(code, `KYC level ${needsKycForTrade} required for trade`, 'Submit and verify KYC to unlock trading.');
+    }
+
+    const irrAvailable = wallet.summary.irrAvailable ? new Decimal(wallet.summary.irrAvailable) : new Decimal(0);
+    if (canWithdraw && irrAvailable.lte(0)) {
+      canWithdraw = false;
+      pushReason('INSUFFICIENT_AVAILABLE_IRR', 'Insufficient available IRR balance for withdrawal');
     }
 
     return { canTrade, canWithdraw, reasons, needsKycForWithdraw, needsKycForTrade };

@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { Readable } from 'stream';
 import {
   DeleteObjectCommand,
@@ -6,6 +7,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { ApiErrorCode } from '../../../common/http/api-error-codes';
 import { StorageObjectStream, StorageProvider } from './storage.provider';
 
 export class S3StorageProvider implements StorageProvider {
@@ -33,36 +35,23 @@ export class S3StorageProvider implements StorageProvider {
       credentials:
         options.accessKeyId && options.secretAccessKey
           ? {
-            accessKeyId: options.accessKeyId,
-            secretAccessKey: options.secretAccessKey,
-          }
+              accessKeyId: options.accessKeyId,
+              secretAccessKey: options.secretAccessKey,
+            }
           : undefined,
     });
   }
 
   async putObject(key: string, body: Buffer, contentType: string): Promise<void> {
-    try {
-      await this.client.send(
-        new PutObjectCommand({
-          Bucket: this.bucket,
-          Key: key,
-          Body: body,
-          ContentType: contentType,
-        }),
-      );
-    } catch (e: any) {
-      console.error('[S3 PUT ERROR]', {
-        name: e?.name,
-        message: e?.message,
-        code: e?.Code,
-        status: e?.$metadata?.httpStatusCode,
-        requestId: e?.$metadata?.requestId,
-        cfId: e?.$metadata?.cfId,
-      });
-      throw e; // مهم: حتماً throw کن
-    }
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+      }),
+    );
   }
-
 
   async getObjectStream(key: string): Promise<StorageObjectStream> {
     const result = await this.client.send(
@@ -73,7 +62,7 @@ export class S3StorageProvider implements StorageProvider {
     );
 
     if (!result.Body) {
-      throw new Error('NOT_FOUND');
+      throw new NotFoundException({ code: ApiErrorCode.FILE_NOT_FOUND, message: 'File not found' });
     }
 
     let stream: Readable;
