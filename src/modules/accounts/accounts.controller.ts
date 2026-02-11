@@ -64,14 +64,17 @@ export class AccountsController {
     const entries = await this.accountsService.getStatementForUser(user.id, filters);
     const settings = await this.effectiveSettingsService.getEffective(user.id);
     if (!settings.showBalances) {
-      return entries.map((entry) => ({
-        ...entry,
-        creditMoney: null,
-        debitMoney: null,
-        creditWeight: null,
-        debitWeight: null,
-        balancesHidden: true,
-      }));
+      return {
+        ...entries,
+        items: entries.items.map((entry) => ({
+          ...entry,
+          creditMoney: null,
+          debitMoney: null,
+          creditWeight: null,
+          debitWeight: null,
+          balancesHidden: true,
+        })),
+      };
     }
     return entries;
   }

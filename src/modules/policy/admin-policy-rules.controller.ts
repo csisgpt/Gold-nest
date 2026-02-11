@@ -1,12 +1,15 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards, BadRequestException } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { PolicyAction, PolicyMetric, PolicyPeriod, PolicyScopeType, Prisma, UserRole } from '@prisma/client';
+import { PolicyAction, PolicyAuditEntityType, PolicyMetric, PolicyPeriod, PolicyScopeType, Prisma, UserRole } from '@prisma/client';
 import { dec } from '../../common/utils/decimal.util';
 import { runInTx } from '../../common/db/tx.util';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { PrismaService } from '../prisma/prisma.service';
+import { PaginationService } from '../../common/pagination/pagination.service';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 import { BulkUpsertPolicyRuleDto, CreatePolicyRuleDto, ListPolicyRulesDto, UpdatePolicyRuleDto } from './dto/policy-rule.dto';
 import { normalizeSelector } from './policy-selector.util';
 
@@ -16,7 +19,7 @@ import { normalizeSelector } from './policy-selector.util';
 @Roles(UserRole.ADMIN)
 @Controller('admin/policy-rules')
 export class AdminPolicyRulesController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly paginationService: PaginationService) {}
 
   @Get()
   async list(@Query() query: ListPolicyRulesDto) {
@@ -31,26 +34,24 @@ export class AdminPolicyRulesController {
     if (query.metric) where.metric = query.metric;
     if (query.period) where.period = query.period;
 
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
-    const skip = (page - 1) * limit;
+    const { page, limit, skip, take } = this.paginationService.getSkipTake(query.page, query.limit);
 
     const [items, total] = await this.prisma.$transaction([
-      this.prisma.policyRule.findMany({ where, orderBy: { updatedAt: 'desc' }, skip, take: limit }),
+      this.prisma.policyRule.findMany({ where, orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }], skip, take }),
       this.prisma.policyRule.count({ where }),
     ]);
 
-    return { items, page, limit, total };
+    return this.paginationService.wrap(items, total, page, limit);
   }
 
   @Post()
-  async create(@Body() dto: CreatePolicyRuleDto) {
+  async create(@Body() dto: CreatePolicyRuleDto, @CurrentUser() actor: JwtRequestUser) {
     this.validateScope(dto.scopeType, dto.scopeUserId, dto.scopeGroupId);
     const selector = normalizeSelector(dto);
     this.validateSelector(selector.productId, selector.instrumentId, selector.instrumentType);
     this.validateValue(dto.limit);
 
-    return this.prisma.policyRule.create({
+    const created = await this.prisma.policyRule.create({
       data: {
         scopeType: dto.scopeType,
         scopeUserId: dto.scopeType === PolicyScopeType.USER ? dto.scopeUserId : null,
@@ -60,13 +61,19 @@ export class AdminPolicyRulesController {
         period: dto.period,
         limit: dec(dto.limit),
         ...selector,
+        minKycLevel: dto.minKycLevel,
+        enabled: dto.enabled ?? true,
+        priority: dto.priority ?? 100,
         note: dto.note,
       },
     });
+
+    await this.prisma.policyAuditLog.create({ data: { entityType: PolicyAuditEntityType.POLICY_RULE, entityId: created.id, actorId: actor.id, afterJson: created } });
+    return created;
   }
 
   @Patch(':id')
-  async update(@Param('id') id: string, @Body() dto: UpdatePolicyRuleDto) {
+  async update(@Param('id') id: string, @Body() dto: UpdatePolicyRuleDto, @CurrentUser() actor: JwtRequestUser) {
     const existing = await this.prisma.policyRule.findUnique({ where: { id } });
     if (!existing) {
       throw new BadRequestException('NOT_FOUND');
@@ -78,7 +85,7 @@ export class AdminPolicyRulesController {
     this.validateSelector(selector.productId, selector.instrumentId, selector.instrumentType);
     if (merged.limit !== undefined) this.validateValue(merged.limit);
 
-    return this.prisma.policyRule.update({
+    const updated = await this.prisma.policyRule.update({
       where: { id },
       data: {
         scopeType: merged.scopeType,
@@ -89,14 +96,21 @@ export class AdminPolicyRulesController {
         period: merged.period,
         limit: merged.limit !== undefined ? dec(merged.limit) : undefined,
         ...selector,
+        minKycLevel: merged.minKycLevel ?? undefined,
+        enabled: merged.enabled ?? undefined,
+        priority: merged.priority ?? undefined,
         note: merged.note,
       },
     });
+    await this.prisma.policyAuditLog.create({ data: { entityType: PolicyAuditEntityType.POLICY_RULE, entityId: id, actorId: actor.id, beforeJson: existing, afterJson: updated } });
+    return updated;
   }
 
   @Delete(':id')
-  async delete(@Param('id') id: string) {
+  async delete(@Param('id') id: string, @CurrentUser() actor: JwtRequestUser) {
+    const before = await this.prisma.policyRule.findUnique({ where: { id } });
     await this.prisma.policyRule.deleteMany({ where: { id } });
+    await this.prisma.policyAuditLog.create({ data: { entityType: PolicyAuditEntityType.POLICY_RULE, entityId: id, actorId: actor.id, beforeJson: before } });
     return { deleted: true };
   }
 
@@ -137,6 +151,9 @@ export class AdminPolicyRulesController {
             where: { id: existing.id },
             data: {
               limit: dec(item.limit),
+              minKycLevel: item.minKycLevel ?? undefined,
+              enabled: item.enabled ?? true,
+              priority: item.priority ?? 100,
               note: item.note,
               ...selector,
             },
@@ -183,9 +200,9 @@ export class AdminPolicyRulesController {
     }
   }
 
-  private validateValue(limit?: number | null) {
+  private validateValue(limit?: string | null) {
     if (limit === undefined || limit === null) return;
-    if (Number(limit) <= 0) {
+    if (Number(limit) <= 0 || Number.isNaN(Number(limit))) {
       throw new BadRequestException('INVALID_VALUE');
     }
   }

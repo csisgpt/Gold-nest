@@ -8,3 +8,10 @@ export interface EffectiveUserSettings {
   maxOpenTrades: number | null;
   metaJson?: Record<string, any> | null;
 }
+
+export type EffectiveUserSettingsSource = 'DEFAULT' | 'GROUP' | 'USER';
+
+export interface EffectiveUserSettingsWithSources {
+  effective: EffectiveUserSettings;
+  sources: Record<keyof EffectiveUserSettings, EffectiveUserSettingsSource>;
+}

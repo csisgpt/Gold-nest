@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsNumber, IsOptional, IsPositive, IsString, Min, ValidateNested } from 'class-validator';
-import { InstrumentType, PolicyAction, PolicyMetric, PolicyPeriod, PolicyScopeType } from '@prisma/client';
+import { IsBoolean, IsEnum, IsInt, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
+import { InstrumentType, KycLevel, PolicyAction, PolicyMetric, PolicyPeriod, PolicyScopeType } from '@prisma/client';
 
 export class ListPolicyRulesDto {
   @IsOptional()
@@ -73,10 +73,8 @@ export class CreatePolicyRuleDto {
   @IsEnum(PolicyPeriod)
   period!: PolicyPeriod;
 
-  @Type(() => Number)
-  @IsNumber()
-  @IsPositive()
-  limit!: number;
+  @IsString()
+  limit!: string;
 
   @IsOptional()
   @IsString()
@@ -89,6 +87,19 @@ export class CreatePolicyRuleDto {
   @IsOptional()
   @IsString()
   productId?: string | null;
+
+  @IsOptional()
+  @IsEnum(KycLevel)
+  minKycLevel?: KycLevel;
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  priority?: number;
 
   @IsOptional()
   @IsString()
@@ -121,10 +132,8 @@ export class UpdatePolicyRuleDto {
   period?: PolicyPeriod;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @IsPositive()
-  limit?: number;
+  @IsString()
+  limit?: string;
 
   @IsOptional()
   @IsString()
@@ -137,6 +146,19 @@ export class UpdatePolicyRuleDto {
   @IsOptional()
   @IsString()
   productId?: string | null;
+
+  @IsOptional()
+  @IsEnum(KycLevel)
+  minKycLevel?: KycLevel;
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  priority?: number;
 
   @IsOptional()
   @IsString()

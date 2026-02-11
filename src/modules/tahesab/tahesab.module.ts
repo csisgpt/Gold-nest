@@ -18,12 +18,14 @@ import { TahesabOutboxProcessor } from './tahesab-outbox.processor';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TahesabIntegrationConfigService } from './tahesab-integration.config';
 import { TahesabRemittancesService } from './tahesab-remittances.service';
+import { PaginationModule } from '../../common/pagination/pagination.module';
 
 @Module({
   imports: [
     ConfigModule,
     ScheduleModule.forRoot(),
     PrismaModule,
+    PaginationModule,
     HttpModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

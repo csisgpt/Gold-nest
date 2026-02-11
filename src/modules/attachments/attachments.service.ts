@@ -68,6 +68,14 @@ export class AttachmentsService {
       return;
     }
 
+
+    if (entityType === AttachmentEntityType.KYC) {
+      if (entityId !== actorId) {
+        throw new ForbiddenException('Forbidden');
+      }
+      return;
+    }
+
     if (entityType === AttachmentEntityType.REMITTANCE) {
       const remittance = await this.prisma.remittance.findUnique({
         where: { id: entityId },

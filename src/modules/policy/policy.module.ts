@@ -11,9 +11,12 @@ import { PolicyResolutionService } from './policy-resolution.service';
 import { PolicyContextBuilder } from './policy-context-builder.service';
 import { AdminPolicyRulesController } from './admin-policy-rules.controller';
 import { UserProductLimitsAdminController } from './user-product-limits.admin.controller';
+import { PaginationModule } from '../../common/pagination/pagination.module';
+import { PolicyAuditAdminController } from './policy-audit.admin.controller';
+import { UserLimitsInspectionAdminController } from './user-limits-inspection.admin.controller';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, PaginationModule],
   providers: [
     PolicyResolverService,
     LimitsService,
@@ -28,6 +31,8 @@ import { UserProductLimitsAdminController } from './user-product-limits.admin.co
     EffectivePolicyAdminController,
     AdminPolicyRulesController,
     UserProductLimitsAdminController,
+    PolicyAuditAdminController,
+    UserLimitsInspectionAdminController,
   ],
   exports: [PolicyResolverService, PolicyResolutionService, LimitsService, PolicyMetricsService, PeriodKeyService, PolicyContextBuilder],
 })

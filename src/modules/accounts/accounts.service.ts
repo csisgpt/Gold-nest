@@ -18,6 +18,7 @@ import { AccountStatementEntryDto } from './dto/account-statement-entry.dto';
 import { AccountStatementFiltersDto } from './dto/account-statement-filters.dto';
 import { HOUSE_USER_ID, IRR_INSTRUMENT_CODE } from './constants';
 import { runInTx } from '../../common/db/tx.util';
+import { PaginationService } from '../../common/pagination/pagination.service';
 
 type DepositRequestType = Prisma.DepositRequestGetPayload<{}>;
 // تایپ داده‌های Withdraw
@@ -48,12 +49,12 @@ export interface ApplyTransactionInput {
 
 @Injectable()
 export class AccountsService {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(private readonly prisma: PrismaService, private readonly paginationService: PaginationService) { }
 
   getUsableCapacity(account: { balance: Decimal | string | number; blockedBalance?: Decimal | string | number; minBalance?: Decimal | string | number; }) {
     return new Decimal(account.balance ?? 0)
-      // .minus(new Decimal(account.blockedBalance ?? 0))
-      // .minus(new Decimal(account.minBalance ?? 0));
+      .minus(new Decimal(account.blockedBalance ?? 0))
+      .minus(new Decimal(account.minBalance ?? 0));
   }
 
   async getOrCreateAccount(
@@ -374,7 +375,7 @@ export class AccountsService {
     return runInTx(this.prisma, (trx) => executor(trx));
   }
 
-  async getStatementForUser(
+  async getStatementForUserRaw(
     userId: string,
     filters: AccountStatementFiltersDto = {} as AccountStatementFiltersDto,
   ): Promise<AccountStatementEntryDto[]> {
@@ -519,6 +520,19 @@ export class AccountsService {
     return entries;
   }
 
+
+
+  async getStatementForUser(
+    userId: string,
+    filters: AccountStatementFiltersDto = {} as AccountStatementFiltersDto,
+  ) {
+    const page = filters.page ?? 1;
+    const limit = filters.limit ?? 20;
+    const allEntries = await this.getStatementForUserRaw(userId, filters);
+    const { skip, take } = this.paginationService.getSkipTake(page, limit);
+    const items = allEntries.slice(skip, skip + take);
+    return this.paginationService.wrap(items, allEntries.length, page, limit);
+  }
   private async resolveAccountsForStatement(
     userId: string,
     filters: AccountStatementFiltersDto = {} as AccountStatementFiltersDto,

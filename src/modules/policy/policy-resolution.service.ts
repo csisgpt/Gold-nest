@@ -231,6 +231,9 @@ export class PolicyResolutionService {
     const selectorDiff = this.selectorRank(a) - this.selectorRank(b);
     if (selectorDiff !== 0) return selectorDiff;
 
+    const priorityDiff = (a.priority ?? 100) - (b.priority ?? 100);
+    if (priorityDiff !== 0) return priorityDiff;
+
     const updatedDiff = (b.updatedAt?.getTime?.() ?? 0) - (a.updatedAt?.getTime?.() ?? 0);
     if (updatedDiff !== 0) return updatedDiff;
 

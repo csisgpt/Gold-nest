@@ -2530,3 +2530,82 @@ test('showBalances=false hides balances in account responses', async (t) => {
   assert.strictEqual(accounts[0].balance, null);
   assert.strictEqual(accounts[0].balancesHidden, true);
 });
+
+test('Admin users list returns items/meta', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  await createUser(prisma, UserRole.CLIENT);
+
+  const response = await fetch(`${baseUrl}/admin/users?page=1&limit=5`, { headers: authHeader(admin) });
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.strictEqual(body.ok, true);
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+});
+
+test('Me overview returns expected keys', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma, UserRole.CLIENT);
+  const response = await fetch(`${baseUrl}/me/overview`, { headers: authHeader(user) });
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.ok(body.result?.user);
+  assert.ok(body.result?.kyc !== undefined);
+  assert.ok(body.result?.settings);
+  assert.ok(body.result?.wallet);
+  assert.ok(body.result?.policy);
+  assert.ok(body.result?.capabilities);
+});
+
+test('Policy rules list returns items/meta', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const response = await fetch(`${baseUrl}/admin/policy-rules?page=1&limit=10`, { headers: authHeader(admin) });
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+});
+
+test('Withdrawal insufficient capacity returns standardized code', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  const response = await fetch(`${baseUrl}/withdrawals`, {
+    method: 'POST',
+    headers: { ...authHeader(user), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount: '999999999', note: 'too much' }),
+  });
+
+  assert.ok([400, 422].includes(response.status));
+  const body = (await response.json()) as any;
+  assert.strictEqual(body.ok, false);
+});
+
+test('Tahesab outbox list returns items/meta', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  await prisma.tahesabOutbox.create({ data: { method: 'DoEditMoshtari', payload: { x: 1 } as any } });
+
+  const response = await fetch(`${baseUrl}/admin/tahesab/outbox?page=1&limit=5`, { headers: authHeader(admin) });
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+});
