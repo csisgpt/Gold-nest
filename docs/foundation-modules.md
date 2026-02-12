@@ -165,3 +165,14 @@ Each leaf contains: `{ limit, kycRequiredLevel, source, ruleId }`.
   }
 }
 ```
+
+
+## Seed demo users (for local UX testing)
+Use `prisma db seed` to create deterministic demo users:
+- `admin@goldnest.local` (`09120000001`): ADMIN + ACTIVE
+- `trader.a@goldnest.local` (`09120000021`): TRADER + ACTIVE + VERIFIED/FULL KYC + DEFAULT group
+- `trader.b@goldnest.local` (`09120000022`): TRADER + ACTIVE + PENDING/BASIC KYC (effective NONE for gating)
+- `trader.c@goldnest.local` (`09120000023`): TRADER + ACTIVE + VIP group (group hides balances + withdraw disabled)
+- `trader.d@goldnest.local` (`09120000024`): TRADER + BLOCKED
+
+These users cover capability/policy UX scenarios (verified vs pending KYC, blocked status, VIP settings override, insufficient/available wallet paths).
