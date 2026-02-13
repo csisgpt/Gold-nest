@@ -14,9 +14,10 @@ import { UserProductLimitsAdminController } from './user-product-limits.admin.co
 import { PaginationModule } from '../../common/pagination/pagination.module';
 import { PolicyAuditAdminController } from './policy-audit.admin.controller';
 import { UserLimitsInspectionAdminController } from './user-limits-inspection.admin.controller';
+import { TahesabModule } from '../tahesab/tahesab.module';
 
 @Module({
-  imports: [PrismaModule, PaginationModule],
+  imports: [PrismaModule, PaginationModule, TahesabModule],
   providers: [
     PolicyResolverService,
     LimitsService,

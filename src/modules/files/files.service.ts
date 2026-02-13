@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   InternalServerErrorException,
   Inject,
   Injectable,
@@ -28,6 +29,7 @@ import {
 import { ListFilesQueryDto, AdminListFilesQueryDto } from './dto/list-files-query.dto';
 import { DeleteFileQueryDto } from './dto/delete-file-query.dto';
 import { resolveBaseUrl } from '../../common/http/base-url.util';
+import { ApiErrorCode } from '../../common/http/api-error-codes';
 
 
 @Injectable()
@@ -118,13 +120,13 @@ export class FilesService {
       include: { attachments: true, attachmentLinks: true },
     });
     if (!file) {
-      throw new NotFoundException('File not found');
+      throw new NotFoundException({ code: ApiErrorCode.FILE_NOT_FOUND, message: 'File not found' });
     }
     if (actor?.role === UserRole.ADMIN) return file;
     if (file.uploadedById === actor?.id) return file;
 
     if (file.attachments.length === 0 && file.attachmentLinks.length === 0) {
-      throw new ForbiddenException('You do not have access to this file');
+      throw new ForbiddenException({ code: ApiErrorCode.FILE_STREAM_ACCESS_DENIED, message: 'You do not have access to this file' });
     }
 
     const isLinked = await this.isActorOwnerOfAttachmentEntities(
@@ -141,7 +143,7 @@ export class FilesService {
     }
 
     if (!isLinked) {
-      throw new ForbiddenException('You do not have access to this file');
+      throw new ForbiddenException({ code: ApiErrorCode.FILE_STREAM_ACCESS_DENIED, message: 'You do not have access to this file' });
     }
 
     return file;
@@ -151,13 +153,11 @@ export class FilesService {
     try {
       return await this.storage.getObjectStream(storageKey);
     } catch (err) {
-      if (
-        err instanceof Error &&
-        (err.message === 'NOT_FOUND' || err.name === 'NoSuchKey' || err.name === 'NotFound')
-      ) {
-        throw new NotFoundException('Stored file not found');
+      if (err instanceof HttpException) throw err;
+      if (err instanceof Error && (err.name === 'NoSuchKey' || err.name === 'NotFound')) {
+        throw new NotFoundException({ code: ApiErrorCode.FILE_NOT_FOUND, message: 'Stored file not found' });
       }
-      throw err;
+      throw new InternalServerErrorException({ code: ApiErrorCode.FILE_READ_FAILED, message: 'File read failed' });
     }
   }
 
@@ -185,7 +185,7 @@ export class FilesService {
 
     if (this.storageDriver === 's3') {
       if (!this.storage.getPresignedGetUrl) {
-        throw new InternalServerErrorException('S3 presign not supported; check config');
+        throw new InternalServerErrorException({ code: ApiErrorCode.FILE_READ_FAILED, message: 'S3 presign not supported; check config' });
       }
       try {
         const previewUrl = await this.storage.getPresignedGetUrl({
@@ -233,11 +233,10 @@ export class FilesService {
 
         const baseMessage = (err as any)?.message || 'check config';
         const adminMessage = `S3 presign failed: ${(err as any)?.name ?? 'Error'} ${baseMessage}. Check endpoint/bucket/keys.`;
-        throw new InternalServerErrorException(
-          actor.role === UserRole.ADMIN
-            ? adminMessage
-            : 'Download link generation failed',
-        );
+        throw new InternalServerErrorException({
+          code: ApiErrorCode.FILE_READ_FAILED,
+          message: actor.role === UserRole.ADMIN ? adminMessage : 'Download link generation failed',
+        });
       }
     }
 
@@ -265,15 +264,15 @@ export class FilesService {
     });
 
     if (!file) {
-      throw new NotFoundException('File not found');
+      throw new NotFoundException({ code: ApiErrorCode.FILE_NOT_FOUND, message: 'File not found' });
     }
 
     if (file.uploadedById !== actor.id) {
-      throw new ForbiddenException('You do not have access to this file');
+      throw new ForbiddenException({ code: ApiErrorCode.FILE_STREAM_ACCESS_DENIED, message: 'You do not have access to this file' });
     }
 
     if (file._count.attachments > 0 || file._count.attachmentLinks > 0) {
-      throw new ConflictException('File is attached and cannot be deleted');
+      throw new ConflictException({ code: ApiErrorCode.BUSINESS_RULE_VIOLATION, message: 'File is attached and cannot be deleted' });
     }
 
     await this.deleteFileAndStorage(file.id, file.storageKey);
@@ -288,11 +287,11 @@ export class FilesService {
     });
 
     if (!file) {
-      throw new NotFoundException('File not found');
+      throw new NotFoundException({ code: ApiErrorCode.FILE_NOT_FOUND, message: 'File not found' });
     }
 
     if ((file._count.attachments > 0 || file._count.attachmentLinks > 0) && !query.force) {
-      throw new ConflictException('File is attached and cannot be deleted');
+      throw new ConflictException({ code: ApiErrorCode.BUSINESS_RULE_VIOLATION, message: 'File is attached and cannot be deleted' });
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -321,13 +320,13 @@ export class FilesService {
 
     const files = await client.file.findMany({ where: { id: { in: fileIds } } });
     if (files.length !== fileIds.length) {
-      throw new BadRequestException('Some files not found');
+      throw new BadRequestException({ code: ApiErrorCode.KYC_INVALID_FILE_IDS, message: 'Some files not found' });
     }
 
     if (actor.role !== UserRole.ADMIN) {
       const unauthorized = files.find((f) => f.uploadedById !== actor.id);
       if (unauthorized) {
-        throw new ForbiddenException('Cannot attach files you do not own');
+        throw new ForbiddenException({ code: ApiErrorCode.KYC_FILES_FORBIDDEN, message: 'Cannot attach files you do not own' });
       }
     }
 
@@ -347,13 +346,9 @@ export class FilesService {
     try {
       await this.storage.deleteObject(storageKey);
     } catch (err) {
-      if (
-        err instanceof Error &&
-        (err.message === 'NOT_FOUND' || err.name === 'NoSuchKey' || err.name === 'NotFound')
-      ) {
-        return;
-      }
-      throw err;
+      if (err instanceof NotFoundException) return;
+      if (err instanceof Error && (err.name === 'NoSuchKey' || err.name === 'NotFound')) return;
+      throw new InternalServerErrorException({ code: ApiErrorCode.FILE_READ_FAILED, message: 'File read failed' });
     }
   }
 

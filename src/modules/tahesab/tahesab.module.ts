@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { Agent } from 'https';
 import { TahesabController } from './tahesab.controller';
+import { TahesabAdminController } from './tahesab.admin.controller';
 import { TahesabHttpClient } from './tahesab-http.client';
 import { TahesabService } from './tahesab.service';
 import { TahesabInventoryService } from './tahesab-inventory.service';
@@ -67,7 +68,7 @@ import { PaginationModule } from '../../common/pagination/pagination.module';
     TahesabIntegrationConfigService,
     TahesabRemittancesService,
   ],
-  controllers: [TahesabController],
+  controllers: [TahesabController, TahesabAdminController],
   exports: [
     TahesabService,
     TahesabInventoryService,

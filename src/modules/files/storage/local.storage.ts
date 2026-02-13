@@ -1,5 +1,7 @@
+import { NotImplementedException, NotFoundException } from '@nestjs/common';
 import { promises as fs, createReadStream } from 'fs';
 import * as path from 'path';
+import { ApiErrorCode } from '../../../common/http/api-error-codes';
 import { StorageObjectStream, StorageProvider } from './storage.provider';
 
 export class LocalStorageProvider implements StorageProvider {
@@ -19,7 +21,7 @@ export class LocalStorageProvider implements StorageProvider {
     const absolutePath = this.getAbsolutePath(key);
     const stats = await fs.stat(absolutePath).catch(() => null);
     if (!stats) {
-      throw new Error('NOT_FOUND');
+      throw new NotFoundException({ code: ApiErrorCode.FILE_NOT_FOUND, message: 'File not found' });
     }
     const stream = createReadStream(absolutePath);
     return { stream, contentLength: stats.size };
@@ -31,6 +33,6 @@ export class LocalStorageProvider implements StorageProvider {
   }
 
   async getPresignedGetUrl(): Promise<string> {
-    throw new Error('PRESIGN_NOT_SUPPORTED');
+    throw new NotImplementedException({ code: ApiErrorCode.FILE_READ_FAILED, message: 'Presigned URLs are not supported for local storage' });
   }
 }

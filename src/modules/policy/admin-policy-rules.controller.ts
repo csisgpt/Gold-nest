@@ -1,15 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards, BadRequestException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { PolicyAction, PolicyAuditEntityType, PolicyMetric, PolicyPeriod, PolicyScopeType, Prisma, UserRole } from '@prisma/client';
-import { dec } from '../../common/utils/decimal.util';
+import { PolicyAuditEntityType, PolicyScopeType, Prisma, UserRole } from '@prisma/client';
+import { ApiErrorCode } from '../../common/http/api-error-codes';
 import { runInTx } from '../../common/db/tx.util';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RolesGuard } from '../auth/roles.guard';
-import { Roles } from '../auth/roles.decorator';
-import { PrismaService } from '../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
+import { dec } from '../../common/utils/decimal.util';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { JwtRequestUser } from '../auth/jwt.strategy';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
+import { PrismaService } from '../prisma/prisma.service';
 import { BulkUpsertPolicyRuleDto, CreatePolicyRuleDto, ListPolicyRulesDto, UpdatePolicyRuleDto } from './dto/policy-rule.dto';
 import { normalizeSelector } from './policy-selector.util';
 
@@ -76,7 +77,7 @@ export class AdminPolicyRulesController {
   async update(@Param('id') id: string, @Body() dto: UpdatePolicyRuleDto, @CurrentUser() actor: JwtRequestUser) {
     const existing = await this.prisma.policyRule.findUnique({ where: { id } });
     if (!existing) {
-      throw new BadRequestException('NOT_FOUND');
+      throw new NotFoundException({ code: ApiErrorCode.POLICY_RULE_NOT_FOUND, message: 'Policy rule not found' });
     }
 
     const merged = { ...existing, ...dto } as CreatePolicyRuleDto;
@@ -115,9 +116,11 @@ export class AdminPolicyRulesController {
   }
 
   @Post('bulk-upsert')
-  async bulkUpsert(@Body() dto: BulkUpsertPolicyRuleDto) {
+  async bulkUpsert(@Body() dto: BulkUpsertPolicyRuleDto, @CurrentUser() actor: JwtRequestUser) {
     let created = 0;
     let updated = 0;
+    const createdIds: string[] = [];
+    const updatedIds: string[] = [];
 
     await runInTx(this.prisma, async (tx) => {
       for (const item of dto.items) {
@@ -147,7 +150,7 @@ export class AdminPolicyRulesController {
         const existing = await tx.policyRule.findFirst({ where });
 
         if (existing) {
-          await tx.policyRule.update({
+          const updatedRule = await tx.policyRule.update({
             where: { id: existing.id },
             data: {
               limit: dec(item.limit),
@@ -159,8 +162,18 @@ export class AdminPolicyRulesController {
             },
           });
           updated += 1;
+          updatedIds.push(updatedRule.id);
+          await tx.policyAuditLog.create({
+            data: {
+              entityType: PolicyAuditEntityType.POLICY_RULE,
+              entityId: updatedRule.id,
+              actorId: actor.id,
+              beforeJson: existing,
+              afterJson: updatedRule,
+            },
+          });
         } else {
-          await tx.policyRule.create({
+          const createdRule = await tx.policyRule.create({
             data: {
               scopeType: item.scopeType,
               scopeUserId: item.scopeType === PolicyScopeType.USER ? item.scopeUserId : null,
@@ -171,39 +184,51 @@ export class AdminPolicyRulesController {
               limit: dec(item.limit),
               ...selector,
               note: item.note,
+              minKycLevel: item.minKycLevel,
+              enabled: item.enabled ?? true,
+              priority: item.priority ?? 100,
             },
           });
           created += 1;
+          createdIds.push(createdRule.id);
+          await tx.policyAuditLog.create({
+            data: {
+              entityType: PolicyAuditEntityType.POLICY_RULE,
+              entityId: createdRule.id,
+              actorId: actor.id,
+              afterJson: createdRule,
+            },
+          });
         }
       }
     });
 
-    return { created, updated };
+    return { created, updated, createdIds, updatedIds };
   }
 
   private validateScope(scopeType: PolicyScopeType, userId?: string | null, groupId?: string | null) {
     if (scopeType === PolicyScopeType.USER && !userId) {
-      throw new BadRequestException('INVALID_SCOPE_FIELDS');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_SCOPE_FIELDS, message: 'Invalid scope fields' });
     }
     if (scopeType === PolicyScopeType.GROUP && !groupId) {
-      throw new BadRequestException('INVALID_SCOPE_FIELDS');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_SCOPE_FIELDS, message: 'Invalid scope fields' });
     }
     if (scopeType === PolicyScopeType.GLOBAL && (userId || groupId)) {
-      throw new BadRequestException('INVALID_SCOPE_FIELDS');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_SCOPE_FIELDS, message: 'Invalid scope fields' });
     }
   }
 
   private validateSelector(productId?: string | null, instrumentId?: string | null, instrumentType?: any) {
     const setCount = [productId, instrumentId, instrumentType].filter((v) => v).length;
     if (setCount > 1) {
-      throw new BadRequestException('INVALID_SELECTOR_COMBINATION');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_SELECTOR_COMBINATION, message: 'Invalid selector combination' });
     }
   }
 
   private validateValue(limit?: string | null) {
     if (limit === undefined || limit === null) return;
     if (Number(limit) <= 0 || Number.isNaN(Number(limit))) {
-      throw new BadRequestException('INVALID_VALUE');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_VALUE, message: 'Invalid value' });
     }
   }
 }
