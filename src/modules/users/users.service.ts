@@ -112,38 +112,22 @@ export class UsersService {
   }
 
   async activateUser(userId: string) {
-
-    try {
-      //   const user = await this.prisma.user.findUnique(
-      //     {
-      //       where: {
-      //         id: userId
-      //       }
-      //     },
-      //   )
-
-      //   console.log(user)
-
-
-
-      const user = await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          email: undefined,
-          fullName: undefined,
-          password: undefined,
-          status: UserStatus.ACTIVE
-        },
-      });
-
-      const { password: _pw, ...safeUser } = user;
-      // await this.enqueueTahesabOnEdit(user);
-      return safeUser;
-    } catch (e: any) {
-      console.log(e)
-      throw Error(e)
+    const existing = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!existing) {
+      throw new NotFoundException('User not found');
     }
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        status: UserStatus.ACTIVE,
+      },
+    });
+
+    const { password: _pw, ...safeUser } = user;
+    return safeUser;
   }
+
 
 
   async updateUser(id: string, dto: UpdateUserDto) {

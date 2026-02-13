@@ -2530,3 +2530,334 @@ test('showBalances=false hides balances in account responses', async (t) => {
   assert.strictEqual(accounts[0].balance, null);
   assert.strictEqual(accounts[0].balancesHidden, true);
 });
+
+test('Admin users list returns items/meta', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  await createUser(prisma, UserRole.CLIENT);
+
+  const response = await fetch(`${baseUrl}/admin/users?page=1&limit=5`, { headers: authHeader(admin) });
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.strictEqual(body.ok, true);
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+});
+
+test('Me overview returns expected keys', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma, UserRole.CLIENT);
+  const response = await fetch(`${baseUrl}/me/overview`, { headers: authHeader(user) });
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.ok(body.result?.user);
+  assert.ok(body.result?.kyc !== undefined);
+  assert.ok(body.result?.settings);
+  assert.ok(body.result?.wallet);
+  assert.ok(body.result?.policy);
+  assert.ok(body.result?.capabilities);
+});
+
+test('Policy rules list returns items/meta', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const response = await fetch(`${baseUrl}/admin/policy-rules?page=1&limit=10`, { headers: authHeader(admin) });
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+});
+
+test('Withdrawal insufficient capacity returns standardized code', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  const response = await fetch(`${baseUrl}/withdrawals`, {
+    method: 'POST',
+    headers: { ...authHeader(user), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount: '999999999', note: 'too much' }),
+  });
+
+  assert.ok([400, 422].includes(response.status));
+  const body = (await response.json()) as any;
+  assert.strictEqual(body.ok, false);
+});
+
+test('Tahesab outbox list returns items/meta', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  await prisma.tahesabOutbox.create({ data: { method: 'DoEditMoshtari', payload: { x: 1 } as any } });
+
+  const response = await fetch(`${baseUrl}/admin/tahesab/outbox?page=1&limit=5`, { headers: authHeader(admin) });
+  assert.strictEqual(response.status, 200);
+  const body = (await response.json()) as any;
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+});
+
+test('Admin tahesab outbox endpoint is mounted under /admin/tahesab/outbox', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const res = await fetch(`${baseUrl}/admin/tahesab/outbox?page=1&limit=10`, {
+    headers: authHeader(admin),
+  });
+
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.ok, true);
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+
+  const oldWrongPathRes = await fetch(`${baseUrl}/tahesab/admin/tahesab/outbox`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(oldWrongPathRes.status, 404);
+});
+
+test('Deleting unknown customer group returns GROUP_NOT_FOUND code envelope', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const admin = await createUser(prisma, UserRole.ADMIN);
+
+  const res = await fetch(`${baseUrl}/admin/customer-groups/11111111-1111-1111-1111-111111111111`, {
+    method: 'DELETE',
+    headers: authHeader(admin),
+  });
+
+  assert.strictEqual(res.status, 404);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.ok, false);
+  assert.strictEqual(body.error?.code, 'GROUP_NOT_FOUND');
+});
+
+test('Paged customer-groups endpoint returns items/meta contract', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const admin = await createUser(prisma, UserRole.ADMIN);
+
+  await prisma.customerGroup.create({
+    data: {
+      code: `T-${Date.now()}`,
+      name: 'Test Group',
+    },
+  });
+
+  const res = await fetch(`${baseUrl}/admin/customer-groups/paged?page=1&limit=10`, {
+    headers: authHeader(admin),
+  });
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+});
+
+test('Overview capabilities include KYC_REQUIRED when policy requires higher KYC', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  await prisma.policyRule.create({
+    data: {
+      scopeType: 'GLOBAL',
+      action: PolicyAction.WITHDRAW_IRR,
+      metric: PolicyMetric.NOTIONAL_IRR,
+      period: PolicyPeriod.DAILY,
+      limit: new Decimal(1000000),
+      minKycLevel: 'FULL',
+      enabled: true,
+      priority: 1,
+    },
+  });
+
+  await prisma.userKyc.upsert({
+    where: { userId: user.id },
+    create: { userId: user.id, status: 'PENDING', level: 'FULL' },
+    update: { status: 'PENDING', level: 'FULL' },
+  });
+
+  const res = await fetch(`${baseUrl}/me/overview`, { headers: authHeader(user) });
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  const caps = body.result?.capabilities;
+  assert.strictEqual(caps.canWithdraw, false);
+  assert.ok(Array.isArray(caps.reasons));
+  assert.ok(caps.reasons.some((r: any) => r.code === 'KYC_REQUIRED'));
+  assert.strictEqual(caps.needsKycForWithdraw, 'FULL');
+
+  // keep admin variable used to avoid lint false positives in isolated runs
+  assert.ok(admin.id);
+});
+
+function containsKeyDeep(value: any, key: string): boolean {
+  if (Array.isArray(value)) return value.some((v) => containsKeyDeep(v, key));
+  if (value && typeof value === 'object') {
+    if (Object.prototype.hasOwnProperty.call(value, key)) return true;
+    return Object.values(value).some((v) => containsKeyDeep(v, key));
+  }
+  return false;
+}
+
+test('Admin user responses never leak password fields', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  const listRes = await fetch(`${baseUrl}/admin/users?page=1&limit=10`, { headers: authHeader(admin) });
+  assert.strictEqual(listRes.status, 200);
+  const listBody = (await listRes.json()) as any;
+  assert.strictEqual(containsKeyDeep(listBody.result, 'password'), false);
+
+  const overviewRes = await fetch(`${baseUrl}/admin/users/${user.id}/overview`, { headers: authHeader(admin) });
+  assert.strictEqual(overviewRes.status, 200);
+  const overviewBody = (await overviewRes.json()) as any;
+  assert.strictEqual(containsKeyDeep(overviewBody.result, 'password'), false);
+});
+
+test('KYC submit rejects non-owned files with KYC_FILES_FORBIDDEN', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const userA = await createUser(prisma, UserRole.CLIENT);
+  const userB = await createUser(prisma, UserRole.CLIENT);
+  const fileA = await uploadTestFile(userA, 'kyc-a.txt', 'text/plain', 'aaa');
+
+  const res = await fetch(`${baseUrl}/me/kyc/submit`, {
+    method: 'POST',
+    headers: { ...authHeader(userB), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ levelRequested: 'BASIC', fileIds: [fileA.id] }),
+  });
+
+  assert.strictEqual(res.status, 403);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.error?.code, 'KYC_FILES_FORBIDDEN');
+});
+
+test('KYC submit rejects invalid file ids with KYC_INVALID_FILE_IDS', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  const res = await fetch(`${baseUrl}/me/kyc/submit`, {
+    method: 'POST',
+    headers: { ...authHeader(user), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ levelRequested: 'BASIC', fileIds: ['c0ffee00-cafe-cafe-cafe-c0ffeec0ffee'] }),
+  });
+
+  assert.strictEqual(res.status, 400);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.error?.code, 'KYC_INVALID_FILE_IDS');
+  assert.ok(Array.isArray(body.error?.details));
+  assert.ok(body.error.details.some((d: any) => d.path === 'fileIds'));
+});
+
+test('Me overview hides wallet balances when showBalances=false', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const accountsService = app.get(AccountsService);
+
+  const user = await createUser(prisma, UserRole.CLIENT);
+  const irrAccount = await accountsService.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE);
+  await setAccountBalance(prisma, irrAccount.id, 12345);
+
+  await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { ...authHeader(user), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ showBalances: false }),
+  });
+
+  const res = await fetch(`${baseUrl}/me/overview`, { headers: authHeader(user) });
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  const accounts = body.result?.wallet?.accounts ?? [];
+  assert.ok(accounts.length > 0);
+  assert.strictEqual(accounts[0].balance, null);
+  assert.strictEqual(accounts[0].balancesHidden, true);
+});
+
+test('Admin overview can see balances even when user hides balances', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const accountsService = app.get(AccountsService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const user = await createUser(prisma, UserRole.CLIENT);
+  const irrAccount = await accountsService.getOrCreateAccount(user.id, IRR_INSTRUMENT_CODE);
+  await setAccountBalance(prisma, irrAccount.id, 42000);
+
+  await fetch(`${baseUrl}/users/me/settings`, {
+    method: 'PUT',
+    headers: { ...authHeader(user), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ showBalances: false }),
+  });
+
+  const res = await fetch(`${baseUrl}/admin/users/${user.id}/overview`, { headers: authHeader(admin) });
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok((body.result?.wallet?.accounts ?? []).length > 0);
+  assert.notStrictEqual(body.result.wallet.accounts[0].balance, null);
+  assert.strictEqual(body.result.wallet.summary.balancesHiddenByUserSetting, true);
+});
+
+test('File raw endpoint returns FILE_NOT_FOUND for non-existing file', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+  const user = await createUser(prisma, UserRole.CLIENT);
+
+  const res = await fetch(`${baseUrl}/files/c0ffee00-cafe-cafe-cafe-c0ffeec0ffee/raw`, { headers: authHeader(user) });
+  assert.strictEqual(res.status, 404);
+  const body = (await res.json()) as any;
+  assert.strictEqual(body.error?.code, 'FILE_NOT_FOUND');
+});
+
+
+test('Customer-group users list returns safe DTO rows without password leaks', async (t) => {
+  const app = await bootstrapApp();
+  if (!requireApp(app, t)) return;
+  const prisma = app.get(PrismaService);
+
+  const admin = await createUser(prisma, UserRole.ADMIN);
+  const group = await prisma.customerGroup.create({ data: { code: `G-${Date.now()}`, name: 'Group safe' } });
+  const user = await createUser(prisma, UserRole.CLIENT);
+  await prisma.user.update({ where: { id: user.id }, data: { customerGroupId: group.id } });
+
+  const res = await fetch(`${baseUrl}/admin/customer-groups/${group.id}/users?page=1&limit=10`, {
+    headers: authHeader(admin),
+  });
+
+  assert.strictEqual(res.status, 200);
+  const body = (await res.json()) as any;
+  assert.ok(Array.isArray(body.result?.items));
+  assert.ok(body.result?.meta);
+  assert.strictEqual(containsKeyDeep(body.result, 'password'), false);
+});

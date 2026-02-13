@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PolicyAuditEntityType, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -7,6 +7,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { UpdateUserKycDto } from './dto/user-kyc.dto';
 import { runInTx } from '../../common/db/tx.util';
+import { PaginationService } from '../../common/pagination/pagination.service';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 
@@ -16,8 +17,33 @@ import { JwtRequestUser } from '../auth/jwt.strategy';
 @Roles(UserRole.ADMIN)
 @Controller()
 export class UserKycAdminController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly paginationService: PaginationService) {}
 
+
+
+  @Get('admin/kyc/queue')
+  async queue(@Query() query: any) {
+    const where: any = {};
+    if (query.status) where.status = query.status;
+    if (query.level) where.level = query.level;
+
+    const { page, limit, skip, take } = this.paginationService.getSkipTake(Number(query.page ?? 1), Number(query.limit ?? 20));
+    const [items, totalItems] = await this.prisma.$transaction([
+      this.prisma.userKyc.findMany({ where, include: { user: true }, skip, take, orderBy: { updatedAt: 'desc' } }),
+      this.prisma.userKyc.count({ where }),
+    ]);
+
+    return this.paginationService.wrap(
+      items.map((item) => ({
+        user: { id: item.user.id, fullName: item.user.fullName, mobile: item.user.mobile, email: item.user.email },
+        kyc: item,
+        submittedAt: item.updatedAt,
+      })),
+      totalItems,
+      page,
+      limit,
+    );
+  }
   @Get('admin/users/:id/kyc')
   get(@Param('id') id: string) {
     return this.prisma.userKyc.findUnique({ where: { userId: id } });

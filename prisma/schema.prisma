@@ -81,8 +81,11 @@ enum AccountReservationStatus {
 
 enum PolicyAuditEntityType {
   CUSTOMER_GROUP
+  CUSTOMER_GROUP_SETTINGS
+  USER
   USER_KYC
   POLICY_RULE
+  ACCOUNT_ADJUSTMENT
 }
 
 enum InstrumentUnit {
@@ -292,6 +295,7 @@ enum AttachmentEntityType {
   DEPOSIT
   WITHDRAW
   GOLD_LOT
+  KYC
   // TODO: Attachments for remittance flows will use this type once implemented.
   REMITTANCE
 }
@@ -360,7 +364,24 @@ model CustomerGroup {
   updatedAt        DateTime @updatedAt
 
   users User[]
+  settings CustomerGroupSettings?
   policyRules PolicyRule[] @relation("PolicyRuleScopeGroup")
+}
+
+model CustomerGroupSettings {
+  groupId String @id
+  group CustomerGroup @relation(fields: [groupId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  showBalances    Boolean?
+  showGold        Boolean?
+  showCoins       Boolean?
+  showCash        Boolean?
+  tradeEnabled    Boolean?
+  withdrawEnabled Boolean?
+  maxOpenTrades   Int?
+  metaJson        Json?
 }
 
 model User {

@@ -1,11 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards, BadRequestException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { PolicyAction, PolicyMetric, PolicyPeriod, PolicyScopeType, Prisma, UserRole } from '@prisma/client';
-import { dec } from '../../common/utils/decimal.util';
+import { PolicyAuditEntityType, PolicyScopeType, Prisma, UserRole } from '@prisma/client';
+import { ApiErrorCode } from '../../common/http/api-error-codes';
 import { runInTx } from '../../common/db/tx.util';
+import { PaginationService } from '../../common/pagination/pagination.service';
+import { dec } from '../../common/utils/decimal.util';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RolesGuard } from '../auth/roles.guard';
+import { JwtRequestUser } from '../auth/jwt.strategy';
 import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { BulkUpsertPolicyRuleDto, CreatePolicyRuleDto, ListPolicyRulesDto, UpdatePolicyRuleDto } from './dto/policy-rule.dto';
 import { normalizeSelector } from './policy-selector.util';
@@ -16,7 +20,7 @@ import { normalizeSelector } from './policy-selector.util';
 @Roles(UserRole.ADMIN)
 @Controller('admin/policy-rules')
 export class AdminPolicyRulesController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly paginationService: PaginationService) {}
 
   @Get()
   async list(@Query() query: ListPolicyRulesDto) {
@@ -31,26 +35,24 @@ export class AdminPolicyRulesController {
     if (query.metric) where.metric = query.metric;
     if (query.period) where.period = query.period;
 
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
-    const skip = (page - 1) * limit;
+    const { page, limit, skip, take } = this.paginationService.getSkipTake(query.page, query.limit);
 
     const [items, total] = await this.prisma.$transaction([
-      this.prisma.policyRule.findMany({ where, orderBy: { updatedAt: 'desc' }, skip, take: limit }),
+      this.prisma.policyRule.findMany({ where, orderBy: [{ priority: 'asc' }, { updatedAt: 'desc' }], skip, take }),
       this.prisma.policyRule.count({ where }),
     ]);
 
-    return { items, page, limit, total };
+    return this.paginationService.wrap(items, total, page, limit);
   }
 
   @Post()
-  async create(@Body() dto: CreatePolicyRuleDto) {
+  async create(@Body() dto: CreatePolicyRuleDto, @CurrentUser() actor: JwtRequestUser) {
     this.validateScope(dto.scopeType, dto.scopeUserId, dto.scopeGroupId);
     const selector = normalizeSelector(dto);
     this.validateSelector(selector.productId, selector.instrumentId, selector.instrumentType);
     this.validateValue(dto.limit);
 
-    return this.prisma.policyRule.create({
+    const created = await this.prisma.policyRule.create({
       data: {
         scopeType: dto.scopeType,
         scopeUserId: dto.scopeType === PolicyScopeType.USER ? dto.scopeUserId : null,
@@ -60,16 +62,22 @@ export class AdminPolicyRulesController {
         period: dto.period,
         limit: dec(dto.limit),
         ...selector,
+        minKycLevel: dto.minKycLevel,
+        enabled: dto.enabled ?? true,
+        priority: dto.priority ?? 100,
         note: dto.note,
       },
     });
+
+    await this.prisma.policyAuditLog.create({ data: { entityType: PolicyAuditEntityType.POLICY_RULE, entityId: created.id, actorId: actor.id, afterJson: created } });
+    return created;
   }
 
   @Patch(':id')
-  async update(@Param('id') id: string, @Body() dto: UpdatePolicyRuleDto) {
+  async update(@Param('id') id: string, @Body() dto: UpdatePolicyRuleDto, @CurrentUser() actor: JwtRequestUser) {
     const existing = await this.prisma.policyRule.findUnique({ where: { id } });
     if (!existing) {
-      throw new BadRequestException('NOT_FOUND');
+      throw new NotFoundException({ code: ApiErrorCode.POLICY_RULE_NOT_FOUND, message: 'Policy rule not found' });
     }
 
     const merged = { ...existing, ...dto } as CreatePolicyRuleDto;
@@ -78,7 +86,7 @@ export class AdminPolicyRulesController {
     this.validateSelector(selector.productId, selector.instrumentId, selector.instrumentType);
     if (merged.limit !== undefined) this.validateValue(merged.limit);
 
-    return this.prisma.policyRule.update({
+    const updated = await this.prisma.policyRule.update({
       where: { id },
       data: {
         scopeType: merged.scopeType,
@@ -89,21 +97,30 @@ export class AdminPolicyRulesController {
         period: merged.period,
         limit: merged.limit !== undefined ? dec(merged.limit) : undefined,
         ...selector,
+        minKycLevel: merged.minKycLevel ?? undefined,
+        enabled: merged.enabled ?? undefined,
+        priority: merged.priority ?? undefined,
         note: merged.note,
       },
     });
+    await this.prisma.policyAuditLog.create({ data: { entityType: PolicyAuditEntityType.POLICY_RULE, entityId: id, actorId: actor.id, beforeJson: existing, afterJson: updated } });
+    return updated;
   }
 
   @Delete(':id')
-  async delete(@Param('id') id: string) {
+  async delete(@Param('id') id: string, @CurrentUser() actor: JwtRequestUser) {
+    const before = await this.prisma.policyRule.findUnique({ where: { id } });
     await this.prisma.policyRule.deleteMany({ where: { id } });
+    await this.prisma.policyAuditLog.create({ data: { entityType: PolicyAuditEntityType.POLICY_RULE, entityId: id, actorId: actor.id, beforeJson: before } });
     return { deleted: true };
   }
 
   @Post('bulk-upsert')
-  async bulkUpsert(@Body() dto: BulkUpsertPolicyRuleDto) {
+  async bulkUpsert(@Body() dto: BulkUpsertPolicyRuleDto, @CurrentUser() actor: JwtRequestUser) {
     let created = 0;
     let updated = 0;
+    const createdIds: string[] = [];
+    const updatedIds: string[] = [];
 
     await runInTx(this.prisma, async (tx) => {
       for (const item of dto.items) {
@@ -133,17 +150,30 @@ export class AdminPolicyRulesController {
         const existing = await tx.policyRule.findFirst({ where });
 
         if (existing) {
-          await tx.policyRule.update({
+          const updatedRule = await tx.policyRule.update({
             where: { id: existing.id },
             data: {
               limit: dec(item.limit),
+              minKycLevel: item.minKycLevel ?? undefined,
+              enabled: item.enabled ?? true,
+              priority: item.priority ?? 100,
               note: item.note,
               ...selector,
             },
           });
           updated += 1;
+          updatedIds.push(updatedRule.id);
+          await tx.policyAuditLog.create({
+            data: {
+              entityType: PolicyAuditEntityType.POLICY_RULE,
+              entityId: updatedRule.id,
+              actorId: actor.id,
+              beforeJson: existing,
+              afterJson: updatedRule,
+            },
+          });
         } else {
-          await tx.policyRule.create({
+          const createdRule = await tx.policyRule.create({
             data: {
               scopeType: item.scopeType,
               scopeUserId: item.scopeType === PolicyScopeType.USER ? item.scopeUserId : null,
@@ -154,39 +184,51 @@ export class AdminPolicyRulesController {
               limit: dec(item.limit),
               ...selector,
               note: item.note,
+              minKycLevel: item.minKycLevel,
+              enabled: item.enabled ?? true,
+              priority: item.priority ?? 100,
             },
           });
           created += 1;
+          createdIds.push(createdRule.id);
+          await tx.policyAuditLog.create({
+            data: {
+              entityType: PolicyAuditEntityType.POLICY_RULE,
+              entityId: createdRule.id,
+              actorId: actor.id,
+              afterJson: createdRule,
+            },
+          });
         }
       }
     });
 
-    return { created, updated };
+    return { created, updated, createdIds, updatedIds };
   }
 
   private validateScope(scopeType: PolicyScopeType, userId?: string | null, groupId?: string | null) {
     if (scopeType === PolicyScopeType.USER && !userId) {
-      throw new BadRequestException('INVALID_SCOPE_FIELDS');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_SCOPE_FIELDS, message: 'Invalid scope fields' });
     }
     if (scopeType === PolicyScopeType.GROUP && !groupId) {
-      throw new BadRequestException('INVALID_SCOPE_FIELDS');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_SCOPE_FIELDS, message: 'Invalid scope fields' });
     }
     if (scopeType === PolicyScopeType.GLOBAL && (userId || groupId)) {
-      throw new BadRequestException('INVALID_SCOPE_FIELDS');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_SCOPE_FIELDS, message: 'Invalid scope fields' });
     }
   }
 
   private validateSelector(productId?: string | null, instrumentId?: string | null, instrumentType?: any) {
     const setCount = [productId, instrumentId, instrumentType].filter((v) => v).length;
     if (setCount > 1) {
-      throw new BadRequestException('INVALID_SELECTOR_COMBINATION');
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_SELECTOR_COMBINATION, message: 'Invalid selector combination' });
     }
   }
 
-  private validateValue(limit?: number | null) {
+  private validateValue(limit?: string | null) {
     if (limit === undefined || limit === null) return;
-    if (Number(limit) <= 0) {
-      throw new BadRequestException('INVALID_VALUE');
+    if (Number(limit) <= 0 || Number.isNaN(Number(limit))) {
+      throw new BadRequestException({ code: ApiErrorCode.INVALID_VALUE, message: 'Invalid value' });
     }
   }
 }

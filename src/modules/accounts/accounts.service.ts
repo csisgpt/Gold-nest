@@ -14,10 +14,11 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InsufficientCreditException } from '../../common/exceptions/insufficient-credit.exception';
-import { AccountStatementEntryDto } from './dto/account-statement-entry.dto';
 import { AccountStatementFiltersDto } from './dto/account-statement-filters.dto';
+import { WalletStatementRowDto } from './dto/wallet-statement-row.dto';
 import { HOUSE_USER_ID, IRR_INSTRUMENT_CODE } from './constants';
 import { runInTx } from '../../common/db/tx.util';
+import { PaginationService } from '../../common/pagination/pagination.service';
 
 type DepositRequestType = Prisma.DepositRequestGetPayload<{}>;
 // تایپ داده‌های Withdraw
@@ -48,12 +49,12 @@ export interface ApplyTransactionInput {
 
 @Injectable()
 export class AccountsService {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(private readonly prisma: PrismaService, private readonly paginationService: PaginationService) { }
 
   getUsableCapacity(account: { balance: Decimal | string | number; blockedBalance?: Decimal | string | number; minBalance?: Decimal | string | number; }) {
     return new Decimal(account.balance ?? 0)
-      // .minus(new Decimal(account.blockedBalance ?? 0))
-      // .minus(new Decimal(account.minBalance ?? 0));
+      .minus(new Decimal(account.blockedBalance ?? 0))
+      .minus(new Decimal(account.minBalance ?? 0));
   }
 
   async getOrCreateAccount(
@@ -374,10 +375,15 @@ export class AccountsService {
     return runInTx(this.prisma, (trx) => executor(trx));
   }
 
-  async getStatementForUser(
+
+  async getAccountsWithInstrument(userId: string) {
+    return this.prisma.account.findMany({ where: { userId }, include: { instrument: true }, orderBy: { createdAt: 'desc' } });
+  }
+
+  async getStatementForUserRaw(
     userId: string,
     filters: AccountStatementFiltersDto = {} as AccountStatementFiltersDto,
-  ): Promise<AccountStatementEntryDto[]> {
+  ): Promise<WalletStatementRowDto[]> {
     const accounts = await this.resolveAccountsForStatement(userId, filters);
     if (accounts.length === 0) {
       return [];
@@ -458,11 +464,10 @@ export class AccountsService {
       remittances.map((r) => [r.id, r] as const)
     );
 
-    const entries: AccountStatementEntryDto[] = accountTxs.map((tx) => {
+    const entries: WalletStatementRowDto[] = accountTxs.map((tx) => {
       const delta = new Decimal(tx.delta);
       const instrument = tx.account.instrument;
       let docType: string = tx.refType;
-      let docNo: string = tx.id;
       let description: string | undefined;
 
       if (tx.refId) {
@@ -470,21 +475,18 @@ export class AccountsService {
           const deposit = depositMap.get(tx.refId);
           if (deposit) {
             docType = 'DEPOSIT';
-            docNo = deposit.refNo ?? deposit.id;
             description = deposit.note ?? undefined;
           }
         } else if (tx.refType === TxRefType.WITHDRAW) {
           const withdraw = withdrawMap.get(tx.refId);
           if (withdraw) {
             docType = 'WITHDRAW';
-            docNo = withdraw.id;
             description = withdraw.note ?? undefined;
           }
         } else if (tx.refType === TxRefType.TRADE) {
           const trade = tradeMap.get(tx.refId);
           if (trade) {
             docType = trade.side === TradeSide.BUY ? 'TRADE_BUY' : 'TRADE_SELL';
-            docNo = trade.id;
             description = trade.clientNote ?? trade.instrument.name;
           }
         } else if (tx.refType === TxRefType.REMITTANCE) {
@@ -492,33 +494,46 @@ export class AccountsService {
           if (remittance) {
             const isOutgoing = remittance.fromUserId === userId;
             docType = isOutgoing ? 'REMITTANCE_OUT' : 'REMITTANCE_IN';
-            docNo = remittance.id;
             description = remittance.note ?? undefined;
           }
         }
       }
 
-      const entry: AccountStatementEntryDto = {
-        date: tx.createdAt,
-        docNo,
-        docType,
-        description,
+      const isCredit = delta.gt(0);
+      const side: WalletStatementRowDto['side'] = delta.eq(0) ? 'NONE' : isCredit ? 'CREDIT' : 'DEBIT';
+      const amountAbs = delta.abs().toString();
+
+      return {
+        id: tx.id,
+        createdAt: tx.createdAt,
+        refType: tx.refType,
+        refId: tx.refId ?? null,
+        type: docType,
+        instrumentCode: instrument.code,
+        side,
+        amountMoney: instrument.code === IRR_INSTRUMENT_CODE && !delta.eq(0) ? amountAbs : null,
+        amountWeight: instrument.type === InstrumentType.GOLD && !delta.eq(0) ? amountAbs : null,
+        note: description ?? null,
+        balancesHidden: false,
       };
-
-      if (instrument.code === IRR_INSTRUMENT_CODE) {
-        if (delta.gt(0)) entry.creditMoney = delta.toString();
-        else if (delta.lt(0)) entry.debitMoney = delta.abs().toString();
-      } else if (instrument.type === InstrumentType.GOLD) {
-        if (delta.gt(0)) entry.creditWeight = delta.toString();
-        else if (delta.lt(0)) entry.debitWeight = delta.abs().toString();
-      }
-
-      return entry;
     });
 
     return entries;
   }
 
+
+
+  async getStatementForUser(
+    userId: string,
+    filters: AccountStatementFiltersDto = {} as AccountStatementFiltersDto,
+  ) {
+    const page = filters.page ?? 1;
+    const limit = filters.limit ?? 20;
+    const allEntries = await this.getStatementForUserRaw(userId, filters);
+    const { skip, take } = this.paginationService.getSkipTake(page, limit);
+    const items = allEntries.slice(skip, skip + take);
+    return this.paginationService.wrap(items, allEntries.length, page, limit);
+  }
   private async resolveAccountsForStatement(
     userId: string,
     filters: AccountStatementFiltersDto = {} as AccountStatementFiltersDto,

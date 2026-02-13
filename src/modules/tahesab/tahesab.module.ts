@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { Agent } from 'https';
 import { TahesabController } from './tahesab.controller';
+import { TahesabAdminController } from './tahesab.admin.controller';
 import { TahesabHttpClient } from './tahesab-http.client';
 import { TahesabService } from './tahesab.service';
 import { TahesabInventoryService } from './tahesab-inventory.service';
@@ -18,12 +19,14 @@ import { TahesabOutboxProcessor } from './tahesab-outbox.processor';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TahesabIntegrationConfigService } from './tahesab-integration.config';
 import { TahesabRemittancesService } from './tahesab-remittances.service';
+import { PaginationModule } from '../../common/pagination/pagination.module';
 
 @Module({
   imports: [
     ConfigModule,
     ScheduleModule.forRoot(),
     PrismaModule,
+    PaginationModule,
     HttpModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -65,7 +68,7 @@ import { TahesabRemittancesService } from './tahesab-remittances.service';
     TahesabIntegrationConfigService,
     TahesabRemittancesService,
   ],
-  controllers: [TahesabController],
+  controllers: [TahesabController, TahesabAdminController],
   exports: [
     TahesabService,
     TahesabInventoryService,

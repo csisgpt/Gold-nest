@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { InternalServerErrorException, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { FilesService } from './files.service';
 import { FilesController } from './files.controller';
@@ -10,6 +10,7 @@ import {
 } from './storage/storage.provider';
 import { LocalStorageProvider } from './storage/local.storage';
 import { FileUploadInterceptor } from './file-upload.interceptor';
+import { ApiErrorCode } from '../../common/http/api-error-codes';
   
 @Module({
   imports: [PrismaModule, ConfigModule, PaginationModule],
@@ -24,7 +25,7 @@ import { FileUploadInterceptor } from './file-upload.interceptor';
           const { S3StorageProvider } = await import('./storage/s3.storage');
           const bucket = configService.get<string>('LIARA_BUCKET_NAME');
           if (!bucket) {
-            throw new Error('LIARA_BUCKET_NAME is required for S3 storage');
+            throw new InternalServerErrorException({ code: ApiErrorCode.FILE_READ_FAILED, message: 'LIARA_BUCKET_NAME is required for S3 storage' });
           }
 
           return new S3StorageProvider(bucket, {
