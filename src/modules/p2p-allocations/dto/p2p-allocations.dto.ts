@@ -7,6 +7,7 @@ import {
   IsNumberString,
   IsOptional,
   IsString,
+  ValidateIf,
   Matches,
   ValidateNested,
 } from 'class-validator';
@@ -323,11 +324,37 @@ export class P2PAssignItemDto {
 }
 
 export class P2PAssignRequestDto {
-  @ApiProperty({ type: [P2PAssignItemDto] })
+  @ApiPropertyOptional({ enum: ['SYSTEM_DESTINATION'], description: 'Optional assign mode. Omit to use legacy assign flow.' })
+  @IsOptional()
+  @IsString()
+  mode?: 'SYSTEM_DESTINATION';
+
+  @ApiPropertyOptional({ type: [P2PAssignItemDto] })
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => P2PAssignItemDto)
-  items!: P2PAssignItemDto[];
+  items?: P2PAssignItemDto[];
+
+  @ApiPropertyOptional({ description: 'Legacy single-item assign candidate/deposit id.' })
+  @IsOptional()
+  @IsString()
+  candidateId?: string;
+
+  @ApiPropertyOptional({ description: 'Single-item assign deposit id.' })
+  @IsOptional()
+  @IsString()
+  depositId?: string;
+
+  @ApiPropertyOptional({ description: 'Single-item assign amount as integer string.' })
+  @IsOptional()
+  @IsNumberString()
+  amount?: string;
+
+  @ApiPropertyOptional({ description: 'System destination id for SYSTEM_DESTINATION mode.' })
+  @ValidateIf((o) => o.mode === 'SYSTEM_DESTINATION')
+  @IsString()
+  destinationId?: string;
 }
 
 export class P2PAllocationProofDto {
@@ -693,7 +720,96 @@ export class AllocationVmDto {
 
   @ApiProperty({ type: () => AllocationActionsDto })
   actions!: AllocationActionsDto;
+
+  @ApiPropertyOptional({
+    type: [Object],
+    description: 'Role/action aware action matrix for UI controls.',
+  })
+  allowedActions?: Array<{
+    key: 'SUBMIT_PROOF' | 'RECEIVER_CONFIRM' | 'ADMIN_VERIFY' | 'FINALIZE' | 'CANCEL' | 'DISPUTE';
+    enabled: boolean;
+    reasonDisabled?: string;
+  }>;
+
+  @ApiPropertyOptional({ type: [Object] })
+  timeline?: Array<{
+    key: 'ASSIGNED' | 'DESTINATION_READY' | 'PROOF_SUBMITTED' | 'RECEIVER_CONFIRMED' | 'ADMIN_VERIFIED' | 'SETTLED' | 'CANCELLED' | 'EXPIRED';
+    at: string;
+    byRole?: 'PAYER' | 'RECEIVER' | 'ADMIN' | 'SYSTEM';
+  }>;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description: 'Backend-driven proof submit requirements for payer flows.',
+  })
+  proofRequirements?: {
+    bankRefRequired: boolean;
+    paidAtRequired: boolean;
+    attachmentRequired: boolean;
+    maxFiles: number;
+    maxSizeMb: number;
+    allowedMimeTypes: string[];
+  };
+
+  @ApiPropertyOptional({ type: [String] })
+  instructions?: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  riskFlags?: string[];
 }
+
+export class AdminP2PSystemDestinationVmDto {
+  @ApiProperty()
+  id!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  title!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  bankName!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  ownerName!: string | null;
+
+  @ApiProperty()
+  masked!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  fullValue!: string | null;
+
+  @ApiProperty()
+  copyText!: string;
+
+  @ApiProperty()
+  isActive!: boolean;
+}
+
+export class AdminP2PSystemDestinationListDto {
+  @ApiProperty({ type: [AdminP2PSystemDestinationVmDto] })
+  items!: AdminP2PSystemDestinationVmDto[];
+}
+
+export class AdminP2PWithdrawalDetailVmDto extends WithdrawalVmDto {
+  @ApiProperty()
+  assignedAmount!: string;
+
+  @ApiProperty()
+  remainingToAssign!: string;
+
+  @ApiProperty({ type: [AllocationVmDto] })
+  allocations!: AllocationVmDto[];
+
+  @ApiPropertyOptional({ type: [Object] })
+  allowedActions?: Array<{ key: string; enabled: boolean; reasonDisabled?: string }>;
+
+  @ApiPropertyOptional({ type: [Object] })
+  timeline?: Array<{ key: string; at: string; byRole?: 'PAYER' | 'RECEIVER' | 'ADMIN' | 'SYSTEM' }>;
+
+  @ApiPropertyOptional({ type: [String] })
+  riskFlags?: string[];
+}
+
+export class AdminP2PAllocationDetailVmDto extends AllocationVmDto {}
 
 
 

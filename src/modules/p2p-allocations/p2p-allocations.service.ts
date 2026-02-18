@@ -25,7 +25,10 @@ import { addDec, dec, subDec } from '../../common/utils/decimal.util';
 import { IRR_INSTRUMENT_CODE } from '../accounts/constants';
 import {
   AdminP2PAllocationsQueryDto,
+  AdminP2PAllocationDetailVmDto,
+  AdminP2PSystemDestinationListDto,
   AdminP2PWithdrawalCandidatesQueryDto,
+  AdminP2PWithdrawalDetailVmDto,
   AdminP2PWithdrawalsQueryDto,
   AllocationAttachmentDto,
   AllocationDestinationDto,
@@ -368,8 +371,9 @@ export class P2PAllocationsService {
     destinationMode: 'full' | 'masked' | 'none';
     includePayerExtras?: boolean;
     expiresSoonThreshold?: Date;
+    actor?: 'ADMIN' | 'PAYER' | 'RECEIVER';
   }): AllocationVmDto {
-    const { allocation, attachments, destinationMode, includePayerExtras, expiresSoonThreshold } = params;
+    const { allocation, attachments, destinationMode, includePayerExtras, expiresSoonThreshold, actor } = params;
     const snapshot = allocation.destinationSnapshot as {
       type: PaymentDestinationType;
       value?: string;
@@ -397,6 +401,15 @@ export class P2PAllocationsService {
     const adminCanFinalize = this.isFinalizable(allocation) && allocation.status !== P2PAllocationStatusEnum.SETTLED;
     const hasProof = attachments.length > 0 || allocation.proofSubmittedAt != null;
     const proofAttempts = attachments.filter((attachment) => attachment.kind === AttachmentLinkKind.P2P_PROOF).length;
+    const payerCanSubmitProof =
+      proofAttempts < 2
+      && [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED].includes(allocation.status)
+      && !allocation.receiverConfirmedAt
+      && !allocation.adminVerifiedAt
+      && allocation.status !== P2PAllocationStatusEnum.DISPUTED
+      && allocation.status !== P2PAllocationStatusEnum.SETTLED
+      && (allocation.status !== P2PAllocationStatusEnum.ASSIGNED || !expired);
+    const receiverCanConfirm = allocation.status === P2PAllocationStatusEnum.PROOF_SUBMITTED;
     const expiresInSeconds = includePayerExtras
       ? Math.max(0, Math.floor((allocation.expiresAt.getTime() - Date.now()) / 1000))
       : undefined;
@@ -427,9 +440,7 @@ export class P2PAllocationsService {
       attachments,
       destinationToPay: destination,
       expiresInSeconds,
-      destinationCopyText: includePayerExtras
-        ? this.buildDestinationCopyText(snapshot)
-        : undefined,
+      destinationCopyText: includePayerExtras ? this.buildDestinationCopyText(snapshot) : undefined,
       timestamps: {
         proofSubmittedAt: allocation.proofSubmittedAt ?? null,
         receiverConfirmedAt: allocation.receiverConfirmedAt ?? null,
@@ -444,17 +455,36 @@ export class P2PAllocationsService {
       },
       createdAt: allocation.createdAt,
       actions: {
-        payerCanSubmitProof:
-          proofAttempts < 2
-          && [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED].includes(allocation.status)
-          && !allocation.receiverConfirmedAt
-          && !allocation.adminVerifiedAt
-          && allocation.status !== P2PAllocationStatusEnum.DISPUTED
-          && allocation.status !== P2PAllocationStatusEnum.SETTLED
-          && (allocation.status !== P2PAllocationStatusEnum.ASSIGNED || !expired),
-        receiverCanConfirm: allocation.status === P2PAllocationStatusEnum.PROOF_SUBMITTED,
+        payerCanSubmitProof,
+        receiverCanConfirm,
         adminCanFinalize,
       },
+      allowedActions: [
+        { key: 'SUBMIT_PROOF', enabled: actor === 'PAYER' ? payerCanSubmitProof : false, reasonDisabled: actor === 'PAYER' && !payerCanSubmitProof ? 'Proof submission is not available in current status.' : undefined },
+        { key: 'RECEIVER_CONFIRM', enabled: actor === 'RECEIVER' ? receiverCanConfirm : false, reasonDisabled: actor === 'RECEIVER' && !receiverCanConfirm ? 'Receiver confirmation requires submitted proof.' : undefined },
+        { key: 'ADMIN_VERIFY', enabled: actor === 'ADMIN' ? [P2PAllocationStatusEnum.PROOF_SUBMITTED, P2PAllocationStatusEnum.RECEIVER_CONFIRMED].includes(allocation.status) : false, reasonDisabled: actor === 'ADMIN' && ![P2PAllocationStatusEnum.PROOF_SUBMITTED, P2PAllocationStatusEnum.RECEIVER_CONFIRMED].includes(allocation.status) ? 'Admin verify is not available in current status.' : undefined },
+        { key: 'FINALIZE', enabled: actor === 'ADMIN' ? adminCanFinalize : false, reasonDisabled: actor === 'ADMIN' && !adminCanFinalize ? 'Allocation is not finalizable yet.' : undefined },
+        { key: 'CANCEL', enabled: actor === 'ADMIN' ? [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED, P2PAllocationStatusEnum.RECEIVER_CONFIRMED, P2PAllocationStatusEnum.ADMIN_VERIFIED].includes(allocation.status) : false, reasonDisabled: actor === 'ADMIN' && ![P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED, P2PAllocationStatusEnum.RECEIVER_CONFIRMED, P2PAllocationStatusEnum.ADMIN_VERIFIED].includes(allocation.status) ? 'Cancellation is not available in current status.' : undefined },
+        { key: 'DISPUTE', enabled: actor === 'RECEIVER' ? receiverCanConfirm : false, reasonDisabled: actor === 'RECEIVER' && !receiverCanConfirm ? 'Dispute is available after proof submission.' : undefined },
+      ],
+      timeline: [
+        { key: 'ASSIGNED', at: allocation.createdAt.toISOString(), byRole: 'ADMIN' },
+        { key: 'DESTINATION_READY', at: allocation.createdAt.toISOString(), byRole: 'SYSTEM' },
+        ...(allocation.proofSubmittedAt ? [{ key: 'PROOF_SUBMITTED', at: allocation.proofSubmittedAt.toISOString(), byRole: 'PAYER' }] : []),
+        ...(allocation.receiverConfirmedAt ? [{ key: 'RECEIVER_CONFIRMED', at: allocation.receiverConfirmedAt.toISOString(), byRole: 'RECEIVER' }] : []),
+        ...(allocation.adminVerifiedAt ? [{ key: 'ADMIN_VERIFIED', at: allocation.adminVerifiedAt.toISOString(), byRole: 'ADMIN' }] : []),
+        ...(allocation.settledAt ? [{ key: 'SETTLED', at: allocation.settledAt.toISOString(), byRole: 'SYSTEM' }] : []),
+      ] as any,
+      proofRequirements: includePayerExtras
+        ? { bankRefRequired: true, paidAtRequired: false, attachmentRequired: true, maxFiles: 5, maxSizeMb: 10, allowedMimeTypes: ['image/jpeg', 'image/png', 'application/pdf'] }
+        : undefined,
+      instructions: includePayerExtras
+        ? ['Pay the exact amount.', 'Enter the transfer reference number.', 'Upload a clear payment receipt.']
+        : undefined,
+      riskFlags: [
+        ...(expired ? ['EXPIRED'] : []),
+        ...(allocation.status === P2PAllocationStatusEnum.DISPUTED ? ['DISPUTED'] : []),
+      ],
     };
   }
 
@@ -505,6 +535,54 @@ export class P2PAllocationsService {
     if (snapshot.ownerName) parts.push(snapshot.ownerName);
     parts.push(snapshot.value);
     return parts.join('\n');
+  }
+
+  private normalizeAssignItems(dto: {
+    amount?: string;
+    candidateId?: string;
+    depositId?: string;
+    items?: { depositId: string; amount: string }[];
+  }): { depositId: string; amount: string }[] {
+    if (dto.items?.length) return dto.items;
+    const singleId = dto.depositId ?? dto.candidateId;
+    if (singleId && dto.amount) return [{ depositId: singleId, amount: dto.amount }];
+    return [];
+  }
+
+  private async resolveAssignmentDestinationSnapshot(withdrawal: any, dto: { mode?: 'SYSTEM_DESTINATION'; destinationId?: string }): Promise<PaymentDestinationSnapshot> {
+    if (dto.mode === 'SYSTEM_DESTINATION') {
+      if (!dto.destinationId) {
+        throw new BadRequestException({ code: 'P2P_ASSIGN_INVALID', message: 'destinationId is required for SYSTEM_DESTINATION mode.' });
+      }
+      return this.paymentDestinationsService.resolveCollectionDestination(dto.destinationId);
+    }
+
+    let destinationSnapshot = withdrawal.destinationSnapshot as PaymentDestinationSnapshot | null
+      ?? this.paymentDestinationsService.buildLegacySnapshot({
+          iban: withdrawal.iban,
+          cardNumber: withdrawal.cardNumber,
+          bankName: withdrawal.bankName,
+        });
+    if (!destinationSnapshot) {
+      throw new BadRequestException({ code: 'P2P_WITHDRAWAL_MISSING_DESTINATION', message: 'Withdrawal destination is missing.' });
+    }
+
+    if (withdrawal.payoutDestinationId && !destinationSnapshot.title) {
+      const channel = withdrawal.channel ?? WithdrawalChannelEnum.USER_TO_USER;
+      const resolved = channel === WithdrawalChannelEnum.USER_TO_ORG
+        ? await this.paymentDestinationsService.resolveCollectionDestination(withdrawal.payoutDestinationId)
+        : await this.paymentDestinationsService.resolvePayoutDestinationForUser(withdrawal.userId, withdrawal.payoutDestinationId);
+      destinationSnapshot = {
+        ...destinationSnapshot,
+        value: destinationSnapshot.value ?? resolved.value,
+        maskedValue: destinationSnapshot.maskedValue ?? resolved.maskedValue,
+        bankName: destinationSnapshot.bankName ?? resolved.bankName,
+        ownerName: destinationSnapshot.ownerName ?? resolved.ownerName,
+        title: resolved.title ?? destinationSnapshot.title ?? null,
+      };
+    }
+
+    return destinationSnapshot;
   }
 
   private buildFinalizableWhere(): Prisma.P2PAllocationWhereInput {
@@ -990,14 +1068,15 @@ export class P2PAllocationsService {
 
   async assignAllocations(
     withdrawalId: string,
-    dto: { items: { depositId: string; amount: string }[] },
+    dto: { mode?: 'SYSTEM_DESTINATION'; destinationId?: string; amount?: string; candidateId?: string; depositId?: string; items?: { depositId: string; amount: string }[] },
     idempotencyKey?: string,
   ): Promise<AllocationVmDto[]> {
-    if (!dto.items?.length) {
+    const normalizedItems = this.normalizeAssignItems(dto);
+    if (!normalizedItems.length) {
       throw new BadRequestException({ code: 'P2P_ASSIGN_INVALID', message: 'No allocation items provided.' });
     }
 
-    const amounts = dto.items.map((item) => new Decimal(item.amount));
+    const amounts = normalizedItems.map((item) => new Decimal(item.amount));
     if (amounts.some((amount) => amount.lte(0))) {
       throw new BadRequestException({ code: 'P2P_ASSIGN_INVALID', message: 'Allocation amounts must be positive.' });
     }
@@ -1021,7 +1100,7 @@ export class P2PAllocationsService {
           throw new BadRequestException({ code: 'P2P_FORBIDDEN', message: 'Withdrawal is not P2P.' });
         }
 
-        const depositIds = dto.items.map((item) => item.depositId);
+        const depositIds = normalizedItems.map((item) => item.depositId);
         await this.lockDepositRows(tx, depositIds);
         const deposits = await tx.depositRequest.findMany({ where: { id: { in: depositIds } } });
 
@@ -1036,36 +1115,7 @@ export class P2PAllocationsService {
           });
         }
 
-        let destinationSnapshot = withdrawal.destinationSnapshot as PaymentDestinationSnapshot | null
-          ?? this.paymentDestinationsService.buildLegacySnapshot({
-              iban: withdrawal.iban,
-              cardNumber: withdrawal.cardNumber,
-              bankName: withdrawal.bankName,
-            });
-        if (!destinationSnapshot) {
-          throw new BadRequestException({
-            code: 'P2P_WITHDRAWAL_MISSING_DESTINATION',
-            message: 'Withdrawal destination is missing.',
-          });
-        }
-
-        if (withdrawal.payoutDestinationId && !destinationSnapshot.title) {
-          const channel = withdrawal.channel ?? WithdrawalChannelEnum.USER_TO_USER;
-          const resolved = channel === WithdrawalChannelEnum.USER_TO_ORG
-            ? await this.paymentDestinationsService.resolveCollectionDestination(withdrawal.payoutDestinationId)
-            : await this.paymentDestinationsService.resolvePayoutDestinationForUser(
-                withdrawal.userId,
-                withdrawal.payoutDestinationId,
-              );
-          destinationSnapshot = {
-            ...resolved,
-            value: destinationSnapshot.value ?? resolved.value,
-            maskedValue: destinationSnapshot.maskedValue ?? resolved.maskedValue,
-            bankName: destinationSnapshot.bankName ?? resolved.bankName,
-            ownerName: destinationSnapshot.ownerName ?? resolved.ownerName,
-            title: resolved.title ?? destinationSnapshot.title ?? null,
-          };
-        }
+        const destinationSnapshot = await this.resolveAssignmentDestinationSnapshot(withdrawal, dto);
 
         const now = new Date();
         const expiresAt = new Date(now.getTime() + this.getAllocationTtlMinutes() * 60_000);
@@ -1082,8 +1132,8 @@ export class P2PAllocationsService {
           ]),
         );
 
-        for (let idx = 0; idx < dto.items.length; idx += 1) {
-          const item = dto.items[idx];
+        for (let idx = 0; idx < normalizedItems.length; idx += 1) {
+          const item = normalizedItems[idx];
           const deposit = depositMap.get(item.depositId);
           if (!deposit) {
             throw new NotFoundException(`Deposit ${item.depositId} not found`);
@@ -1249,6 +1299,7 @@ export class P2PAllocationsService {
           destinationMode: 'full',
           includePayerExtras: true,
           expiresSoonThreshold,
+          actor: 'PAYER',
         }),
       ),
       meta: this.paginationService.meta(total, page, limit),
@@ -1357,6 +1408,7 @@ export class P2PAllocationsService {
         attachments: attachments.get(updated.id) ?? [],
         destinationMode: 'full',
         includePayerExtras: true,
+        actor: 'PAYER',
       });
     });
   }
@@ -1427,6 +1479,7 @@ export class P2PAllocationsService {
           attachments: attachmentMap.get(allocation.id) ?? [],
           destinationMode: 'none',
           expiresSoonThreshold,
+          actor: 'RECEIVER',
         }),
       ),
       meta: this.paginationService.meta(total, page, limit),
@@ -1478,6 +1531,7 @@ export class P2PAllocationsService {
         allocation: updated,
         attachments: attachments.get(updated.id) ?? [],
         destinationMode: 'none',
+        actor: 'RECEIVER',
       });
     });
   }
@@ -1520,6 +1574,7 @@ export class P2PAllocationsService {
         allocation: updated,
         attachments: attachments.get(updated.id) ?? [],
         destinationMode: 'masked',
+        actor: 'ADMIN',
       });
     });
   }
@@ -1666,6 +1721,7 @@ export class P2PAllocationsService {
         allocation: reloaded,
         attachments: attachments.get(allocation.id) ?? [],
         destinationMode: 'masked',
+        actor: 'ADMIN',
       });
     });
   }
@@ -1743,8 +1799,75 @@ export class P2PAllocationsService {
         allocation: reloaded,
         attachments: attachments.get(updated.id) ?? [],
         destinationMode: 'masked',
+        actor: 'ADMIN',
       });
     });
+  }
+
+
+  async listAdminSystemDestinations(): Promise<AdminP2PSystemDestinationListDto> {
+    const rows = await this.paymentDestinationsService.listSystemCollectionDestinations(false);
+    return {
+      items: rows.map((item) => ({
+        id: item.id,
+        title: item.title,
+        bankName: item.bankName,
+        ownerName: item.ownerName,
+        masked: item.maskedValue,
+        fullValue: item.fullValue,
+        copyText: this.buildDestinationCopyText({ title: item.title, bankName: item.bankName, ownerName: item.ownerName, value: item.fullValue }) ?? item.fullValue,
+        isActive: item.isActive,
+      })),
+    };
+  }
+
+  async getAdminAllocationDetail(id: string): Promise<AdminP2PAllocationDetailVmDto> {
+    const allocation = await this.prisma.p2PAllocation.findUnique({
+      where: { id },
+      include: { deposit: { include: { user: true } }, withdrawal: { include: { user: true } } },
+    });
+    if (!allocation) throw new NotFoundException('Allocation not found');
+    const attachmentMap = await this.loadAllocationAttachments([allocation.id]);
+    return this.buildAllocationVm({ allocation, attachments: attachmentMap.get(allocation.id) ?? [], destinationMode: 'masked', actor: 'ADMIN' });
+  }
+
+  async getAdminWithdrawalDetail(id: string): Promise<AdminP2PWithdrawalDetailVmDto> {
+    const withdrawal = await this.prisma.withdrawRequest.findUnique({ where: { id } });
+    if (!withdrawal) throw new NotFoundException('Withdraw not found');
+    if (withdrawal.purpose !== RequestPurposeEnum.P2P) throw new BadRequestException({ code: 'P2P_FORBIDDEN', message: 'Withdrawal is not P2P.' });
+
+    const allocations = await this.prisma.p2PAllocation.findMany({
+      where: { withdrawalId: id },
+      include: { deposit: { include: { user: true } }, withdrawal: { include: { user: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    const attachmentMap = await this.loadAllocationAttachments(allocations.map((a) => a.id));
+    const allocationVms = allocations.map((allocation) => this.buildAllocationVm({ allocation, attachments: attachmentMap.get(allocation.id) ?? [], destinationMode: 'masked', actor: 'ADMIN' }));
+
+    const vm = this.buildWithdrawalVm({
+      ...withdrawal,
+      flags: {
+        hasDispute: allocations.some((a) => a.status === P2PAllocationStatusEnum.DISPUTED),
+        hasProof: allocations.some((a) => a.proofSubmittedAt != null),
+        hasExpiringAllocations: allocations.some((a) => a.status === P2PAllocationStatusEnum.ASSIGNED && this.allocationExpiresSoon(a)),
+      },
+    });
+
+    return {
+      ...vm,
+      assignedAmount: withdrawal.assignedAmountTotal.toString(),
+      remainingToAssign: subDec(withdrawal.amount, withdrawal.assignedAmountTotal).toString(),
+      allocations: allocationVms,
+      allowedActions: [
+        { key: 'ASSIGN', enabled: vm.actions.canAssign, reasonDisabled: vm.actions.canAssign ? undefined : 'Withdrawal cannot be assigned in current status.' },
+        { key: 'CANCEL', enabled: vm.actions.canCancel, reasonDisabled: vm.actions.canCancel ? undefined : 'Withdrawal cannot be cancelled in current status.' },
+      ],
+      timeline: [{ key: 'ASSIGNED', at: withdrawal.createdAt.toISOString(), byRole: 'SYSTEM' }],
+      riskFlags: [
+        ...(allocations.some((a) => a.status === P2PAllocationStatusEnum.DISPUTED) ? ['HAS_DISPUTE'] : []),
+        ...(subDec(withdrawal.amount, withdrawal.assignedAmountTotal).gt(0) ? ['UNASSIGNED_REMAINING'] : []),
+      ],
+    };
   }
 
   async getOpsSummary() {

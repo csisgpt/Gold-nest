@@ -11,6 +11,9 @@ import {
   AdminP2PAllocationsQueryDto,
   AdminP2PWithdrawalCandidatesQueryDto,
   AdminP2PWithdrawalsQueryDto,
+  AdminP2PAllocationDetailVmDto,
+  AdminP2PSystemDestinationListDto,
+  AdminP2PWithdrawalDetailVmDto,
   AllocationVmDto,
   DepositVmDto,
   P2PAdminVerifyDto,
@@ -65,6 +68,13 @@ export class P2PAllocationsController {
     return this.p2pService.listAdminWithdrawals(query);
   }
 
+  @Get('admin/p2p/withdrawals/:id')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminP2PWithdrawalDetailVmDto })
+  getAdminWithdrawalDetail(@Param('id') id: string) {
+    return this.p2pService.getAdminWithdrawalDetail(id);
+  }
+
   @Get('admin/p2p/withdrawals/:id/candidates')
   @Roles(UserRole.ADMIN)
   @ApiOkResponse({ type: P2PListResponseDto<DepositVmDto> })
@@ -88,6 +98,20 @@ export class P2PAllocationsController {
   ) {
     const key = headers?.['idempotency-key'] ?? headers?.['x-idempotency-key'];
     return this.p2pService.assignAllocations(id, dto, key);
+  }
+
+  @Get('admin/p2p/system-destinations')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminP2PSystemDestinationListDto })
+  listSystemDestinations() {
+    return this.p2pService.listAdminSystemDestinations();
+  }
+
+  @Get('admin/p2p/allocations/:id')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminP2PAllocationDetailVmDto })
+  getAdminAllocationDetail(@Param('id') id: string) {
+    return this.p2pService.getAdminAllocationDetail(id);
   }
 
   @Get('admin/p2p/allocations')
