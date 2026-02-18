@@ -409,7 +409,9 @@ export class P2PAllocationsService {
       && allocation.status !== P2PAllocationStatusEnum.DISPUTED
       && allocation.status !== P2PAllocationStatusEnum.SETTLED
       && (allocation.status !== P2PAllocationStatusEnum.ASSIGNED || !expired);
-    const receiverCanConfirm = allocation.status === P2PAllocationStatusEnum.PROOF_SUBMITTED;
+    const confirmationMode = this.getConfirmationMode();
+    const receiverConfirmAllowedByMode = confirmationMode === P2PConfirmationModeEnum.RECEIVER || confirmationMode === P2PConfirmationModeEnum.BOTH;
+    const receiverCanConfirm = receiverConfirmAllowedByMode && allocation.status === P2PAllocationStatusEnum.PROOF_SUBMITTED;
     const expiresInSeconds = includePayerExtras
       ? Math.max(0, Math.floor((allocation.expiresAt.getTime() - Date.now()) / 1000))
       : undefined;
@@ -440,7 +442,14 @@ export class P2PAllocationsService {
       attachments,
       destinationToPay: destination,
       expiresInSeconds,
-      destinationCopyText: includePayerExtras ? this.buildDestinationCopyText(snapshot) : undefined,
+      destinationCopyText: destinationMode !== 'none'
+        ? this.buildDestinationCopyText({
+            title: snapshot.title,
+            bankName: snapshot.bankName,
+            ownerName: snapshot.ownerName,
+            value: destinationMode === 'full' ? snapshot.value : snapshot.maskedValue,
+          })
+        : undefined,
       timestamps: {
         proofSubmittedAt: allocation.proofSubmittedAt ?? null,
         receiverConfirmedAt: allocation.receiverConfirmedAt ?? null,
@@ -461,11 +470,11 @@ export class P2PAllocationsService {
       },
       allowedActions: [
         { key: 'SUBMIT_PROOF', enabled: actor === 'PAYER' ? payerCanSubmitProof : false, reasonDisabled: actor === 'PAYER' && !payerCanSubmitProof ? 'Proof submission is not available in current status.' : undefined },
-        { key: 'RECEIVER_CONFIRM', enabled: actor === 'RECEIVER' ? receiverCanConfirm : false, reasonDisabled: actor === 'RECEIVER' && !receiverCanConfirm ? 'Receiver confirmation requires submitted proof.' : undefined },
+        { key: 'RECEIVER_CONFIRM', enabled: actor === 'RECEIVER' ? receiverCanConfirm : false, reasonDisabled: actor === 'RECEIVER' && !receiverCanConfirm ? (receiverConfirmAllowedByMode ? 'Receiver confirmation requires submitted proof.' : 'Receiver confirmation is disabled.') : undefined },
         { key: 'ADMIN_VERIFY', enabled: actor === 'ADMIN' ? [P2PAllocationStatusEnum.PROOF_SUBMITTED, P2PAllocationStatusEnum.RECEIVER_CONFIRMED].includes(allocation.status) : false, reasonDisabled: actor === 'ADMIN' && ![P2PAllocationStatusEnum.PROOF_SUBMITTED, P2PAllocationStatusEnum.RECEIVER_CONFIRMED].includes(allocation.status) ? 'Admin verify is not available in current status.' : undefined },
         { key: 'FINALIZE', enabled: actor === 'ADMIN' ? adminCanFinalize : false, reasonDisabled: actor === 'ADMIN' && !adminCanFinalize ? 'Allocation is not finalizable yet.' : undefined },
         { key: 'CANCEL', enabled: actor === 'ADMIN' ? [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED, P2PAllocationStatusEnum.RECEIVER_CONFIRMED, P2PAllocationStatusEnum.ADMIN_VERIFIED].includes(allocation.status) : false, reasonDisabled: actor === 'ADMIN' && ![P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED, P2PAllocationStatusEnum.RECEIVER_CONFIRMED, P2PAllocationStatusEnum.ADMIN_VERIFIED].includes(allocation.status) ? 'Cancellation is not available in current status.' : undefined },
-        { key: 'DISPUTE', enabled: actor === 'RECEIVER' ? receiverCanConfirm : false, reasonDisabled: actor === 'RECEIVER' && !receiverCanConfirm ? 'Dispute is available after proof submission.' : undefined },
+        { key: 'DISPUTE', enabled: actor === 'RECEIVER' ? receiverCanConfirm : false, reasonDisabled: actor === 'RECEIVER' && !receiverCanConfirm ? (receiverConfirmAllowedByMode ? 'Dispute is available after proof submission.' : 'Not available for this allocation.') : undefined },
       ],
       timeline: [
         { key: 'ASSIGNED', at: allocation.createdAt.toISOString(), byRole: 'ADMIN' },
@@ -474,7 +483,9 @@ export class P2PAllocationsService {
         ...(allocation.receiverConfirmedAt ? [{ key: 'RECEIVER_CONFIRMED', at: allocation.receiverConfirmedAt.toISOString(), byRole: 'RECEIVER' }] : []),
         ...(allocation.adminVerifiedAt ? [{ key: 'ADMIN_VERIFIED', at: allocation.adminVerifiedAt.toISOString(), byRole: 'ADMIN' }] : []),
         ...(allocation.settledAt ? [{ key: 'SETTLED', at: allocation.settledAt.toISOString(), byRole: 'SYSTEM' }] : []),
-      ] as any,
+        ...(allocation.status === P2PAllocationStatusEnum.CANCELLED ? [{ key: 'CANCELLED', at: allocation.updatedAt.toISOString(), byRole: 'ADMIN' }] : []),
+        ...((allocation.status === P2PAllocationStatusEnum.EXPIRED || (allocation.status === P2PAllocationStatusEnum.ASSIGNED && this.allocationExpired(allocation))) ? [{ key: 'EXPIRED', at: allocation.expiresAt.toISOString(), byRole: 'SYSTEM' }] : []),
+      ].sort((a, b) => a.at.localeCompare(b.at)) as any,
       proofRequirements: includePayerExtras
         ? { bankRefRequired: true, paidAtRequired: false, attachmentRequired: true, maxFiles: 5, maxSizeMb: 10, allowedMimeTypes: ['image/jpeg', 'image/png', 'application/pdf'] }
         : undefined,
@@ -484,6 +495,8 @@ export class P2PAllocationsService {
       riskFlags: [
         ...(expired ? ['EXPIRED'] : []),
         ...(allocation.status === P2PAllocationStatusEnum.DISPUTED ? ['DISPUTED'] : []),
+        ...(expiresSoon ? ['EXPIRES_SOON'] : []),
+        ...(!hasProof && [P2PAllocationStatusEnum.ASSIGNED, P2PAllocationStatusEnum.PROOF_SUBMITTED].includes(allocation.status) ? ['MISSING_PROOF'] : []),
       ],
     };
   }
@@ -1060,6 +1073,7 @@ export class P2PAllocationsService {
             attachments: attachmentMap.get(allocation!.id) ?? [],
             destinationMode: 'masked',
             expiresSoonThreshold: expiringThreshold,
+            actor: 'ADMIN',
           }),
         ),
       meta: this.paginationService.meta(countRows[0]?.count ?? 0, page, limit),
@@ -1209,6 +1223,7 @@ export class P2PAllocationsService {
               allocation,
               attachments: [],
               destinationMode: 'masked',
+              actor: 'ADMIN',
             }),
           );
         }
@@ -1506,6 +1521,11 @@ export class P2PAllocationsService {
         throw new BadRequestException('Allocation is not awaiting confirmation');
       }
 
+      const confirmationMode = this.getConfirmationMode();
+      if (confirmationMode === P2PConfirmationModeEnum.ADMIN) {
+        throw new ForbiddenException({ code: 'P2P_FORBIDDEN', message: 'Receiver confirmation is not allowed for this allocation.' });
+      }
+
       const updateData = params.confirmed
         ? {
             status:
@@ -1600,6 +1620,7 @@ export class P2PAllocationsService {
           allocation: current,
           attachments: attachments.get(allocationId) ?? [],
           destinationMode: 'masked',
+          actor: 'ADMIN',
         });
       }
 
@@ -1629,6 +1650,7 @@ export class P2PAllocationsService {
           allocation: current,
           attachments: attachments.get(allocationId) ?? [],
           destinationMode: 'masked',
+          actor: 'ADMIN',
         });
       }
 
@@ -1747,6 +1769,7 @@ export class P2PAllocationsService {
           allocation: reloaded,
           attachments: attachments.get(allocation.id) ?? [],
           destinationMode: 'masked',
+          actor: 'ADMIN',
         });
       }
 
