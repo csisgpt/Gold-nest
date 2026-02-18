@@ -26,7 +26,7 @@ export class AdminUpdateUserDto {
 
   @ApiPropertyOptional({ nullable: true })
   @IsOptional()
-  @IsUUID()
+  @IsString()
   customerGroupId?: string | null;
 
   @ApiPropertyOptional({ nullable: true })

@@ -1,3 +1,4 @@
+// src/common/interceptors/sensitive-fields.interceptor.ts
 import {
   CallHandler,
   ExecutionContext,
@@ -11,9 +12,20 @@ import { Readable } from 'stream';
 
 const SENSITIVE_KEYS = new Set(['password', 'refreshToken', 'otp']);
 
+function isPlainObject(value: any): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 function stripSensitive(value: any, seen: WeakSet<object>): any {
   if (value instanceof StreamableFile || Buffer.isBuffer(value) || value instanceof Readable) {
     return value;
+  }
+
+  // ✅ خیلی مهم: Date را plain object فرض نکن
+  if (value instanceof Date) {
+    return value; // JSON.stringify خودش => ISO
   }
 
   if (Array.isArray(value)) {
@@ -22,14 +34,13 @@ function stripSensitive(value: any, seen: WeakSet<object>): any {
     return value.map((v) => stripSensitive(v, seen));
   }
 
-  if (value && typeof value === 'object') {
+  // ✅ فقط plain object
+  if (isPlainObject(value)) {
     if (seen.has(value)) return value;
     seen.add(value);
 
     return Object.entries(value).reduce<Record<string, any>>((acc, [key, val]) => {
-      if (SENSITIVE_KEYS.has(key)) {
-        return acc;
-      }
+      if (SENSITIVE_KEYS.has(key)) return acc;
       acc[key] = stripSensitive(val, seen);
       return acc;
     }, {});

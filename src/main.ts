@@ -57,7 +57,6 @@ async function bootstrap() {
   });
 
   const configService = app.get(ConfigService);
-  const corsOrigin = configService.get<string>('CORS_ORIGIN') || 'http://localhost:3000';
 
   const trustProxy =
     (configService.get<string>('TRUST_PROXY') ?? 'false').toString().toLowerCase() === 'true';
@@ -68,11 +67,29 @@ async function bootstrap() {
       instance.set('trust proxy', 1);
     }
   }
+  const corsOriginRaw =
+    configService.get<string>('CORS_ORIGIN') || 'http://localhost:3100';
+
+  const corsOrigins = corsOriginRaw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   app.enableCors({
-    origin: corsOrigin,
-    credentials: true,
+    origin: corsOrigins,          // ✅ چند origin
+    credentials: true,            // اگر کوکی/سشن داری
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Idempotency-Key',
+      'X-Idempotency-Key',
+      'Accept',
+      'Origin',
+      'X-Requested-With',
+    ],
   });
+
   const port = configService.get<number>('PORT') || 3000;
   await app.listen(port);
 }
