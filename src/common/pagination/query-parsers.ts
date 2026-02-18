@@ -30,6 +30,12 @@ export function parseNumber(value: unknown, path: string): number | undefined {
   if (value === undefined || value === null || value === '') {
     return undefined;
   }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === '' || normalized === 'undefined' || normalized === 'null') {
+      return undefined;
+    }
+  }
   const parsed = Number(value);
   if (Number.isFinite(parsed)) {
     return parsed;

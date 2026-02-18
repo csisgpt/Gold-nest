@@ -203,6 +203,38 @@ export class PaymentDestinationsService {
     return destinations.map((destination) => this.toView(destination));
   }
 
+
+
+  async listSystemCollectionDestinations(includeInactive = false): Promise<Array<{
+    id: string;
+    title: string | null;
+    bankName: string | null;
+    ownerName: string | null;
+    maskedValue: string;
+    fullValue: string;
+    isActive: boolean;
+  }>> {
+    const destinations = await this.prisma.paymentDestination.findMany({
+      where: {
+        ownerUserId: null,
+        direction: PaymentDestinationDirectionEnum.COLLECTION,
+        deletedAt: null,
+        ...(includeInactive ? {} : { status: PaymentDestinationStatusEnum.ACTIVE }),
+      },
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    return destinations.map((destination) => ({
+      id: destination.id,
+      title: destination.title ?? null,
+      bankName: destination.bankName ?? null,
+      ownerName: destination.ownerName ?? null,
+      maskedValue: destination.maskedValue,
+      fullValue: decryptDestinationValue(destination.encryptedValue),
+      isActive: destination.status === PaymentDestinationStatusEnum.ACTIVE,
+    }));
+  }
+
   async createSystemCollectionDestination(dto: CreateSystemDestinationDto): Promise<PaymentDestinationViewDto> {
     const { encryptedValue, encryptedValueHash, maskedValue } = this.buildEncryptedPayload(dto.value);
 
