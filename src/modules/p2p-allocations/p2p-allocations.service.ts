@@ -716,6 +716,9 @@ export class P2PAllocationsService {
           w."cardNumber",
           w."createdAt",
           w."updatedAt",
+          u.id           AS "userId",
+          u."mobile"     AS "userMobile",
+          u."fullName"   AS "userFullName",
           (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
           MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
       Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
