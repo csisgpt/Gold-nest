@@ -501,8 +501,11 @@ export class WithdrawalVmDto {
   actions!: WithdrawalActionsDto;
 
 
-  @ApiProperty()
-  withdrawer!: {
+  @ApiPropertyOptional({
+    required: false,
+    type: Object,
+  })
+  withdrawer?: {
     userId: string;
     mobile: string | null;
     displayName: string | null;
@@ -564,6 +567,16 @@ export class DepositVmDto {
 
   @ApiProperty({ type: () => DepositFlagsDto })
   flags!: DepositFlagsDto;
+
+  @ApiPropertyOptional({ required: false, type: Object })
+  payer?: {
+    userId: string;
+    mobile?: string | null;
+    displayName?: string | null;
+    kycLevel?: string | null;
+    kycStatus?: string | null;
+    userStatus?: string | null;
+  };
 }
 
 export class AllocationPaymentDto {
@@ -793,6 +806,21 @@ export class AdminP2PSystemDestinationVmDto {
 
   @ApiProperty()
   isActive!: boolean;
+
+  @ApiPropertyOptional({ required: false })
+  createdAt?: Date;
+
+  @ApiPropertyOptional({ required: false })
+  updatedAt?: Date;
+
+  @ApiPropertyOptional({ required: false, nullable: true })
+  deletedAt?: Date | null;
+
+  @ApiPropertyOptional({ required: false, nullable: true })
+  lastUsedAt?: Date | null;
+
+  @ApiPropertyOptional({ required: false, enum: PaymentDestinationTypeEnum })
+  type?: PaymentDestinationType;
 }
 
 export class AdminP2PSystemDestinationListDto {

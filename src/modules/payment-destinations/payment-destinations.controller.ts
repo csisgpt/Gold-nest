@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -8,10 +8,13 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { JwtRequestUser } from '../auth/jwt.strategy';
 import {
   AdminDestinationQueryDto,
+  AdminSystemDestinationDetailDto,
   CreatePaymentDestinationDto,
   CreateSystemDestinationDto,
   PaymentDestinationViewDto,
+  SetSystemDestinationStatusDto,
   UpdatePaymentDestinationDto,
+  UpdateSystemDestinationDto,
 } from './dto/payment-destination.dto';
 import { PaymentDestinationsService } from './payment-destinations.service';
 
@@ -55,6 +58,50 @@ export class PaymentDestinationsController {
   @ApiOkResponse({ type: [PaymentDestinationViewDto] })
   listAdminDestinations(@Query() query: AdminDestinationQueryDto) {
     return this.destinationsService.listAdminDestinations(query.direction);
+  }
+
+
+
+  @Get('admin/payment-destinations/system/collections')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: [PaymentDestinationViewDto] })
+  listSystemCollections() {
+    return this.destinationsService.listSystemCollectionDestinations(true);
+  }
+
+  @Post('admin/payment-destinations/system/collections')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: PaymentDestinationViewDto })
+  createSystemCollection(@Body() dto: CreateSystemDestinationDto) {
+    return this.destinationsService.createSystemCollectionDestination(dto);
+  }
+
+  @Get('admin/payment-destinations/system/collections/:id')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminSystemDestinationDetailDto })
+  getSystemCollectionDetail(@Param('id') id: string) {
+    return this.destinationsService.getSystemCollectionDestinationById(id);
+  }
+
+  @Patch('admin/payment-destinations/system/collections/:id')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminSystemDestinationDetailDto })
+  updateSystemCollection(@Param('id') id: string, @Body() dto: UpdateSystemDestinationDto) {
+    return this.destinationsService.updateSystemCollectionDestination(id, dto);
+  }
+
+  @Patch('admin/payment-destinations/system/collections/:id/status')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminSystemDestinationDetailDto })
+  setSystemCollectionStatus(@Param('id') id: string, @Body() dto: SetSystemDestinationStatusDto) {
+    return this.destinationsService.setSystemCollectionDestinationStatus(id, dto.isActive);
+  }
+
+  @Delete('admin/payment-destinations/system/collections/:id')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ schema: { example: { success: true } } })
+  deleteSystemCollection(@Param('id') id: string) {
+    return this.destinationsService.deleteSystemCollectionDestination(id);
   }
 
   @Post('admin/destinations/system')

@@ -266,6 +266,11 @@ export class P2PAllocationsService {
       hasProof?: boolean;
       hasExpiringAllocations?: boolean;
     };
+    withdrawer?: {
+      userId: string;
+      mobile: string | null;
+      displayName: string | null;
+    };
   }): WithdrawalVmDto {
     const remainingToAssign = subDec(withdrawal.amount, withdrawal.assignedAmountTotal);
     const remainingToSettle = subDec(withdrawal.amount, withdrawal.settledAmountTotal);
@@ -326,6 +331,7 @@ export class P2PAllocationsService {
         canAssign,
         canViewAllocations: true,
       },
+      withdrawer: withdrawal.withdrawer,
     };
   }
 
@@ -339,6 +345,14 @@ export class P2PAllocationsService {
     status: DepositStatus;
     createdAt: Date;
     updatedAt: Date;
+    payer?: {
+      userId: string;
+      mobile?: string | null;
+      displayName?: string | null;
+      kycLevel?: string | null;
+      kycStatus?: string | null;
+      userStatus?: string | null;
+    };
   }): DepositVmDto {
     const remaining = dec(deposit.remainingAmount ?? deposit.amount);
     const closed = [DepositStatusEnum.CANCELLED, DepositStatusEnum.EXPIRED, DepositStatusEnum.SETTLED].includes(deposit.status);
@@ -364,6 +378,7 @@ export class P2PAllocationsService {
         isFullyAvailable,
         isExpiring: deposit.status === DepositStatusEnum.EXPIRED,
       },
+      payer: deposit.payer,
     };
   }
 
@@ -716,9 +731,9 @@ export class P2PAllocationsService {
           w."cardNumber",
           w."createdAt",
           w."updatedAt",
-          u.id           AS "userId",
-          u."mobile"     AS "userMobile",
-          u."fullName"   AS "userFullName",
+          w."userId"     AS "withdrawerUserId",
+          u."mobile"     AS "withdrawerMobile",
+          u."fullName"   AS "withdrawerFullName",
           (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
           MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
       Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
@@ -734,7 +749,7 @@ export class P2PAllocationsService {
           AND al."entityId" = a.id
         WHERE ${baseWhere}
         GROUP BY w.id, w."purpose", w."channel", w."amount", w."status", w."assignedAmountTotal", w."settledAmountTotal",
-          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt"
+          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt", w."userId", u."mobile", u."fullName"
       )
       SELECT * FROM base
       WHERE 1=1
@@ -820,6 +835,9 @@ export class P2PAllocationsService {
         hasDispute: boolean;
         hasProof: boolean;
         hasExpiring: boolean;
+        withdrawerUserId: string;
+        withdrawerMobile: string | null;
+        withdrawerFullName: string | null;
       }>
     >(Prisma.sql`
       SELECT * FROM (${baseQuery}) AS base WHERE base.id IN (${Prisma.join(ids)})
@@ -839,6 +857,11 @@ export class P2PAllocationsService {
             hasDispute: row!.hasDispute,
             hasProof: row!.hasProof,
             hasExpiringAllocations: row!.hasExpiring,
+          },
+          withdrawer: {
+            userId: row!.withdrawerUserId,
+            mobile: row!.withdrawerMobile,
+            displayName: row!.withdrawerFullName,
           },
         }),
       );
@@ -931,12 +954,26 @@ export class P2PAllocationsService {
           status: true,
           createdAt: true,
           updatedAt: true,
+          user: {
+            select: {
+              id: true,
+              mobile: true,
+              fullName: true,
+            },
+          },
         },
       }),
       this.prisma.depositRequest.count({ where }),
     ]);
 
-    const mapped = items.map((deposit) => this.buildDepositVm(deposit));
+    const mapped = items.map((deposit) => this.buildDepositVm({
+      ...deposit,
+      payer: {
+        userId: deposit.user.id,
+        mobile: deposit.user.mobile,
+        displayName: deposit.user.fullName,
+      },
+    }));
 
     return {
       items: mapped,
@@ -1845,6 +1882,11 @@ export class P2PAllocationsService {
         fullValue: item.fullValue,
         copyText: this.buildDestinationCopyText({ title: item.title, bankName: item.bankName, ownerName: item.ownerName, value: item.fullValue }) ?? item.fullValue,
         isActive: item.isActive,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        deletedAt: item.deletedAt,
+        lastUsedAt: item.lastUsedAt,
+        type: item.type,
       })),
     };
   }
@@ -1860,7 +1902,10 @@ export class P2PAllocationsService {
   }
 
   async getAdminWithdrawalDetail(id: string): Promise<AdminP2PWithdrawalDetailVmDto> {
-    const withdrawal = await this.prisma.withdrawRequest.findUnique({ where: { id } });
+    const withdrawal = await this.prisma.withdrawRequest.findUnique({
+      where: { id },
+      include: { user: { select: { id: true, mobile: true, fullName: true } } },
+    });
     if (!withdrawal) throw new NotFoundException('Withdraw not found');
     if (withdrawal.purpose !== RequestPurposeEnum.P2P) throw new BadRequestException({ code: 'P2P_FORBIDDEN', message: 'Withdrawal is not P2P.' });
 
@@ -1879,6 +1924,11 @@ export class P2PAllocationsService {
         hasProof: allocations.some((a) => a.proofSubmittedAt != null),
         hasExpiringAllocations: allocations.some((a) => a.status === P2PAllocationStatusEnum.ASSIGNED && this.allocationExpiresSoon(a)),
       },
+      withdrawer: {
+        userId: withdrawal.userId,
+        mobile: withdrawal.user?.mobile ?? null,
+        displayName: withdrawal.user?.fullName ?? null,
+      },
     });
 
     return {
@@ -1893,6 +1943,7 @@ export class P2PAllocationsService {
       timeline: [{ key: 'ASSIGNED', at: withdrawal.createdAt.toISOString(), byRole: 'SYSTEM' }],
       riskFlags: [
         ...(allocations.some((a) => a.status === P2PAllocationStatusEnum.DISPUTED) ? ['HAS_DISPUTE'] : []),
+        ...(allocations.some((a) => a.status === P2PAllocationStatusEnum.ASSIGNED && this.allocationExpiresSoon(a)) ? ['HAS_EXPIRING_ALLOCATIONS'] : []),
         ...(subDec(withdrawal.amount, withdrawal.assignedAmountTotal).gt(0) ? ['UNASSIGNED_REMAINING'] : []),
       ],
     };
