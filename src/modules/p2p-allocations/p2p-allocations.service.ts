@@ -129,7 +129,7 @@ export class P2PAllocationsService {
     private readonly accountsService: AccountsService,
     private readonly limitsService: LimitsService,
     private readonly paymentDestinationsService: PaymentDestinationsService,
-  ) {}
+  ) { }
 
   private getAllocationTtlMinutes(): number {
     const value = Number(process.env.P2P_ALLOCATION_TTL_MINUTES ?? DEFAULT_TTL_MINUTES);
@@ -291,6 +291,7 @@ export class P2PAllocationsService {
       remainingToAssign.gt(URGENT_REMAINING_THRESHOLD) ||
       withdrawal.createdAt < urgentAgeCutoff;
 
+
     return {
       id: withdrawal.id,
       purpose: withdrawal.purpose,
@@ -305,11 +306,12 @@ export class P2PAllocationsService {
       },
       destination: masked
         ? {
-            type: destinationSnapshot?.type ?? (withdrawal.iban ? PaymentDestinationTypeEnum.IBAN : PaymentDestinationTypeEnum.CARD),
-            masked,
-            bankName: destinationSnapshot?.bankName ?? withdrawal.bankName ?? null,
-            title: destinationSnapshot?.title ?? null,
-          }
+          type: destinationSnapshot?.type ?? (withdrawal.iban ? PaymentDestinationTypeEnum.IBAN : PaymentDestinationTypeEnum.CARD),
+          masked,
+          fullValue: withdrawal.destinationSnapshot?.value ?? '',
+          bankName: destinationSnapshot?.bankName ?? withdrawal.bankName ?? null,
+          title: destinationSnapshot?.title ?? null,
+        }
         : null,
       flags: {
         hasDispute,
@@ -387,13 +389,13 @@ export class P2PAllocationsService {
       destinationMode === 'none'
         ? null
         : {
-            type: snapshot.type,
-            bankName: snapshot.bankName ?? null,
-            ownerName: snapshot.ownerName ?? null,
-            title: snapshot.title ?? null,
-            fullValue: destinationMode === 'full' ? snapshot.value ?? '' : null,
-            masked: snapshot.maskedValue ?? maskDestinationValue(snapshot.value ?? ''),
-          };
+          type: snapshot.type,
+          bankName: snapshot.bankName ?? null,
+          ownerName: snapshot.ownerName ?? null,
+          title: snapshot.title ?? null,
+          fullValue: destinationMode === 'full' ? snapshot.value ?? '' : null,
+          masked: snapshot.maskedValue ?? maskDestinationValue(snapshot.value ?? ''),
+        };
 
     const expired = allocation.status === P2PAllocationStatusEnum.ASSIGNED && this.allocationExpired(allocation);
     const expiresSoon = allocation.status === P2PAllocationStatusEnum.ASSIGNED
@@ -444,11 +446,11 @@ export class P2PAllocationsService {
       expiresInSeconds,
       destinationCopyText: destinationMode !== 'none'
         ? this.buildDestinationCopyText({
-            title: snapshot.title,
-            bankName: snapshot.bankName,
-            ownerName: snapshot.ownerName,
-            value: destinationMode === 'full' ? snapshot.value : snapshot.maskedValue,
-          })
+          title: snapshot.title,
+          bankName: snapshot.bankName,
+          ownerName: snapshot.ownerName,
+          value: destinationMode === 'full' ? snapshot.value : snapshot.maskedValue,
+        })
         : undefined,
       timestamps: {
         proofSubmittedAt: allocation.proofSubmittedAt ?? null,
@@ -572,10 +574,10 @@ export class P2PAllocationsService {
 
     let destinationSnapshot = withdrawal.destinationSnapshot as PaymentDestinationSnapshot | null
       ?? this.paymentDestinationsService.buildLegacySnapshot({
-          iban: withdrawal.iban,
-          cardNumber: withdrawal.cardNumber,
-          bankName: withdrawal.bankName,
-        });
+        iban: withdrawal.iban,
+        cardNumber: withdrawal.cardNumber,
+        bankName: withdrawal.bankName,
+      });
     if (!destinationSnapshot) {
       throw new BadRequestException({ code: 'P2P_WITHDRAWAL_MISSING_DESTINATION', message: 'Withdrawal destination is missing.' });
     }
@@ -716,8 +718,8 @@ export class P2PAllocationsService {
           w."updatedAt",
           (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
           MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
-            Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
-          ])})) AS "nearestExpire",
+      Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
+    ])})) AS "nearestExpire",
           BOOL_OR(a."status" = ${P2PAllocationStatusEnum.DISPUTED}::"P2PAllocationStatus") AS "hasDispute",
           BOOL_OR(al.id IS NOT NULL OR a."status" IN (${proofStatusList})) AS "hasProof",
           ${expiringSql} AS "hasExpiring"
@@ -1052,12 +1054,12 @@ export class P2PAllocationsService {
     const ids = idRows.map((row) => row.id);
     const items = ids.length
       ? await this.prisma.p2PAllocation.findMany({
-          where: { id: { in: ids } },
-          include: {
-            deposit: { include: { user: true } },
-            withdrawal: { include: { user: true } },
-          },
-        })
+        where: { id: { in: ids } },
+        include: {
+          deposit: { include: { user: true } },
+          withdrawal: { include: { user: true } },
+        },
+      })
       : [];
 
     const attachmentMap = await this.loadAllocationAttachments(items.map((item) => item.id));
@@ -1071,7 +1073,7 @@ export class P2PAllocationsService {
           this.buildAllocationVm({
             allocation,
             attachments: attachmentMap.get(allocation!.id) ?? [],
-            destinationMode: 'masked',
+            destinationMode: 'full',
             expiresSoonThreshold: expiringThreshold,
             actor: 'ADMIN',
           }),
@@ -1222,7 +1224,7 @@ export class P2PAllocationsService {
             this.buildAllocationVm({
               allocation,
               attachments: [],
-              destinationMode: 'masked',
+              destinationMode: 'full',
               actor: 'ADMIN',
             }),
           );
@@ -1492,7 +1494,7 @@ export class P2PAllocationsService {
         this.buildAllocationVm({
           allocation,
           attachments: attachmentMap.get(allocation.id) ?? [],
-          destinationMode: 'none',
+          destinationMode: 'full',
           expiresSoonThreshold,
           actor: 'RECEIVER',
         }),
@@ -1528,17 +1530,17 @@ export class P2PAllocationsService {
 
       const updateData = params.confirmed
         ? {
-            status:
-              allocation.status === P2PAllocationStatusEnum.ADMIN_VERIFIED
-                ? allocation.status
-                : P2PAllocationStatusEnum.RECEIVER_CONFIRMED,
-            receiverConfirmedAt: new Date(),
-          }
+          status:
+            allocation.status === P2PAllocationStatusEnum.ADMIN_VERIFIED
+              ? allocation.status
+              : P2PAllocationStatusEnum.RECEIVER_CONFIRMED,
+          receiverConfirmedAt: new Date(),
+        }
         : {
-            status: P2PAllocationStatusEnum.DISPUTED,
-            receiverDisputedAt: new Date(),
-            receiverDisputeReason: params.reason ?? 'Receiver disputed payment',
-          };
+          status: P2PAllocationStatusEnum.DISPUTED,
+          receiverDisputedAt: new Date(),
+          receiverDisputeReason: params.reason ?? 'Receiver disputed payment',
+        };
 
       const updated = await tx.p2PAllocation.update({
         where: { id: allocation.id },
@@ -1550,7 +1552,7 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: updated,
         attachments: attachments.get(updated.id) ?? [],
-        destinationMode: 'none',
+        destinationMode: 'full',
         actor: 'RECEIVER',
       });
     });
@@ -1571,17 +1573,17 @@ export class P2PAllocationsService {
 
       const updateData = approved
         ? {
-            status: P2PAllocationStatusEnum.ADMIN_VERIFIED,
-            adminVerifiedAt: new Date(),
-            adminVerifierId: adminId,
-            adminNote: note ?? allocation.adminNote ?? null,
-          }
+          status: P2PAllocationStatusEnum.ADMIN_VERIFIED,
+          adminVerifiedAt: new Date(),
+          adminVerifierId: adminId,
+          adminNote: note ?? allocation.adminNote ?? null,
+        }
         : {
-            status: P2PAllocationStatusEnum.DISPUTED,
-            adminVerifiedAt: new Date(),
-            adminVerifierId: adminId,
-            adminNote: note ?? allocation.adminNote ?? null,
-          };
+          status: P2PAllocationStatusEnum.DISPUTED,
+          adminVerifiedAt: new Date(),
+          adminVerifierId: adminId,
+          adminNote: note ?? allocation.adminNote ?? null,
+        };
 
       const updated = await tx.p2PAllocation.update({
         where: { id: allocationId },
@@ -1593,7 +1595,7 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: updated,
         attachments: attachments.get(updated.id) ?? [],
-        destinationMode: 'masked',
+        destinationMode: 'full',
         actor: 'ADMIN',
       });
     });
@@ -1619,7 +1621,7 @@ export class P2PAllocationsService {
         return this.buildAllocationVm({
           allocation: current,
           attachments: attachments.get(allocationId) ?? [],
-          destinationMode: 'masked',
+          destinationMode: 'full',
           actor: 'ADMIN',
         });
       }
@@ -1649,7 +1651,7 @@ export class P2PAllocationsService {
         return this.buildAllocationVm({
           allocation: current,
           attachments: attachments.get(allocationId) ?? [],
-          destinationMode: 'masked',
+          destinationMode: 'full',
           actor: 'ADMIN',
         });
       }
@@ -1742,7 +1744,7 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: reloaded,
         attachments: attachments.get(allocation.id) ?? [],
-        destinationMode: 'masked',
+        destinationMode: 'full',
         actor: 'ADMIN',
       });
     });
@@ -1768,7 +1770,7 @@ export class P2PAllocationsService {
         return this.buildAllocationVm({
           allocation: reloaded,
           attachments: attachments.get(allocation.id) ?? [],
-          destinationMode: 'masked',
+          destinationMode: 'full',
           actor: 'ADMIN',
         });
       }
@@ -1821,7 +1823,7 @@ export class P2PAllocationsService {
       return this.buildAllocationVm({
         allocation: reloaded,
         attachments: attachments.get(updated.id) ?? [],
-        destinationMode: 'masked',
+        destinationMode: 'full',
         actor: 'ADMIN',
       });
     });
@@ -1836,7 +1838,7 @@ export class P2PAllocationsService {
         title: item.title,
         bankName: item.bankName,
         ownerName: item.ownerName,
-        masked: item.maskedValue,
+        masked: item.fullValue,
         fullValue: item.fullValue,
         copyText: this.buildDestinationCopyText({ title: item.title, bankName: item.bankName, ownerName: item.ownerName, value: item.fullValue }) ?? item.fullValue,
         isActive: item.isActive,
@@ -1851,7 +1853,7 @@ export class P2PAllocationsService {
     });
     if (!allocation) throw new NotFoundException('Allocation not found');
     const attachmentMap = await this.loadAllocationAttachments([allocation.id]);
-    return this.buildAllocationVm({ allocation, attachments: attachmentMap.get(allocation.id) ?? [], destinationMode: 'masked', actor: 'ADMIN' });
+    return this.buildAllocationVm({ allocation, attachments: attachmentMap.get(allocation.id) ?? [], destinationMode: 'full', actor: 'ADMIN' });
   }
 
   async getAdminWithdrawalDetail(id: string): Promise<AdminP2PWithdrawalDetailVmDto> {
@@ -1865,7 +1867,7 @@ export class P2PAllocationsService {
       orderBy: { createdAt: 'asc' },
     });
     const attachmentMap = await this.loadAllocationAttachments(allocations.map((a) => a.id));
-    const allocationVms = allocations.map((allocation) => this.buildAllocationVm({ allocation, attachments: attachmentMap.get(allocation.id) ?? [], destinationMode: 'masked', actor: 'ADMIN' }));
+    const allocationVms = allocations.map((allocation) => this.buildAllocationVm({ allocation, attachments: attachmentMap.get(allocation.id) ?? [], destinationMode: 'full', actor: 'ADMIN' }));
 
     const vm = this.buildWithdrawalVm({
       ...withdrawal,

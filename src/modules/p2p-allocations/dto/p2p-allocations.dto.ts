@@ -453,6 +453,9 @@ export class WithdrawalDestinationDto {
   @ApiProperty()
   masked!: string;
 
+  @ApiProperty()
+  fullValue?: string;
+
   @ApiPropertyOptional({ nullable: true })
   bankName?: string | null;
 
@@ -496,6 +499,14 @@ export class WithdrawalVmDto {
 
   @ApiProperty({ type: () => WithdrawalActionsDto })
   actions!: WithdrawalActionsDto;
+
+
+  @ApiProperty()
+  withdrawer!: {
+    userId: string;
+    mobile: string | null;
+    displayName: string | null;
+  };
 }
 
 export class DepositTotalsDto {
@@ -809,7 +820,7 @@ export class AdminP2PWithdrawalDetailVmDto extends WithdrawalVmDto {
   riskFlags?: string[];
 }
 
-export class AdminP2PAllocationDetailVmDto extends AllocationVmDto {}
+export class AdminP2PAllocationDetailVmDto extends AllocationVmDto { }
 
 
 
