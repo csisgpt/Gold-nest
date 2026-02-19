@@ -357,6 +357,81 @@ export class P2PAssignRequestDto {
   destinationId?: string;
 }
 
+
+export class CreateAdminP2PSystemDestinationDto {
+  @ApiProperty({ enum: PaymentDestinationTypeEnum })
+  @IsEnum(PaymentDestinationTypeEnum)
+  type!: PaymentDestinationType;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  ownerName?: string;
+
+  @ApiPropertyOptional({ description: 'System destination full value.' })
+  @IsOptional()
+  @IsString()
+  fullValue?: string;
+
+  @ApiPropertyOptional({ description: 'Alias of fullValue for backward compatibility.' })
+  @IsOptional()
+  @IsString()
+  value?: string;
+
+  @ApiPropertyOptional({ required: false, description: 'Optional initial active state. Defaults to active when omitted.' })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+export class UpdateAdminP2PSystemDestinationDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  ownerName?: string;
+
+  @ApiPropertyOptional({ description: 'System destination full value.' })
+  @IsOptional()
+  @IsString()
+  fullValue?: string;
+
+  @ApiPropertyOptional({ description: 'Alias of fullValue for backward compatibility.' })
+  @IsOptional()
+  @IsString()
+  value?: string;
+
+  @ApiPropertyOptional({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+export class SetAdminP2PSystemDestinationStatusDto {
+  @ApiProperty()
+  @IsBoolean()
+  isActive!: boolean;
+}
+
 export class P2PAllocationProofDto {
   @ApiProperty()
   @IsString()
@@ -463,6 +538,26 @@ export class WithdrawalDestinationDto {
   title?: string | null;
 }
 
+export class P2PUserSummaryVmDto {
+  @ApiProperty()
+  userId!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  mobile?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  displayName?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  kycLevel?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  kycStatus?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  userStatus?: string | null;
+}
+
 export class WithdrawalVmDto {
   @ApiProperty()
   id!: string;
@@ -501,15 +596,8 @@ export class WithdrawalVmDto {
   actions!: WithdrawalActionsDto;
 
 
-  @ApiPropertyOptional({
-    required: false,
-    type: Object,
-  })
-  withdrawer?: {
-    userId: string;
-    mobile: string | null;
-    displayName: string | null;
-  };
+  @ApiPropertyOptional({ required: false, type: () => P2PUserSummaryVmDto })
+  withdrawer?: P2PUserSummaryVmDto;
 }
 
 export class DepositTotalsDto {
@@ -568,15 +656,8 @@ export class DepositVmDto {
   @ApiProperty({ type: () => DepositFlagsDto })
   flags!: DepositFlagsDto;
 
-  @ApiPropertyOptional({ required: false, type: Object })
-  payer?: {
-    userId: string;
-    mobile?: string | null;
-    displayName?: string | null;
-    kycLevel?: string | null;
-    kycStatus?: string | null;
-    userStatus?: string | null;
-  };
+  @ApiPropertyOptional({ required: false, type: () => P2PUserSummaryVmDto })
+  payer?: P2PUserSummaryVmDto;
 }
 
 export class AllocationPaymentDto {

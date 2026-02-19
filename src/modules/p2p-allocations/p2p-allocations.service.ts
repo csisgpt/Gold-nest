@@ -37,6 +37,10 @@ import {
   P2PAllocationQueryDto,
   P2PAllocationProofDto,
   P2PListResponseDto,
+  P2PUserSummaryVmDto,
+  SetAdminP2PSystemDestinationStatusDto,
+  UpdateAdminP2PSystemDestinationDto,
+  CreateAdminP2PSystemDestinationDto,
   WithdrawalVmDto,
 } from './dto/p2p-allocations.dto';
 import { deriveDepositP2PStatus, deriveWithdrawP2PStatus } from './p2p-status.util';
@@ -266,11 +270,7 @@ export class P2PAllocationsService {
       hasProof?: boolean;
       hasExpiringAllocations?: boolean;
     };
-    withdrawer?: {
-      userId: string;
-      mobile: string | null;
-      displayName: string | null;
-    };
+    withdrawer?: P2PUserSummaryVmDto;
   }): WithdrawalVmDto {
     const remainingToAssign = subDec(withdrawal.amount, withdrawal.assignedAmountTotal);
     const remainingToSettle = subDec(withdrawal.amount, withdrawal.settledAmountTotal);
@@ -345,14 +345,7 @@ export class P2PAllocationsService {
     status: DepositStatus;
     createdAt: Date;
     updatedAt: Date;
-    payer?: {
-      userId: string;
-      mobile?: string | null;
-      displayName?: string | null;
-      kycLevel?: string | null;
-      kycStatus?: string | null;
-      userStatus?: string | null;
-    };
+    payer?: P2PUserSummaryVmDto;
   }): DepositVmDto {
     const remaining = dec(deposit.remainingAmount ?? deposit.amount);
     const closed = [DepositStatusEnum.CANCELLED, DepositStatusEnum.EXPIRED, DepositStatusEnum.SETTLED].includes(deposit.status);
@@ -731,9 +724,12 @@ export class P2PAllocationsService {
           w."cardNumber",
           w."createdAt",
           w."updatedAt",
-          w."userId"     AS "withdrawerUserId",
-          u."mobile"     AS "withdrawerMobile",
-          u."fullName"   AS "withdrawerFullName",
+          u.id             AS "withdrawerUserId",
+          u."mobile"      AS "withdrawerMobile",
+          u."fullName"    AS "withdrawerFullName",
+          uk."level"::text  AS "withdrawerKycLevel",
+          uk."status"::text AS "withdrawerKycStatus",
+          u."status"::text  AS "withdrawerStatus",
           (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
           MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
       Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
@@ -743,13 +739,14 @@ export class P2PAllocationsService {
           ${expiringSql} AS "hasExpiring"
         FROM "WithdrawRequest" w
         JOIN "User" u ON u.id = w."userId"
+        LEFT JOIN "UserKyc" uk ON uk."userId" = u.id
         LEFT JOIN "P2PAllocation" a ON a."withdrawalId" = w.id
         LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}::"AttachmentLinkEntityType"
           AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}::"AttachmentLinkKind"
           AND al."entityId" = a.id
         WHERE ${baseWhere}
         GROUP BY w.id, w."purpose", w."channel", w."amount", w."status", w."assignedAmountTotal", w."settledAmountTotal",
-          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt", w."userId", u."mobile", u."fullName"
+          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt", u.id, u."mobile", u."fullName", uk."level", uk."status", u."status"
       )
       SELECT * FROM base
       WHERE 1=1
@@ -838,6 +835,9 @@ export class P2PAllocationsService {
         withdrawerUserId: string;
         withdrawerMobile: string | null;
         withdrawerFullName: string | null;
+        withdrawerKycLevel: string | null;
+        withdrawerKycStatus: string | null;
+        withdrawerStatus: string | null;
       }>
     >(Prisma.sql`
       SELECT * FROM (${baseQuery}) AS base WHERE base.id IN (${Prisma.join(ids)})
@@ -862,6 +862,9 @@ export class P2PAllocationsService {
             userId: row!.withdrawerUserId,
             mobile: row!.withdrawerMobile,
             displayName: row!.withdrawerFullName,
+            kycLevel: row!.withdrawerKycLevel ?? null,
+            kycStatus: row!.withdrawerKycStatus ?? null,
+            userStatus: row!.withdrawerStatus ?? null,
           },
         }),
       );
@@ -959,6 +962,13 @@ export class P2PAllocationsService {
               id: true,
               mobile: true,
               fullName: true,
+              status: true,
+              userKyc: {
+                select: {
+                  level: true,
+                  status: true,
+                },
+              },
             },
           },
         },
@@ -972,6 +982,9 @@ export class P2PAllocationsService {
         userId: deposit.user.id,
         mobile: deposit.user.mobile,
         displayName: deposit.user.fullName,
+        kycLevel: deposit.user.userKyc?.level ?? null,
+        kycStatus: deposit.user.userKyc?.status ?? null,
+        userStatus: deposit.user.status,
       },
     }));
 
@@ -1891,6 +1904,51 @@ export class P2PAllocationsService {
     };
   }
 
+
+
+  async createAdminSystemDestination(dto: CreateAdminP2PSystemDestinationDto) {
+    const value = dto.fullValue ?? dto.value;
+    if (!value) {
+      throw new BadRequestException({ code: 'P2P_DESTINATION_INVALID', message: 'Destination value is invalid.' });
+    }
+
+    const created = await this.paymentDestinationsService.createSystemCollectionDestination({
+      type: dto.type,
+      value,
+      title: dto.title,
+      bankName: dto.bankName,
+      ownerName: dto.ownerName,
+      isDefault: false,
+    });
+
+    if (dto.isActive === false) {
+      await this.paymentDestinationsService.setSystemCollectionDestinationStatus(created.id, false);
+    }
+
+    return this.listAdminSystemDestinations();
+  }
+
+  async updateAdminSystemDestination(id: string, dto: UpdateAdminP2PSystemDestinationDto) {
+    const fullValue = dto.fullValue ?? dto.value;
+    await this.paymentDestinationsService.updateSystemCollectionDestination(id, {
+      title: dto.title,
+      bankName: dto.bankName,
+      ownerName: dto.ownerName,
+      fullValue,
+    });
+
+    if (dto.isActive !== undefined) {
+      await this.paymentDestinationsService.setSystemCollectionDestinationStatus(id, dto.isActive);
+    }
+
+    return this.listAdminSystemDestinations();
+  }
+
+  async setAdminSystemDestinationStatus(id: string, dto: SetAdminP2PSystemDestinationStatusDto) {
+    await this.paymentDestinationsService.setSystemCollectionDestinationStatus(id, dto.isActive);
+    return this.listAdminSystemDestinations();
+  }
+
   async getAdminAllocationDetail(id: string): Promise<AdminP2PAllocationDetailVmDto> {
     const allocation = await this.prisma.p2PAllocation.findUnique({
       where: { id },
@@ -1904,7 +1962,7 @@ export class P2PAllocationsService {
   async getAdminWithdrawalDetail(id: string): Promise<AdminP2PWithdrawalDetailVmDto> {
     const withdrawal = await this.prisma.withdrawRequest.findUnique({
       where: { id },
-      include: { user: { select: { id: true, mobile: true, fullName: true } } },
+      include: { user: { select: { id: true, mobile: true, fullName: true, status: true, userKyc: { select: { level: true, status: true } } } } },
     });
     if (!withdrawal) throw new NotFoundException('Withdraw not found');
     if (withdrawal.purpose !== RequestPurposeEnum.P2P) throw new BadRequestException({ code: 'P2P_FORBIDDEN', message: 'Withdrawal is not P2P.' });
@@ -1928,6 +1986,9 @@ export class P2PAllocationsService {
         userId: withdrawal.userId,
         mobile: withdrawal.user?.mobile ?? null,
         displayName: withdrawal.user?.fullName ?? null,
+        kycLevel: withdrawal.user?.userKyc?.level ?? null,
+        kycStatus: withdrawal.user?.userKyc?.status ?? null,
+        userStatus: withdrawal.user?.status ?? null,
       },
     });
 
