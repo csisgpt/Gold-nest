@@ -279,6 +279,7 @@ export class P2PAllocationsService {
       type?: PaymentDestinationType;
       title?: string | null;
       bankName?: string | null;
+      ownerName?: string | null;
     } | null;
     const masked = destinationSnapshot?.maskedValue
       ?? (withdrawal.iban ? maskDestinationValue(withdrawal.iban) : withdrawal.cardNumber ? maskDestinationValue(withdrawal.cardNumber) : null);
@@ -316,6 +317,7 @@ export class P2PAllocationsService {
           fullValue: withdrawal.destinationSnapshot?.value ?? '',
           bankName: destinationSnapshot?.bankName ?? withdrawal.bankName ?? null,
           title: destinationSnapshot?.title ?? null,
+          ownerName: destinationSnapshot?.ownerName ?? null,
         }
         : null,
       flags: {
@@ -727,8 +729,6 @@ export class P2PAllocationsService {
           u.id             AS "withdrawerUserId",
           u."mobile"      AS "withdrawerMobile",
           u."fullName"    AS "withdrawerFullName",
-          uk."level"::text  AS "withdrawerKycLevel",
-          uk."status"::text AS "withdrawerKycStatus",
           u."status"::text  AS "withdrawerStatus",
           (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
           MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
@@ -739,14 +739,13 @@ export class P2PAllocationsService {
           ${expiringSql} AS "hasExpiring"
         FROM "WithdrawRequest" w
         JOIN "User" u ON u.id = w."userId"
-        LEFT JOIN "UserKyc" uk ON uk."userId" = u.id
         LEFT JOIN "P2PAllocation" a ON a."withdrawalId" = w.id
         LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}::"AttachmentLinkEntityType"
           AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}::"AttachmentLinkKind"
           AND al."entityId" = a.id
         WHERE ${baseWhere}
         GROUP BY w.id, w."purpose", w."channel", w."amount", w."status", w."assignedAmountTotal", w."settledAmountTotal",
-          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt", u.id, u."mobile", u."fullName", uk."level", uk."status", u."status"
+          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt", u.id, u."mobile", u."fullName", u."status"
       )
       SELECT * FROM base
       WHERE 1=1
@@ -835,8 +834,6 @@ export class P2PAllocationsService {
         withdrawerUserId: string;
         withdrawerMobile: string | null;
         withdrawerFullName: string | null;
-        withdrawerKycLevel: string | null;
-        withdrawerKycStatus: string | null;
         withdrawerStatus: string | null;
       }>
     >(Prisma.sql`
@@ -862,8 +859,6 @@ export class P2PAllocationsService {
             userId: row!.withdrawerUserId,
             mobile: row!.withdrawerMobile,
             displayName: row!.withdrawerFullName,
-            kycLevel: row!.withdrawerKycLevel ?? null,
-            kycStatus: row!.withdrawerKycStatus ?? null,
             userStatus: row!.withdrawerStatus ?? null,
           },
         }),
@@ -963,12 +958,7 @@ export class P2PAllocationsService {
               mobile: true,
               fullName: true,
               status: true,
-              userKyc: {
-                select: {
-                  level: true,
-                  status: true,
-                },
-              },
+
             },
           },
         },
@@ -982,9 +972,9 @@ export class P2PAllocationsService {
         userId: deposit.user.id,
         mobile: deposit.user.mobile,
         displayName: deposit.user.fullName,
-        kycLevel: deposit.user.userKyc?.level ?? null,
-        kycStatus: deposit.user.userKyc?.status ?? null,
         userStatus: deposit.user.status,
+        kycLevel: null,
+        kycStatus: null,
       },
     }));
 
@@ -1949,6 +1939,10 @@ export class P2PAllocationsService {
     return this.listAdminSystemDestinations();
   }
 
+  async deleteAdminSystemDestination(id: string): Promise<void> {
+    await this.paymentDestinationsService.deleteSystemCollectionDestination(id);
+  }
+
   async getAdminAllocationDetail(id: string): Promise<AdminP2PAllocationDetailVmDto> {
     const allocation = await this.prisma.p2PAllocation.findUnique({
       where: { id },
@@ -1962,7 +1956,7 @@ export class P2PAllocationsService {
   async getAdminWithdrawalDetail(id: string): Promise<AdminP2PWithdrawalDetailVmDto> {
     const withdrawal = await this.prisma.withdrawRequest.findUnique({
       where: { id },
-      include: { user: { select: { id: true, mobile: true, fullName: true, status: true, userKyc: { select: { level: true, status: true } } } } },
+      include: { user: { select: { id: true, mobile: true, fullName: true, status: true } } },
     });
     if (!withdrawal) throw new NotFoundException('Withdraw not found');
     if (withdrawal.purpose !== RequestPurposeEnum.P2P) throw new BadRequestException({ code: 'P2P_FORBIDDEN', message: 'Withdrawal is not P2P.' });
@@ -1986,9 +1980,9 @@ export class P2PAllocationsService {
         userId: withdrawal.userId,
         mobile: withdrawal.user?.mobile ?? null,
         displayName: withdrawal.user?.fullName ?? null,
-        kycLevel: withdrawal.user?.userKyc?.level ?? null,
-        kycStatus: withdrawal.user?.userKyc?.status ?? null,
         userStatus: withdrawal.user?.status ?? null,
+        kycLevel: null,
+        kycStatus: null,
       },
     });
 

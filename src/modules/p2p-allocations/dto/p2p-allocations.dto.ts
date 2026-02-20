@@ -536,6 +536,9 @@ export class WithdrawalDestinationDto {
 
   @ApiPropertyOptional({ nullable: true })
   title?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  ownerName?: string | null;
 }
 
 export class P2PUserSummaryVmDto {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiHeader, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -131,6 +131,14 @@ export class P2PAllocationsController {
   @ApiOkResponse({ type: AdminP2PSystemDestinationListDto })
   setSystemDestinationStatus(@Param('id') id: string, @Body() dto: SetAdminP2PSystemDestinationStatusDto) {
     return this.p2pService.setAdminSystemDestinationStatus(id, dto);
+  }
+
+  @Delete('admin/p2p/system-destinations/:id')
+  @Roles(UserRole.ADMIN)
+  @HttpCode(204)
+  @ApiOkResponse({ description: 'System destination deleted.' })
+  async deleteSystemDestination(@Param('id') id: string): Promise<void> {
+    await this.p2pService.deleteAdminSystemDestination(id);
   }
 
   @Get('admin/p2p/allocations/:id')
