@@ -135,3 +135,43 @@ export class CreateSystemDestinationDto {
   @IsBoolean()
   isDefault?: boolean;
 }
+
+
+export class AdminSystemDestinationDetailDto extends PaymentDestinationViewDto {
+  @ApiPropertyOptional({ nullable: true })
+  fullValue?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  ownerName?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  deletedAt?: Date | null;
+}
+
+export class UpdateSystemDestinationDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  ownerName?: string;
+
+  @ApiPropertyOptional({ description: 'Optional new full destination value.' })
+  @IsOptional()
+  @IsString()
+  fullValue?: string;
+}
+
+export class SetSystemDestinationStatusDto {
+  @ApiProperty()
+  @IsBoolean()
+  isActive!: boolean;
+}

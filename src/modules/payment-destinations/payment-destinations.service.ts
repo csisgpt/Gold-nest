@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { PaymentDestination, PaymentDestinationDirection, PaymentDestinationStatus, PaymentDestinationType } from '@prisma/client';
+import { PaymentDestination, PaymentDestinationDirection, PaymentDestinationStatus, PaymentDestinationType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   decryptDestinationValue,
@@ -10,10 +10,12 @@ import {
   normalizeDestinationValue,
 } from './payment-destinations.crypto';
 import {
+  AdminSystemDestinationDetailDto,
   CreatePaymentDestinationDto,
   CreateSystemDestinationDto,
   PaymentDestinationViewDto,
   UpdatePaymentDestinationDto,
+  UpdateSystemDestinationDto,
 } from './dto/payment-destination.dto';
 
 export type PaymentDestinationSnapshot = {
@@ -62,6 +64,11 @@ export class PaymentDestinationsService {
       status: destination.status,
       lastUsedAt: destination.lastUsedAt ?? null,
     };
+  }
+
+
+  private isDuplicateDestinationError(error: unknown): boolean {
+    return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
   }
 
   private buildEncryptedPayload(value: string) {
@@ -213,6 +220,11 @@ export class PaymentDestinationsService {
     maskedValue: string;
     fullValue: string;
     isActive: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+    deletedAt: Date | null;
+    lastUsedAt: Date | null;
+    type: PaymentDestinationType;
   }>> {
     const destinations = await this.prisma.paymentDestination.findMany({
       where: {
@@ -232,29 +244,140 @@ export class PaymentDestinationsService {
       maskedValue: destination.maskedValue,
       fullValue: decryptDestinationValue(destination.encryptedValue),
       isActive: destination.status === PaymentDestinationStatusEnum.ACTIVE,
+      createdAt: destination.createdAt,
+      updatedAt: destination.updatedAt,
+      deletedAt: destination.deletedAt,
+      lastUsedAt: destination.lastUsedAt ?? null,
+      type: destination.type,
     }));
   }
 
   async createSystemCollectionDestination(dto: CreateSystemDestinationDto): Promise<PaymentDestinationViewDto> {
     const { encryptedValue, encryptedValueHash, maskedValue } = this.buildEncryptedPayload(dto.value);
 
-    const destination = await this.prisma.paymentDestination.create({
+    try {
+      const destination = await this.prisma.paymentDestination.create({
+        data: {
+          ownerUserId: null,
+          direction: PaymentDestinationDirectionEnum.COLLECTION,
+          type: dto.type,
+          encryptedValue,
+          encryptedValueHash,
+          maskedValue,
+          bankName: dto.bankName,
+          ownerName: dto.ownerName,
+          title: dto.title,
+          isDefault: dto.isDefault ?? false,
+          status: PaymentDestinationStatusEnum.ACTIVE,
+        },
+      });
+
+      return this.toView(destination);
+    } catch (error) {
+      if (this.isDuplicateDestinationError(error)) {
+        throw new BadRequestException({ code: 'PAYMENT_DESTINATION_DUPLICATE', message: 'Destination already exists.' });
+      }
+      throw error;
+    }
+  }
+
+
+
+  async getSystemCollectionDestinationById(id: string): Promise<AdminSystemDestinationDetailDto> {
+    const destination = await this.prisma.paymentDestination.findUnique({ where: { id } });
+    if (!destination || destination.deletedAt) throw new NotFoundException('Destination not found');
+    if (destination.ownerUserId !== null || destination.direction !== PaymentDestinationDirectionEnum.COLLECTION) {
+      throw new BadRequestException({ code: 'P2P_DESTINATION_INVALID', message: 'Destination is not a system collection account.' });
+    }
+
+    return {
+      ...this.toView(destination),
+      ownerName: destination.ownerName ?? null,
+      fullValue: decryptDestinationValue(destination.encryptedValue),
+      deletedAt: destination.deletedAt,
+    };
+  }
+
+  async updateSystemCollectionDestination(id: string, dto: UpdateSystemDestinationDto): Promise<AdminSystemDestinationDetailDto> {
+    const destination = await this.prisma.paymentDestination.findUnique({ where: { id } });
+    if (!destination || destination.deletedAt) throw new NotFoundException('Destination not found');
+    if (destination.ownerUserId !== null || destination.direction !== PaymentDestinationDirectionEnum.COLLECTION) {
+      throw new BadRequestException({ code: 'P2P_DESTINATION_INVALID', message: 'Destination is not a system collection account.' });
+    }
+
+    let encryptedValue = destination.encryptedValue;
+    let encryptedValueHash = destination.encryptedValueHash;
+    let maskedValue = destination.maskedValue;
+
+    if (dto.fullValue) {
+      const payload = this.buildEncryptedPayload(dto.fullValue);
+      encryptedValue = payload.encryptedValue;
+      encryptedValueHash = payload.encryptedValueHash;
+      maskedValue = payload.maskedValue;
+    }
+
+    try {
+      const updated = await this.prisma.paymentDestination.update({
+        where: { id },
+        data: {
+          title: dto.title ?? destination.title,
+          bankName: dto.bankName ?? destination.bankName,
+          ownerName: dto.ownerName ?? destination.ownerName,
+          encryptedValue,
+          encryptedValueHash,
+          maskedValue,
+        },
+      });
+      return {
+        ...this.toView(updated),
+        ownerName: updated.ownerName ?? null,
+        fullValue: decryptDestinationValue(updated.encryptedValue),
+        deletedAt: updated.deletedAt,
+      };
+    } catch (error) {
+      if (this.isDuplicateDestinationError(error)) {
+        throw new BadRequestException({ code: 'PAYMENT_DESTINATION_DUPLICATE', message: 'Destination already exists.' });
+      }
+      throw error;
+    }
+  }
+
+  async setSystemCollectionDestinationStatus(id: string, isActive: boolean): Promise<AdminSystemDestinationDetailDto> {
+    const destination = await this.prisma.paymentDestination.findUnique({ where: { id } });
+    if (!destination || destination.deletedAt) throw new NotFoundException('Destination not found');
+    if (destination.ownerUserId !== null || destination.direction !== PaymentDestinationDirectionEnum.COLLECTION) {
+      throw new BadRequestException({ code: 'P2P_DESTINATION_INVALID', message: 'Destination is not a system collection account.' });
+    }
+
+    const updated = await this.prisma.paymentDestination.update({
+      where: { id },
+      data: { status: isActive ? PaymentDestinationStatusEnum.ACTIVE : PaymentDestinationStatusEnum.DISABLED },
+    });
+
+    return {
+      ...this.toView(updated),
+      ownerName: updated.ownerName ?? null,
+      fullValue: decryptDestinationValue(updated.encryptedValue),
+      deletedAt: updated.deletedAt,
+    };
+  }
+
+  async deleteSystemCollectionDestination(id: string): Promise<{ success: true }> {
+    const destination = await this.prisma.paymentDestination.findUnique({ where: { id } });
+    if (!destination || destination.deletedAt) throw new NotFoundException('Destination not found');
+    if (destination.ownerUserId !== null || destination.direction !== PaymentDestinationDirectionEnum.COLLECTION) {
+      throw new BadRequestException({ code: 'P2P_DESTINATION_INVALID', message: 'Destination is not a system collection account.' });
+    }
+
+    await this.prisma.paymentDestination.update({
+      where: { id },
       data: {
-        ownerUserId: null,
-        direction: PaymentDestinationDirectionEnum.COLLECTION,
-        type: dto.type,
-        encryptedValue,
-        encryptedValueHash,
-        maskedValue,
-        bankName: dto.bankName,
-        ownerName: dto.ownerName,
-        title: dto.title,
-        isDefault: dto.isDefault ?? false,
-        status: PaymentDestinationStatusEnum.ACTIVE,
+        deletedAt: new Date(),
+        status: PaymentDestinationStatusEnum.DISABLED,
       },
     });
 
-    return this.toView(destination);
+    return { success: true };
   }
 
   async resolvePayoutDestinationForUser(userId: string, destinationId: string): Promise<PaymentDestinationSnapshot> {

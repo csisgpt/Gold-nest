@@ -357,6 +357,81 @@ export class P2PAssignRequestDto {
   destinationId?: string;
 }
 
+
+export class CreateAdminP2PSystemDestinationDto {
+  @ApiProperty({ enum: PaymentDestinationTypeEnum })
+  @IsEnum(PaymentDestinationTypeEnum)
+  type!: PaymentDestinationType;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  ownerName?: string;
+
+  @ApiPropertyOptional({ description: 'System destination full value.' })
+  @IsOptional()
+  @IsString()
+  fullValue?: string;
+
+  @ApiPropertyOptional({ description: 'Alias of fullValue for backward compatibility.' })
+  @IsOptional()
+  @IsString()
+  value?: string;
+
+  @ApiPropertyOptional({ required: false, description: 'Optional initial active state. Defaults to active when omitted.' })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+export class UpdateAdminP2PSystemDestinationDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  ownerName?: string;
+
+  @ApiPropertyOptional({ description: 'System destination full value.' })
+  @IsOptional()
+  @IsString()
+  fullValue?: string;
+
+  @ApiPropertyOptional({ description: 'Alias of fullValue for backward compatibility.' })
+  @IsOptional()
+  @IsString()
+  value?: string;
+
+  @ApiPropertyOptional({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+export class SetAdminP2PSystemDestinationStatusDto {
+  @ApiProperty()
+  @IsBoolean()
+  isActive!: boolean;
+}
+
 export class P2PAllocationProofDto {
   @ApiProperty()
   @IsString()
@@ -461,6 +536,32 @@ export class WithdrawalDestinationDto {
 
   @ApiPropertyOptional({ nullable: true })
   title?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  ownerName?: string | null;
+
+  @ApiPropertyOptional({ enum: ['LEGACY', 'PAYOUT_DESTINATION', 'SYSTEM_COLLECTION', 'UNKNOWN'] })
+  source?: 'LEGACY' | 'PAYOUT_DESTINATION' | 'SYSTEM_COLLECTION' | 'UNKNOWN';
+}
+
+export class P2PUserSummaryVmDto {
+  @ApiProperty()
+  userId!: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  mobile?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  displayName?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  kycLevel?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  kycStatus?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  userStatus?: string | null;
 }
 
 export class WithdrawalVmDto {
@@ -501,12 +602,14 @@ export class WithdrawalVmDto {
   actions!: WithdrawalActionsDto;
 
 
-  @ApiProperty()
-  withdrawer!: {
-    userId: string;
-    mobile: string | null;
-    displayName: string | null;
-  };
+  @ApiPropertyOptional({ required: false, type: () => P2PUserSummaryVmDto })
+  withdrawer?: P2PUserSummaryVmDto;
+
+  @ApiPropertyOptional({ nullable: true })
+  payoutDestinationId?: string | null;
+
+  @ApiPropertyOptional({ enum: ['LEGACY', 'PAYOUT_DESTINATION', 'SYSTEM_COLLECTION', 'UNKNOWN'] })
+  destinationSource?: 'LEGACY' | 'PAYOUT_DESTINATION' | 'SYSTEM_COLLECTION' | 'UNKNOWN';
 }
 
 export class DepositTotalsDto {
@@ -564,7 +667,12 @@ export class DepositVmDto {
 
   @ApiProperty({ type: () => DepositFlagsDto })
   flags!: DepositFlagsDto;
+
+  @ApiPropertyOptional({ required: false, type: () => P2PUserSummaryVmDto })
+  payer?: P2PUserSummaryVmDto;
 }
+
+export class DepositCandidateVmDto extends DepositVmDto {}
 
 export class AllocationPaymentDto {
   @ApiProperty({ enum: PaymentMethodEnum })
@@ -659,6 +767,15 @@ export class AllocationUserSummaryDto {
 
   @ApiPropertyOptional({ nullable: true })
   displayName?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  kycLevel?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  kycStatus?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  userStatus?: string | null;
 }
 
 
@@ -788,11 +905,29 @@ export class AdminP2PSystemDestinationVmDto {
   @ApiPropertyOptional({ nullable: true })
   fullValue!: string | null;
 
+  @ApiPropertyOptional({ nullable: true })
+  displayValue?: string | null;
+
   @ApiProperty()
   copyText!: string;
 
   @ApiProperty()
   isActive!: boolean;
+
+  @ApiPropertyOptional({ required: false })
+  createdAt?: Date;
+
+  @ApiPropertyOptional({ required: false })
+  updatedAt?: Date;
+
+  @ApiPropertyOptional({ required: false, nullable: true })
+  deletedAt?: Date | null;
+
+  @ApiPropertyOptional({ required: false, nullable: true })
+  lastUsedAt?: Date | null;
+
+  @ApiPropertyOptional({ required: false, enum: PaymentDestinationTypeEnum })
+  type?: PaymentDestinationType;
 }
 
 export class AdminP2PSystemDestinationListDto {

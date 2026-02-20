@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiHeader, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -15,6 +15,8 @@ import {
   AdminP2PSystemDestinationListDto,
   AdminP2PWithdrawalDetailVmDto,
   AllocationVmDto,
+  CreateAdminP2PSystemDestinationDto,
+  DepositCandidateVmDto,
   DepositVmDto,
   P2PAdminVerifyDto,
   P2PAllocationProofDto,
@@ -23,6 +25,8 @@ import {
   P2PListResponseDto,
   P2POpsSummaryDto,
   P2PReceiverConfirmDto,
+  SetAdminP2PSystemDestinationStatusDto,
+  UpdateAdminP2PSystemDestinationDto,
   WithdrawalVmDto,
 } from './dto/p2p-allocations.dto';
 import { P2PAllocationsService } from './p2p-allocations.service';
@@ -77,7 +81,7 @@ export class P2PAllocationsController {
 
   @Get('admin/p2p/withdrawals/:id/candidates')
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: P2PListResponseDto<DepositVmDto> })
+  @ApiOkResponse({ type: P2PListResponseDto<DepositCandidateVmDto> })
   listCandidates(
     @Param('id') id: string,
     @Query() query: AdminP2PWithdrawalCandidatesQueryDto,
@@ -105,6 +109,37 @@ export class P2PAllocationsController {
   @ApiOkResponse({ type: AdminP2PSystemDestinationListDto })
   listSystemDestinations() {
     return this.p2pService.listAdminSystemDestinations();
+  }
+
+
+
+  @Post('admin/p2p/system-destinations')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminP2PSystemDestinationListDto })
+  createSystemDestination(@Body() dto: CreateAdminP2PSystemDestinationDto) {
+    return this.p2pService.createAdminSystemDestination(dto);
+  }
+
+  @Patch('admin/p2p/system-destinations/:id')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminP2PSystemDestinationListDto })
+  updateSystemDestination(@Param('id') id: string, @Body() dto: UpdateAdminP2PSystemDestinationDto) {
+    return this.p2pService.updateAdminSystemDestination(id, dto);
+  }
+
+  @Patch('admin/p2p/system-destinations/:id/status')
+  @Roles(UserRole.ADMIN)
+  @ApiOkResponse({ type: AdminP2PSystemDestinationListDto })
+  setSystemDestinationStatus(@Param('id') id: string, @Body() dto: SetAdminP2PSystemDestinationStatusDto) {
+    return this.p2pService.setAdminSystemDestinationStatus(id, dto);
+  }
+
+  @Delete('admin/p2p/system-destinations/:id')
+  @Roles(UserRole.ADMIN)
+  @HttpCode(204)
+  @ApiOkResponse({ description: 'System destination deleted.' })
+  async deleteSystemDestination(@Param('id') id: string): Promise<void> {
+    await this.p2pService.deleteAdminSystemDestination(id);
   }
 
   @Get('admin/p2p/allocations/:id')
