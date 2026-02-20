@@ -539,6 +539,9 @@ export class WithdrawalDestinationDto {
 
   @ApiPropertyOptional({ nullable: true })
   ownerName?: string | null;
+
+  @ApiPropertyOptional({ enum: ['LEGACY', 'USER_PAYOUT_DESTINATION', 'SYSTEM_DESTINATION'] })
+  source?: 'LEGACY' | 'USER_PAYOUT_DESTINATION' | 'SYSTEM_DESTINATION';
 }
 
 export class P2PUserSummaryVmDto {
@@ -756,6 +759,15 @@ export class AllocationUserSummaryDto {
 
   @ApiPropertyOptional({ nullable: true })
   displayName?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  kycLevel?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  kycStatus?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  userStatus?: string | null;
 }
 
 
