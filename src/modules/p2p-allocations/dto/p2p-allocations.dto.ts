@@ -540,8 +540,8 @@ export class WithdrawalDestinationDto {
   @ApiPropertyOptional({ nullable: true })
   ownerName?: string | null;
 
-  @ApiPropertyOptional({ enum: ['LEGACY', 'USER_PAYOUT_DESTINATION', 'SYSTEM_DESTINATION'] })
-  source?: 'LEGACY' | 'USER_PAYOUT_DESTINATION' | 'SYSTEM_DESTINATION';
+  @ApiPropertyOptional({ enum: ['LEGACY', 'PAYOUT_DESTINATION', 'SYSTEM_COLLECTION', 'UNKNOWN'] })
+  source?: 'LEGACY' | 'PAYOUT_DESTINATION' | 'SYSTEM_COLLECTION' | 'UNKNOWN';
 }
 
 export class P2PUserSummaryVmDto {
@@ -604,6 +604,12 @@ export class WithdrawalVmDto {
 
   @ApiPropertyOptional({ required: false, type: () => P2PUserSummaryVmDto })
   withdrawer?: P2PUserSummaryVmDto;
+
+  @ApiPropertyOptional({ nullable: true })
+  payoutDestinationId?: string | null;
+
+  @ApiPropertyOptional({ enum: ['LEGACY', 'PAYOUT_DESTINATION', 'SYSTEM_COLLECTION', 'UNKNOWN'] })
+  destinationSource?: 'LEGACY' | 'PAYOUT_DESTINATION' | 'SYSTEM_COLLECTION' | 'UNKNOWN';
 }
 
 export class DepositTotalsDto {
@@ -665,6 +671,8 @@ export class DepositVmDto {
   @ApiPropertyOptional({ required: false, type: () => P2PUserSummaryVmDto })
   payer?: P2PUserSummaryVmDto;
 }
+
+export class DepositCandidateVmDto extends DepositVmDto {}
 
 export class AllocationPaymentDto {
   @ApiProperty({ enum: PaymentMethodEnum })
@@ -896,6 +904,9 @@ export class AdminP2PSystemDestinationVmDto {
 
   @ApiPropertyOptional({ nullable: true })
   fullValue!: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  displayValue?: string | null;
 
   @ApiProperty()
   copyText!: string;

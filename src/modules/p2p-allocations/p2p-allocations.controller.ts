@@ -16,6 +16,7 @@ import {
   AdminP2PWithdrawalDetailVmDto,
   AllocationVmDto,
   CreateAdminP2PSystemDestinationDto,
+  DepositCandidateVmDto,
   DepositVmDto,
   P2PAdminVerifyDto,
   P2PAllocationProofDto,
@@ -80,7 +81,7 @@ export class P2PAllocationsController {
 
   @Get('admin/p2p/withdrawals/:id/candidates')
   @Roles(UserRole.ADMIN)
-  @ApiOkResponse({ type: P2PListResponseDto<DepositVmDto> })
+  @ApiOkResponse({ type: P2PListResponseDto<DepositCandidateVmDto> })
   listCandidates(
     @Param('id') id: string,
     @Query() query: AdminP2PWithdrawalCandidatesQueryDto,

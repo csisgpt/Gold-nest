@@ -33,6 +33,7 @@ import {
   AllocationAttachmentDto,
   AllocationDestinationDto,
   AllocationVmDto,
+  DepositCandidateVmDto,
   DepositVmDto,
   P2PAllocationQueryDto,
   P2PAllocationProofDto,
@@ -278,6 +279,9 @@ export class P2PAllocationsService {
     cardNumber: string | null;
     payoutDestinationId?: string | null;
     userId?: string;
+    destinationOwnerName?: string | null;
+    destinationTitle?: string | null;
+    destinationBankName?: string | null;
     createdAt: Date;
     updatedAt: Date;
     flags?: {
@@ -330,10 +334,12 @@ export class P2PAllocationsService {
           type: destinationSnapshot?.type ?? (withdrawal.iban ? PaymentDestinationTypeEnum.IBAN : PaymentDestinationTypeEnum.CARD),
           masked,
           fullValue: withdrawal.destinationSnapshot?.value ?? '',
-          bankName: destinationSnapshot?.bankName ?? withdrawal.bankName ?? null,
-          title: destinationSnapshot?.title ?? null,
-          ownerName: destinationSnapshot?.ownerName ?? null,
-          source: withdrawal.payoutDestinationId ? 'USER_PAYOUT_DESTINATION' : 'LEGACY',
+          bankName: destinationSnapshot?.bankName ?? withdrawal.destinationBankName ?? withdrawal.bankName ?? null,
+          title: destinationSnapshot?.title ?? withdrawal.destinationTitle ?? null,
+          ownerName: destinationSnapshot?.ownerName ?? withdrawal.destinationOwnerName ?? null,
+          source: withdrawal.payoutDestinationId
+            ? (withdrawal.channel === WithdrawalChannelEnum.USER_TO_ORG ? 'SYSTEM_COLLECTION' : 'PAYOUT_DESTINATION')
+            : (withdrawal.iban || withdrawal.cardNumber || withdrawal.bankName ? 'LEGACY' : 'UNKNOWN'),
         }
         : null,
       flags: {
@@ -350,6 +356,10 @@ export class P2PAllocationsService {
         canViewAllocations: true,
       },
       withdrawer: withdrawal.withdrawer,
+      payoutDestinationId: withdrawal.payoutDestinationId ?? null,
+      destinationSource: withdrawal.payoutDestinationId
+        ? (withdrawal.channel === WithdrawalChannelEnum.USER_TO_ORG ? 'SYSTEM_COLLECTION' : 'PAYOUT_DESTINATION')
+        : (withdrawal.iban || withdrawal.cardNumber || withdrawal.bankName ? 'LEGACY' : 'UNKNOWN'),
     };
   }
 
@@ -755,6 +765,9 @@ export class P2PAllocationsService {
           u."status"::text  AS "withdrawerStatus",
           uk."level"::text  AS "withdrawerKycLevel",
           uk."status"::text AS "withdrawerKycStatus",
+          COALESCE(w."destinationSnapshot"->>'ownerName', pd."ownerName") AS "destinationOwnerName",
+          COALESCE(w."destinationSnapshot"->>'title', pd."title") AS "destinationTitle",
+          COALESCE(w."destinationSnapshot"->>'bankName', pd."bankName") AS "destinationBankName",
           (w."amount" - w."assignedAmountTotal") AS "remainingToAssign",
           MIN(a."expiresAt") FILTER (WHERE a."status" IN (${Prisma.join([
       Prisma.sql`${P2PAllocationStatusEnum.ASSIGNED}::"P2PAllocationStatus"`,
@@ -765,13 +778,14 @@ export class P2PAllocationsService {
         FROM "WithdrawRequest" w
         JOIN "User" u ON u.id = w."userId"
         LEFT JOIN "UserKyc" uk ON uk."userId" = u.id
+        LEFT JOIN "PaymentDestination" pd ON pd.id = w."payoutDestinationId"
         LEFT JOIN "P2PAllocation" a ON a."withdrawalId" = w.id
         LEFT JOIN "AttachmentLink" al ON al."entityType" = ${AttachmentLinkEntityType.P2P_ALLOCATION}::"AttachmentLinkEntityType"
           AND al."kind" = ${AttachmentLinkKind.P2P_PROOF}::"AttachmentLinkKind"
           AND al."entityId" = a.id
         WHERE ${baseWhere}
         GROUP BY w.id, w."purpose", w."channel", w."amount", w."status", w."assignedAmountTotal", w."settledAmountTotal",
-          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt", w."payoutDestinationId", u.id, u."mobile", u."fullName", u."status", uk."level", uk."status"
+          w."destinationSnapshot", w."bankName", w."iban", w."cardNumber", w."createdAt", w."updatedAt", w."payoutDestinationId", u.id, u."mobile", u."fullName", u."status", uk."level", uk."status", pd."ownerName", pd."title", pd."bankName"
       )
       SELECT * FROM base
       WHERE 1=1
@@ -864,6 +878,9 @@ export class P2PAllocationsService {
         withdrawerStatus: string | null;
         withdrawerKycLevel: string | null;
         withdrawerKycStatus: string | null;
+        destinationOwnerName: string | null;
+        destinationTitle: string | null;
+        destinationBankName: string | null;
       }>
     >(Prisma.sql`
       SELECT * FROM (${baseQuery}) AS base WHERE base.id IN (${Prisma.join(ids)})
@@ -904,7 +921,7 @@ export class P2PAllocationsService {
   async listCandidates(
     withdrawalId: string,
     query: AdminP2PWithdrawalCandidatesQueryDto,
-  ): Promise<P2PListResponseDto<DepositVmDto>> {
+  ): Promise<P2PListResponseDto<DepositCandidateVmDto>> {
     const withdrawal = await this.prisma.withdrawRequest.findUnique({ where: { id: withdrawalId } });
     if (!withdrawal) throw new NotFoundException('Withdraw not found');
     if (withdrawal.purpose !== RequestPurposeEnum.P2P) {
@@ -1919,6 +1936,7 @@ export class P2PAllocationsService {
         ownerName: item.ownerName,
         masked: item.fullValue,
         fullValue: item.fullValue,
+        displayValue: item.fullValue,
         copyText: this.buildDestinationCopyText({ title: item.title, bankName: item.bankName, ownerName: item.ownerName, value: item.fullValue }) ?? item.fullValue,
         isActive: item.isActive,
         createdAt: item.createdAt,
